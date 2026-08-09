@@ -103,3 +103,11 @@ def get_tiger_credentials() -> dict:
         "account": _required("TIGER_ACCOUNT"),
         "private_key": _required("TIGER_PRIVATE_KEY"),  # inline PEM or file path
     }
+
+def get_longbridge_credentials() -> dict:
+    """Return Longbridge credential fields from env vars."""
+    return {
+        "app_key": _required("LONGBRIDGE_APP_KEY"),
+        "app_secret": _required("LONGBRIDGE_APP_SECRET"),
+        "access_token": _required("LONGBRIDGE_ACCESS_TOKEN"),
+    }
