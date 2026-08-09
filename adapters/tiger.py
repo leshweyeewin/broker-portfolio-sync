@@ -434,6 +434,35 @@ class TigerAdapter:
                     fill_id=str(row[id_col]) if id_col is not None else None,
                 )
             )
+            
+        # 2. Fetch deposits and withdrawals via get_funding_history
+        try:
+            funding_df = self._client.get_funding_history()
+            if funding_df is not None and not getattr(funding_df, "empty", True):
+                for _, row in funding_df.iterrows():
+                    raw_type = str(row.get('type_desc', '')).strip().lower()
+                    if raw_type == 'deposit':
+                        cash_type = CashType.DEPOSIT
+                    elif raw_type == 'withdraw':
+                        cash_type = CashType.WITHDRAWAL
+                    else:
+                        continue
+                        
+                    movements.append(
+                        CashMovement(
+                            date=self._cash_date(row['created_at']),
+                            broker=Broker.TIGER,
+                            type=cash_type,
+                            amount=abs(dec(row['amount'])),
+                            currency=str(row['currency']),
+                            note=f"Tiger funding {raw_type}",
+                            fill_id=str(row['id']) if 'id' in row else None,
+                        )
+                    )
+        except Exception as e:
+            # Not all accounts may have access or funding history
+            log.warning("Could not fetch Tiger funding history: %s", e)
+            
         return movements
 
     # -- small field helpers ------------------------------------------------ #

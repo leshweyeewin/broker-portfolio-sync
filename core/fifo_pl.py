@@ -60,6 +60,7 @@ ZERO = Decimal("0")
 class _Lot:
     """An open lot: positive-magnitude qty regardless of long/short side."""
 
+    key: str
     qty: Decimal  # remaining magnitude
     orig_qty: Decimal  # magnitude at open (for fee-per-unit)
     price: Decimal  # raw per-unit execution price
@@ -75,8 +76,16 @@ class _Lot:
 # Public result objects
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class MatchedLot:
+    opening_key: str
+    qty: Decimal
+    opening_qty: Decimal
+    is_long: bool
+
+
+@dataclass(frozen=True)
 class Realization:
-    """Realized P/L attributed to a single closing execution (one Sell/close row)."""
+    """A single closing execution and its associated P/L."""
 
     key: str  # the closing execution's dedup_key
     broker: Broker
@@ -90,6 +99,7 @@ class Realization:
     realized_pl: Decimal  # net native = directional gross - open_fees - close_fee
     currency: str
     multiplier: Decimal
+    components: list[MatchedLot] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,7 @@ class FifoResult:
 
     realizations: list[Realization] = field(default_factory=list)
     holdings: list[Holding] = field(default_factory=list)
+    fully_closed_keys: set[str] = field(default_factory=set)
 
     @property
     def realized_by_key(self) -> dict[str, Realization]:
@@ -158,6 +169,7 @@ class FifoResult:
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class _Fill:
+    """A simplified trade for the FIFO engine."""
     key: str
     date: date
     signed_qty: Decimal  # + buy, - sell (seed rows keep their sign)
@@ -179,10 +191,11 @@ def _process_instrument(
     option_type: Optional[OptionType] = None,
     strike: Optional[Decimal] = None,
     expiry: Optional[date] = None,
-) -> tuple[list[Realization], Optional[Holding]]:
+) -> tuple[list[Realization], Optional[Holding], set[str]]:
     lots: deque[_Lot] = deque()
     side = 0  # +1 long, -1 short, 0 flat
     realizations: list[Realization] = []
+    fully_closed_keys: set[str] = set()
 
     for fill in fills:
         ev_side = 1 if fill.signed_qty > 0 else -1
@@ -197,9 +210,19 @@ def _process_instrument(
             gross = ZERO
             cost_basis = ZERO
             open_fees_closed = ZERO
+            components = []
             while remaining > 0 and lots:
                 lot = lots[0]
                 take = min(remaining, lot.qty)
+                
+                # Record the matched lot for Google Sheets formulas
+                components.append(MatchedLot(
+                    opening_key=lot.key,
+                    qty=take,
+                    opening_qty=lot.orig_qty,
+                    is_long=(side > 0)
+                ))
+
                 if side > 0:  # closing long via a sell at fill.price
                     gross += (fill.price - lot.price) * take
                 else:  # closing short via a buy at fill.price
@@ -210,6 +233,7 @@ def _process_instrument(
                 remaining -= take
                 closed_qty += take
                 if lot.qty == 0:
+                    fully_closed_keys.add(lot.key)
                     lots.popleft()
 
             close_fee_alloc = fill.fee * (closed_qty / magnitude)
@@ -231,6 +255,7 @@ def _process_instrument(
                     realized_pl=realized_pl,
                     currency=currency,
                     multiplier=multiplier,
+                    components=components,
                 )
             )
             if not lots:
@@ -238,18 +263,18 @@ def _process_instrument(
             if remaining > 0:
                 # Position flipped: the overshoot opens a new lot the other way.
                 open_fee_remainder = fill.fee * (remaining / magnitude)
-                lots.append(_Lot(remaining, remaining, fill.price, open_fee_remainder, fill.date))
+                lots.append(_Lot(fill.key, remaining, remaining, fill.price, open_fee_remainder, fill.date))
                 side = ev_side
         else:
             # Opening a lot (same side as current position, or from flat).
-            lots.append(_Lot(magnitude, magnitude, fill.price, fill.fee, fill.date))
+            lots.append(_Lot(fill.key, magnitude, magnitude, fill.price, fill.fee, fill.date))
             side = ev_side
 
     holding = _build_holding(
         broker, instrument, symbol, currency, multiplier, side, lots,
         option_type=option_type, strike=strike, expiry=expiry,
     )
-    return realizations, holding
+    return realizations, holding, fully_closed_keys
 
 
 def _build_holding(
@@ -313,18 +338,15 @@ def _resolve_currency(currencies: set[str], instrument: str) -> str:
 # Public API
 # --------------------------------------------------------------------------- #
 def compute_stock_pl(trades: list[StockTrade]) -> FifoResult:
-    """FIFO realized P/L + remaining holdings for stock executions.
-
-    Grouped per (broker, ticker). Executions are processed in date order, with
-    input order as a stable tiebreak for same-day fills (adapters return rows in
-    the broker's own sequence).
-    """
+    """FIFO realized P/L + remaining holdings for stock executions."""
     groups: dict[tuple[Broker, str], list[tuple[int, StockTrade]]] = {}
     for idx, t in enumerate(trades):
         groups.setdefault((t.broker, t.ticker), []).append((idx, t))
 
-    realizations: list[Realization] = []
-    holdings: list[Holding] = []
+    all_realizations: list[Realization] = []
+    all_holdings: list[Holding] = []
+    all_closed_keys: set[str] = set()
+
     for (broker, ticker), items in groups.items():
         items.sort(key=lambda it: (it[1].date, it[0]))
         currency = _resolve_currency({t.currency for _, t in items}, ticker)
@@ -332,11 +354,12 @@ def compute_stock_pl(trades: list[StockTrade]) -> FifoResult:
             _Fill(t.dedup_key, t.date, _stock_signed_qty(t), t.price, t.fee)
             for _, t in items
         ]
-        r, h = _process_instrument(broker, ticker, ticker, currency, Decimal("1"), fills)
-        realizations.extend(r)
+        r, h, closed = _process_instrument(broker, ticker, ticker, currency, Decimal("1"), fills)
+        all_realizations.extend(r)
+        all_closed_keys.update(closed)
         if h is not None:
-            holdings.append(h)
-    return FifoResult(realizations, holdings)
+            all_holdings.append(h)
+    return FifoResult(all_realizations, all_holdings, all_closed_keys)
 
 
 def _option_instrument(t: OptionTrade) -> str:
@@ -344,11 +367,7 @@ def _option_instrument(t: OptionTrade) -> str:
 
 
 def compute_option_pl(trades: list[OptionTrade]) -> FifoResult:
-    """FIFO realized P/L + remaining holdings for option executions.
-
-    Grouped per (broker, underlying, type, strike, expiry) — each distinct
-    contract is its own book. Handles sell-to-open shorts (see module docstring).
-    """
+    """FIFO realized P/L + remaining holdings for option executions."""
     groups: dict[
         tuple[Broker, str, OptionType, Decimal, date], list[tuple[int, OptionTrade]]
     ] = {}
@@ -356,8 +375,10 @@ def compute_option_pl(trades: list[OptionTrade]) -> FifoResult:
         key = (t.broker, t.underlying, t.option_type, t.strike, t.expiry)
         groups.setdefault(key, []).append((idx, t))
 
-    realizations: list[Realization] = []
-    holdings: list[Holding] = []
+    all_realizations: list[Realization] = []
+    all_holdings: list[Holding] = []
+    all_closed_keys: set[str] = set()
+
     for (broker, underlying, otype, strike, expiry), items in groups.items():
         items.sort(key=lambda it: (it[1].date, it[0]))
         instrument = _option_instrument(items[0][1])
@@ -372,11 +393,12 @@ def compute_option_pl(trades: list[OptionTrade]) -> FifoResult:
             _Fill(t.dedup_key, t.date, _option_signed_qty(t), t.premium, t.fee)
             for _, t in items
         ]
-        r, h = _process_instrument(
+        r, h, closed = _process_instrument(
             broker, instrument, underlying, currency, multiplier, fills,
             option_type=otype, strike=strike, expiry=expiry,
         )
-        realizations.extend(r)
+        all_realizations.extend(r)
+        all_closed_keys.update(closed)
         if h is not None:
-            holdings.append(h)
-    return FifoResult(realizations, holdings)
+            all_holdings.append(h)
+    return FifoResult(all_realizations, all_holdings, all_closed_keys)

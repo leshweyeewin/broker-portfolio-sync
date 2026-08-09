@@ -72,7 +72,7 @@ STOCKS_HEADERS = [
     "_dedup_key",
 ]
 OPTIONS_HEADERS = [
-    "Date", "Broker", "Strategy", "Direction", "Stock", "Type", "Strike",
+    "Date", "Broker", "Strategy", "Stock", "Type", "Strike",
     "Qty", "Expiry", "Action", "Premium", "Total", "Fee", "Currency",
     "Status", "P/L", "P/L (SGD)", "_dedup_key",
 ]
@@ -87,8 +87,8 @@ DASHBOARD_HEADERS = ["Metric", "Longbridge", "Tiger", "MooMoo", "Total (SGD)"]
 # 1 = just the column header row. The summary block is placed off to the right.
 DATA_HEADER_ROWS = {
     TAB_TRANSACTIONS: 1,
-    TAB_STOCKS: 1,
-    TAB_OPTIONS: 1,
+    TAB_STOCKS: 4,
+    TAB_OPTIONS: 4,
     TAB_RUN_LOG: 1,
 }
 
@@ -380,6 +380,11 @@ class PortfolioWriter:
                 sheet_row, old_vals = existing_map[key]
                 new_formatted = [_fmt(v) for v in padded]
                 old_formatted = [_fmt(v) for v in old_vals]
+                
+                # Preserve manual Strategy overrides on Options tab
+                if tab == TAB_OPTIONS and len(old_formatted) > 2 and old_formatted[2]:
+                    new_formatted[2] = old_formatted[2]
+                
                 if new_formatted != old_formatted:
                     updates.append({
                         "range": f"{tab}!A{sheet_row}:{col_letter}{sheet_row}",
@@ -424,30 +429,33 @@ class PortfolioWriter:
                     "values": [[str(h) for h in headers]],
                 })
                 
-                # Write summary blocks for Stocks and Options on the right side (Cols N/O or S/T)
-                if tab in (TAB_STOCKS, TAB_OPTIONS):
-                    if tab == TAB_STOCKS:
-                        # Data ends at L. M is _dedup_key. N/O will be summary.
-                        # K = Realized P/L, L = Realized P/L (SGD), H = Fee
-                        write_data.append({
-                            "range": f"{tab}!N1:O3",
-                            "values": [
-                                ["Total", ""],
-                                ["Total P/L", f"=SUM(K2:K)"],
-                                ["Total Fees", f"=SUM(H2:H)"]
-                            ]
-                        })
-                    else:
-                        # Options: Data ends at Q. R is _dedup_key. S/T will be summary.
-                        # P = P/L, Q = P/L (SGD), M = Fee
-                        write_data.append({
-                            "range": f"{tab}!S1:T3",
-                            "values": [
-                                ["Total", ""],
-                                ["Total P/L", f"=SUM(P2:P)"],
-                                ["Total Fees", f"=SUM(M2:M)"]
-                            ]
-                        })
+            # Write summary blocks for Stocks and Options on the left side
+            # Always ensure the summary block formulas are present
+            if tab in (TAB_STOCKS, TAB_OPTIONS):
+                if tab == TAB_STOCKS:
+                    # K = Realized P/L, L = Realized P/L (SGD), H = Fee
+                    write_data.append({
+                        "range": f"{tab}!A1:B3",
+                        "values": [
+                            ["Stocks Portfolio Summary", ""],
+                            ["Total P/L", f"=SUM(K5:K)"],
+                            ["Total Fees", f"=SUM(H5:H)"]
+                        ]
+                    })
+                else:
+                    # Options: P = P/L (now O = P/L after removing Direction), Q = SGD (now P = SGD), M = Fee (now L = Fee)
+                    # Let's verify Options columns after removing Direction:
+                    # A=Date, B=Broker, C=Strategy, D=Stock, E=Type, F=Strike,
+                    # G=Qty, H=Expiry, I=Action, J=Premium, K=Total, L=Fee,
+                    # M=Currency, N=Status, O=P/L, P=P/L (SGD), Q=_dedup_key
+                    write_data.append({
+                        "range": f"{tab}!A1:B3",
+                        "values": [
+                            ["Options Portfolio Summary", ""],
+                            ["Total P/L", f"=SUM(O5:O)"],
+                            ["Total Fees", f"=SUM(L5:L)"]
+                        ]
+                    })
 
         if write_data:
             self._client.batch_update_values(write_data)
@@ -522,6 +530,27 @@ class PortfolioWriter:
                 }
             })
             
+            # Format the Summary Block at A1:B3 if it exists (Stocks & Options)
+            if tab in (TAB_STOCKS, TAB_OPTIONS):
+                requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": 3,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 2
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95},
+                                "textFormat": {"bold": True}
+                            }
+                        },
+                        "fields": "userEnteredFormat(backgroundColor,textFormat)"
+                    }
+                })
+            
             # 2. Freeze the header rows
             requests.append({
                 "updateSheetProperties": {
@@ -534,7 +563,7 @@ class PortfolioWriter:
             })
             
             # 3. Add Basic Filter (to easily filter "Status" = "")
-            status_col = 9 if tab == TAB_STOCKS else (14 if tab == TAB_OPTIONS else None)
+            status_col = 9 if tab == TAB_STOCKS else (13 if tab == TAB_OPTIONS else None)
             filter_payload = {
                 "range": {
                     "sheetId": sheet_id,
@@ -555,7 +584,7 @@ class PortfolioWriter:
             })
             
             # Add Conditional Formatting (Buy/Sell colors)
-            action_col = 3 if tab == TAB_STOCKS else (9 if tab == TAB_OPTIONS else None)
+            action_col = 3 if tab == TAB_STOCKS else (8 if tab == TAB_OPTIONS else None)
             if action_col is not None:
                 for action, rgb in [("Buy", {"red": 0.85, "green": 0.95, "blue": 0.85}), ("Sell", {"red": 0.95, "green": 0.85, "blue": 0.85})]:
                     requests.append({
@@ -570,16 +599,33 @@ class PortfolioWriter:
                             "index": 0
                         }
                     })
+            # Add Conditional Formatting (Closed Status -> Grey out cell)
+            if status_col is not None:
+                requests.append({
+                    "addConditionalFormatRule": {
+                        "rule": {
+                            "ranges": [{"sheetId": sheet_id, "startRowIndex": header_row_0 + 1, "startColumnIndex": status_col, "endColumnIndex": status_col + 1}],
+                            "booleanRule": {
+                                "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "Closed"}]},
+                                "format": {
+                                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                                    "textFormat": {"foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}
+                                }
+                            }
+                        },
+                        "index": 0
+                    }
+                })
                     
             # Add Conditional Formatting (Expiry within 7 days -> Yellow)
             if tab == TAB_OPTIONS:
-                expiry_col = 8 # Column I
+                expiry_col = 7 # Column H
                 requests.append({
                     "addConditionalFormatRule": {
                         "rule": {
                             "ranges": [{"sheetId": sheet_id, "startRowIndex": header_row_0 + 1, "startColumnIndex": expiry_col, "endColumnIndex": expiry_col + 1}],
                             "booleanRule": {
-                                "condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": "=AND(I2<>\"\", I2>=TODAY(), I2<=TODAY()+7)"}]},
+                                "condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": "=AND(H5<>\"\", H5>=TODAY(), H5<=TODAY()+7)"}]},
                                 "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.8}}
                             }
                         },
@@ -590,9 +636,9 @@ class PortfolioWriter:
             # 4. Currency Formatting
             money_cols = []
             if tab == TAB_STOCKS:
-                money_cols = [5, 6, 7, 10, 11, 14] # Price, Total, Fee, Realized P/L, SGD, Summary SGD
+                money_cols = [5, 6, 7, 10, 11] # Price, Total, Fee, Realized P/L, SGD
             elif tab == TAB_OPTIONS:
-                money_cols = [6, 10, 11, 12, 15, 16, 19] # Strike, Premium, Total, Fee, P/L, SGD, Summary SGD
+                money_cols = [5, 9, 10, 11, 14, 15] # Strike, Premium, Total, Fee, P/L, SGD
             elif tab == TAB_TRANSACTIONS:
                 money_cols = [3, 5] # Amount, Amount (SGD)
                 
@@ -694,7 +740,6 @@ def build_option_row(
         trade.date.isoformat(),
         trade.broker.value,
         trade.strategy,
-        trade.direction.value if trade.direction else "",
         trade.underlying,
         trade.option_type.value,
         _fmt(trade.strike),
