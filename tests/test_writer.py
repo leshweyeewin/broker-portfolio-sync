@@ -234,7 +234,7 @@ def test_col_letter_double():
 def test_col_letter_matches_header_widths():
     assert _col_letter(len(TRANSACTIONS_HEADERS)) == "H"
     assert _col_letter(len(STOCKS_HEADERS)) == "M"
-    assert _col_letter(len(OPTIONS_HEADERS)) == "R"
+    assert _col_letter(len(OPTIONS_HEADERS)) == "Q"  # Direction column removed
 
 
 # --------------------------------------------------------------------------- #
@@ -273,7 +273,8 @@ def test_ensure_tabs_writes_headers():
     writer = PortfolioWriter(client)
     writer.ensure_tabs()
     stocks_rows = client.rows(TAB_STOCKS)
-    assert stocks_rows[0] == [str(h) for h in STOCKS_HEADERS]
+    # Stocks/Options carry a summary block in rows 1-3; headers live on row 4.
+    assert stocks_rows[3] == [str(h) for h in STOCKS_HEADERS]
 
 
 def test_ensure_tabs_idempotent():
@@ -282,8 +283,8 @@ def test_ensure_tabs_idempotent():
     writer = PortfolioWriter(client)
     writer.ensure_tabs()
     writer.ensure_tabs()
-    # Only one header row per tab
-    assert len(client.rows(TAB_STOCKS)) == 1
+    # Stocks: 3 summary rows + 1 header row; Transactions: 1 header row.
+    assert len(client.rows(TAB_STOCKS)) == 4
     assert len(client.rows(TAB_TRANSACTIONS)) == 1
 
 
@@ -394,7 +395,7 @@ def test_upsert_stocks_new_row():
     result = writer.upsert_stocks([row])
 
     assert result.added == 1
-    data = client.data_rows(TAB_STOCKS)
+    data = client.data_rows(TAB_STOCKS, header_rows=4)
     assert len(data) == 1
     assert data[0][STOCKS_HEADERS.index("Ticker")] == "AAPL"
 
@@ -411,7 +412,7 @@ def test_upsert_stocks_idempotent():
 
     assert result2.added == 0
     assert result2.updated == 0
-    assert len(client.data_rows(TAB_STOCKS)) == 1
+    assert len(client.data_rows(TAB_STOCKS, header_rows=4)) == 1
 
 
 def test_upsert_stocks_realized_pl_written():
@@ -426,7 +427,7 @@ def test_upsert_stocks_realized_pl_written():
                           realized_pl_sgd=Decimal("337.50"))
     writer.upsert_stocks([row])
 
-    data = client.data_rows(TAB_STOCKS)
+    data = client.data_rows(TAB_STOCKS, header_rows=4)
     pl_idx = STOCKS_HEADERS.index("Realized P/L")
     pl_sgd_idx = STOCKS_HEADERS.index("Realized P/L (SGD)")
     assert float(data[0][pl_idx]) == pytest.approx(250.0)
@@ -442,7 +443,7 @@ def test_upsert_stocks_multiple_tickers_no_cross_contamination():
     msft = build_stock_row(_stock_trade("MSFT", fill_id="m1"))
     writer.upsert_stocks([aapl, msft])
 
-    data = client.data_rows(TAB_STOCKS)
+    data = client.data_rows(TAB_STOCKS, header_rows=4)
     assert len(data) == 2
     tickers = {row[STOCKS_HEADERS.index("Ticker")] for row in data}
     assert tickers == {"AAPL", "MSFT"}
@@ -462,7 +463,7 @@ def test_upsert_options_new_row():
     result = writer.upsert_options([row])
 
     assert result.added == 1
-    data = client.data_rows(TAB_OPTIONS)
+    data = client.data_rows(TAB_OPTIONS, header_rows=4)
     assert len(data) == 1
     assert data[0][OPTIONS_HEADERS.index("Stock")] == "AAPL"
 
@@ -479,7 +480,7 @@ def test_upsert_options_idempotent():
 
     assert result2.added == 0
     assert result2.updated == 0
-    assert len(client.data_rows(TAB_OPTIONS)) == 1
+    assert len(client.data_rows(TAB_OPTIONS, header_rows=4)) == 1
 
 
 # --------------------------------------------------------------------------- #

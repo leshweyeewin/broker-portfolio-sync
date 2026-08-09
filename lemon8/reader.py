@@ -22,6 +22,7 @@ from sheets.writer import (
     OPTIONS_HEADERS,
     TAB_STOCKS,
     TAB_OPTIONS,
+    DATA_HEADER_ROWS,
     _col_letter,
 )
 
@@ -93,12 +94,16 @@ def read_closed_positions(client) -> list[ClosedPosition]:
 def _read_tab(client, tab: str, headers: list[str], *, asset: str) -> list[ClosedPosition]:
     col_letter = _col_letter(len(headers))
     values = client.get_values(f"{tab}!A:{col_letter}")
-    if not values:
+
+    # Stocks/Options carry a summary block above the column headers, so the
+    # header isn't row 0 — it's on the row the writer records in DATA_HEADER_ROWS.
+    header_idx = DATA_HEADER_ROWS.get(tab, 1) - 1
+    if len(values) <= header_idx:
         return []
 
-    idx = _index_map(tab, values[0])
+    idx = _index_map(tab, values[header_idx])
     positions: list[ClosedPosition] = []
-    for row in values[1:]:
+    for row in values[header_idx + 1:]:
         if _cell(row, idx["Status"]) != CLOSED_STATUS:
             continue
         positions.append(_build_position(row, idx, asset=asset))

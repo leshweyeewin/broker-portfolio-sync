@@ -320,7 +320,7 @@ class OptionTrade:
         else:
             object.__setattr__(self, "total", dec(self.total))
         if not self.strategy:
-            prefix = "Long" if self.action in (OptionAction.BUY, OptionAction.BUY_TO_OPEN, OptionAction.BUY_TO_CLOSE) else "Short"
+            prefix = "Long" if self.action.is_acquisition else "Short"
             object.__setattr__(self, "strategy", f"{prefix} {self.option_type.value.capitalize()}")
             
         if not self.dedup_key:

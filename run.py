@@ -129,58 +129,18 @@ def _realized_sgd_by_key(result: FifoResult, fx: FxRates) -> dict[str, Decimal]:
     }
 
 
-def _build_pl_formula(
-    r: Realization,
-    close_key: str,
-    row_map: dict[str, int],
-    col_total: str,
-    col_fee: str
-) -> str:
-    """Dynamically generate a Google Sheets formula for a Realization."""
-    close_row = row_map[close_key]
-    close_total_ref = f"{col_total}{close_row}"
-    close_fee_ref = f"{col_fee}{close_row}"
-    
-    parts = []
-    for ml in r.components:
-        open_row = row_map.get(ml.opening_key)
-        if not open_row:
-            continue
-            
-        ratio_str = f" * ({ml.qty}/{ml.opening_qty})" if ml.qty != ml.opening_qty else ""
-        open_total_ref = f"{col_total}{open_row}"
-        open_fee_ref = f"{col_fee}{open_row}"
-        
-        if ml.is_long:
-            parts.append(f"-({open_total_ref}{ratio_str})")
-        else:
-            parts.append(f"+({open_total_ref}{ratio_str})")
-            
-        parts.append(f"-({open_fee_ref}{ratio_str})")
-        
-    is_short_close = any(not ml.is_long for ml in r.components)
-    if is_short_close:
-        return f"=-{close_total_ref}-{close_fee_ref}" + "".join(parts)
-    else:
-        return f"={close_total_ref}-{close_fee_ref}" + "".join(parts)
-
-
 def _stock_rows(stocks: list[StockTrade], result: FifoResult, get_sgd: Callable[[str], Optional[Decimal]]) -> list[list[Any]]:
     by_key = result.realized_by_key
-    row_map = {t.dedup_key: idx + 2 for idx, t in enumerate(stocks)} # Header is row 1
-    
     rows = []
     for t in stocks:
         r = by_key.get(t.dedup_key)
         is_closed = (t.dedup_key in result.fully_closed_keys) or (r is not None)
-        status_str = "Closed" if is_closed else ""
-        
+        status_str = "Closed" if is_closed else "Open"
         if r is not None:
-            formula = _build_pl_formula(r, t.dedup_key, row_map, "G", "H")
             rows.append(
                 build_stock_row(
                     t, status=status_str,
-                    realized_pl=formula,
+                    realized_pl=r.realized_pl,
                     realized_pl_sgd=get_sgd(t.dedup_key),
                 )
             )
@@ -191,20 +151,16 @@ def _stock_rows(stocks: list[StockTrade], result: FifoResult, get_sgd: Callable[
 
 def _option_rows(options: list[OptionTrade], result: FifoResult, get_sgd: Callable[[str], Optional[Decimal]]) -> list[list[Any]]:
     by_key = result.realized_by_key
-    row_map = {t.dedup_key: idx + 2 for idx, t in enumerate(options)}
-    
     rows = []
     for t in options:
         r = by_key.get(t.dedup_key)
         is_closed = (t.dedup_key in result.fully_closed_keys) or (r is not None)
-        status_str = "Closed" if is_closed else ""
-        
+        status_str = "Closed" if is_closed else "Open"
         if r is not None:
-            formula = _build_pl_formula(r, t.dedup_key, row_map, "K", "L")
             rows.append(
                 build_option_row(
                     t, status=status_str,
-                    realized_pl=formula,
+                    realized_pl=r.realized_pl,
                     realized_pl_sgd=get_sgd(t.dedup_key),
                 )
             )

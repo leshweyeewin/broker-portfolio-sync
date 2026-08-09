@@ -61,11 +61,13 @@ def _order(**kw):
 
 
 class FakeClient:
-    def __init__(self, stock_orders=None, option_orders=None, positions=None, fund_df=None):
+    def __init__(self, stock_orders=None, option_orders=None, positions=None,
+                 fund_df=None, funding_df=None):
         self._stock_orders = stock_orders or []
         self._option_orders = option_orders or []
         self._positions = positions or {}
         self._fund_df = fund_df
+        self._funding_df = funding_df
 
     def get_filled_orders(self, sec_type=None, **kw):
         return self._stock_orders if str(sec_type).endswith("STK") else self._option_orders
@@ -76,6 +78,9 @@ class FakeClient:
 
     def get_fund_details(self, seg_types=None, start_date=None, **kw):
         return self._fund_df
+
+    def get_funding_history(self, seg_type=None, **kw):
+        return self._funding_df
 
 
 def _adapter(client):
@@ -175,6 +180,41 @@ def test_cash_movements_classification():
     mystery = next(m for m in moves if "unmapped" in m.note)
     assert mystery.type is CashType.INTERNAL_TRANSFER
     assert not mystery.type.is_external_capital
+
+
+def test_cash_movements_funding_history_deposits_withdrawals():
+    """Deposits/withdrawals come from get_funding_history (§8), a different
+    endpoint than get_fund_details (which carries fees/dividends only)."""
+    funding = pd.DataFrame(
+        [
+            {"id": 100, "currency": "SGD", "amount": 5000.0, "type_desc": "Deposit", "created_at": _ms(2026, 2, 1)},
+            {"id": 101, "currency": "USD", "amount": 200.0, "type_desc": "Withdraw", "created_at": _ms(2026, 2, 5)},
+            {"id": 102, "currency": "USD", "amount": 9.0, "type_desc": "Interest", "created_at": _ms(2026, 2, 6)},
+        ]
+    )
+    a = _adapter(FakeClient(funding_df=funding))
+    moves = a.fetch_cash_movements(since=None)
+    # Only deposit + withdraw are mapped; the unrelated row is ignored.
+    assert len(moves) == 2
+    dep = next(m for m in moves if m.type is CashType.DEPOSIT)
+    wd = next(m for m in moves if m.type is CashType.WITHDRAWAL)
+    assert dep.amount == Decimal("5000.0") and dep.currency == "SGD"
+    assert dep.date == date(2026, 2, 1)
+    assert wd.amount == Decimal("200.0")  # stored positive
+
+
+def test_cash_movements_funding_history_failure_is_swallowed():
+    """A broken/absent funding endpoint must not abort the whole cash fetch."""
+    class NoFunding(FakeClient):
+        def get_funding_history(self, seg_type=None, **kw):
+            raise RuntimeError("no funding access on this account")
+
+    df = pd.DataFrame(
+        [{"id": 1, "currency": "SGD", "amount": 12.5, "fund_type": "CASH_DIVIDEND", "settled_time": _ms(2026, 1, 4)}]
+    )
+    a = _adapter(NoFunding(fund_df=df))
+    moves = a.fetch_cash_movements(since=None)  # must not raise
+    assert len(moves) == 1 and moves[0].type is CashType.DIVIDEND
 
 
 def test_cash_movements_disabled_returns_empty():

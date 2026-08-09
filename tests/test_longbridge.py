@@ -47,6 +47,18 @@ class FakePosition:
         self.currency = currency
 
 
+class FakePositionChannel:
+    def __init__(self, positions):
+        self.account_channel = "lb"
+        self.positions = positions
+
+
+class FakePositionsResponse:
+    """Mirrors longport's StockPositionsResponse (positions grouped by channel)."""
+    def __init__(self, positions):
+        self.channels = [FakePositionChannel(positions)]
+
+
 class FakeCashFlow:
     def __init__(self, balance, business_time, transaction_flow_name, description, business_type=1, currency="USD"):
         self.balance = balance
@@ -96,9 +108,9 @@ class TestLongbridgeAdapter(unittest.TestCase):
         self.assertEqual(t2.ticker, "TSLA")
 
     def test_fetch_positions(self):
-        self.mock_client.stock_positions.return_value = [
+        self.mock_client.stock_positions.return_value = FakePositionsResponse([
             FakePosition("MSFT.US", "50", "300.00"),
-        ]
+        ])
 
         positions = self.adapter.fetch_positions()
         

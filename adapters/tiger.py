@@ -34,6 +34,7 @@ Assumptions surfaced (per the spec's "surface the assumption" instruction):
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from dataclasses import dataclass
@@ -66,6 +67,8 @@ from adapters.base import (
     StockTrade,
     dec,
 )
+
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Normalization tables
@@ -374,8 +377,22 @@ class TigerAdapter:
 
     # -- cash movements (§8, best-effort per §14) --------------------------- #
     def fetch_cash_movements(self, since: date | None) -> list[CashMovement]:
+        """Cash flows from two distinct Tiger endpoints (§8):
+
+        * ``get_fund_details`` — fees, dividends, interest (no real deposits).
+        * ``get_funding_history`` — actual deposits and withdrawals.
+
+        Each source is fetched independently so an empty or unavailable one
+        never suppresses the other.
+        """
         if not self._cash_enabled:
             return []
+        movements = self._fund_detail_movements(since)
+        movements += self._funding_history_movements()
+        return movements
+
+    def _fund_detail_movements(self, since: date | None) -> list[CashMovement]:
+        """Fees / dividends / interest from ``get_fund_details``."""
         df = self._client.get_fund_details(
             seg_types=[SegmentType.SEC],
             start_date=since.isoformat() if since else None,
@@ -434,35 +451,43 @@ class TigerAdapter:
                     fill_id=str(row[id_col]) if id_col is not None else None,
                 )
             )
-            
-        # 2. Fetch deposits and withdrawals via get_funding_history
+        return movements
+
+    def _funding_history_movements(self) -> list[CashMovement]:
+        """Deposits / withdrawals from ``get_funding_history``.
+
+        Best-effort (§14): not every account can read this endpoint, so a
+        failure is logged and skipped rather than aborting the cash fetch.
+        """
         try:
             funding_df = self._client.get_funding_history()
-            if funding_df is not None and not getattr(funding_df, "empty", True):
-                for _, row in funding_df.iterrows():
-                    raw_type = str(row.get('type_desc', '')).strip().lower()
-                    if raw_type == 'deposit':
-                        cash_type = CashType.DEPOSIT
-                    elif raw_type == 'withdraw':
-                        cash_type = CashType.WITHDRAWAL
-                    else:
-                        continue
-                        
-                    movements.append(
-                        CashMovement(
-                            date=self._cash_date(row['created_at']),
-                            broker=Broker.TIGER,
-                            type=cash_type,
-                            amount=abs(dec(row['amount'])),
-                            currency=str(row['currency']),
-                            note=f"Tiger funding {raw_type}",
-                            fill_id=str(row['id']) if 'id' in row else None,
-                        )
-                    )
-        except Exception as e:
-            # Not all accounts may have access or funding history
-            log.warning("Could not fetch Tiger funding history: %s", e)
-            
+        except Exception as exc:
+            log.warning("Could not fetch Tiger funding history: %s", exc)
+            return []
+        if funding_df is None or getattr(funding_df, "empty", True):
+            return []
+
+        movements: list[CashMovement] = []
+        for _, row in funding_df.iterrows():
+            raw_type = str(row.get("type_desc", "")).strip().lower()
+            if raw_type == "deposit":
+                cash_type = CashType.DEPOSIT
+            elif raw_type == "withdraw":
+                cash_type = CashType.WITHDRAWAL
+            else:
+                continue
+
+            movements.append(
+                CashMovement(
+                    date=self._cash_date(row["created_at"]),
+                    broker=Broker.TIGER,
+                    type=cash_type,
+                    amount=abs(dec(row["amount"])),
+                    currency=str(row["currency"]),
+                    note=f"Tiger funding {raw_type}",
+                    fill_id=str(row["id"]) if "id" in row else None,
+                )
+            )
         return movements
 
     # -- small field helpers ------------------------------------------------ #

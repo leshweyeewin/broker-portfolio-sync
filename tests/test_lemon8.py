@@ -36,22 +36,29 @@ from sheets.writer import (
 from tests.test_writer import FakeSheetClient
 
 
+# Stocks/Options tabs carry a 3-row summary block above the header row (row 4),
+# exactly as the writer lays them out.
+_SUMMARY_BLOCK = [["Summary", ""], ["Total P/L", ""], ["Total Fees", ""]]
+
+
 def _setup_sheet_with_closed_rows() -> FakeSheetClient:
     client = FakeSheetClient([TAB_STOCKS, TAB_OPTIONS])
 
-    # Stock rows
-    stocks = [
+    # Stock rows (header on row 4, data from row 5)
+    stocks = _SUMMARY_BLOCK + [
         [str(h) for h in STOCKS_HEADERS],
         ["2025-03-14", "Tiger", "AAPL", "BUY", 10, 150.0, -1500.0, 1.5, "USD", "Open", "", "", "key1"],
         ["2025-03-15", "Tiger", "AAPL", "SELL", 10, 180.0, 1800.0, 1.5, "USD", "Closed", 300.0, 405.0, "key2"],
     ]
     client.batch_update_values([{"range": f"{TAB_STOCKS}!A1", "values": stocks}])
 
-    # Option rows
-    options = [
+    # Option rows — no Direction column (Date, Broker, Strategy, Stock, Type,
+    # Strike, Qty, Expiry, Action, Premium, Total, Fee, Currency, Status, P/L,
+    # P/L (SGD), _dedup_key)
+    options = _SUMMARY_BLOCK + [
         [str(h) for h in OPTIONS_HEADERS],
-        ["2025-03-14", "Tiger", "Short Put", "BULLISH", "TSLA", "PUT", 200.0, 1, "2025-04-18", "SELL", 5.0, 500.0, 1.0, "USD", "Open", "", "", "key3"],
-        ["2025-03-20", "Tiger", "Short Put", "BULLISH", "TSLA", "PUT", 200.0, 1, "2025-04-18", "BUY", 1.0, -100.0, 1.0, "USD", "Closed", 400.0, 540.0, "key4"],
+        ["2025-03-14", "Tiger", "Short Put", "TSLA", "PUT", 200.0, 1, "2025-04-18", "SELL", 5.0, 500.0, 1.0, "USD", "Open", "", "", "key3"],
+        ["2025-03-20", "Tiger", "Short Put", "TSLA", "PUT", 200.0, 1, "2025-04-18", "BUY", 1.0, -100.0, 1.0, "USD", "Closed", 400.0, 540.0, "key4"],
     ]
     client.batch_update_values([{"range": f"{TAB_OPTIONS}!A1", "values": options}])
 
@@ -89,8 +96,9 @@ def test_read_closed_positions():
 
 def test_read_closed_positions_missing_header_raises():
     client = FakeSheetClient([TAB_STOCKS])
-    bad_headers = [["Broker", "Ticker", "Status"]]  # Missing Realized P/L etc.
-    client.batch_update_values([{"range": f"{TAB_STOCKS}!A1", "values": bad_headers}])
+    # Header on row 4 (after the summary block) but missing Realized P/L etc.
+    rows = _SUMMARY_BLOCK + [["Broker", "Ticker", "Status"]]
+    client.batch_update_values([{"range": f"{TAB_STOCKS}!A1", "values": rows}])
 
     with pytest.raises(SheetReadError) as exc_info:
         read_closed_positions(client)
