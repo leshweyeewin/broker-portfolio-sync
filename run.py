@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -364,8 +365,18 @@ def _build_adapters() -> list[BrokerAdapter]:
         return LongbridgeAdapter(LongbridgeCredentials.from_env())
 
     def _moomoo() -> BrokerAdapter:
+        import socket
         from adapters.moomoo import MooMooAdapter, MooMooCredentials
-        return MooMooAdapter(MooMooCredentials.from_env())
+        creds = MooMooCredentials.from_env()
+        if "MOOMOO_HOST" not in os.environ:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            try:
+                sock.connect((creds.host, creds.port))
+                sock.close()
+            except OSError:
+                raise ConfigError(f"OpenD gateway at {creds.host}:{creds.port} is not running")
+        return MooMooAdapter(creds)
 
     _try("Tiger", _tiger)
     _try("Longbridge", _longbridge)

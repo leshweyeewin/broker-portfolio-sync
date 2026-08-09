@@ -2,7 +2,11 @@
 .env
 *.pem
 *.key
-service-account*.json
+*.properties
+tiger_openapi_config.properties
+*service*account*.json
+*credentials*.json
+*gcp*.json
 config/secrets*
 secrets/
 

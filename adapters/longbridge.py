@@ -1,4 +1,4 @@
-﻿"""Longbridge adapter (step 6 of the build order — BUILD_SPEC.md §3).
+"""Longbridge adapter (step 6 of the build order — BUILD_SPEC.md §3).
 
 Conforms to the :class:~adapters.base.BrokerAdapter protocol.
 
@@ -163,27 +163,28 @@ class LongbridgeAdapter:
         positions: list[Position] = []
         
         result = self._client.stock_positions()
-        if not result:
+        if not result or not result.channels:
             return positions
             
         today = datetime.now(tz=self._tz).date()
-        for pos in result:
-            qty = dec(pos.quantity)
-            if qty == 0:
-                continue
-                
-            positions.append(
-                Position(
-                    broker=Broker.LONGBRIDGE,
-                    asset_type=AssetType.STOCK,
-                    symbol=str(pos.symbol).split(".")[0],
-                    qty=qty,
-                    avg_cost=dec(pos.cost_price),
-                    currency=str(pos.currency),
-                    market_price=None, # SDK doesn't return market_price directly in position
-                    as_of=today,
+        for channel in result.channels:
+            for pos in channel.positions:
+                qty = dec(pos.quantity)
+                if qty == 0:
+                    continue
+                    
+                positions.append(
+                    Position(
+                        broker=Broker.LONGBRIDGE,
+                        asset_type=AssetType.STOCK,
+                        symbol=str(pos.symbol).split(".")[0],
+                        qty=qty,
+                        avg_cost=dec(pos.cost_price),
+                        currency=str(pos.currency),
+                        market_price=None, # SDK doesn't return market_price directly in position
+                        as_of=today,
+                    )
                 )
-            )
         return positions
 
     # -- cash movements (§8, best-effort per §14) --------------------------- #

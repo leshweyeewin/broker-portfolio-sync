@@ -35,6 +35,7 @@ Assumptions surfaced (per the spec's "surface the assumption" instruction):
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -146,11 +147,30 @@ class TigerCredentials:
 
 
 def _resolve_private_key(private_key: str) -> str:
-    """Return PEM contents whether given inline PEM or a path to the key file."""
+    """Return PEM contents whether given inline PEM, a path to a .pem key file,
+    or a path to a tiger_openapi_config.properties file.
+    """
     if "-----BEGIN" in private_key:
         return private_key
+
+    content = private_key
+    if os.path.exists(private_key):
+        content = Path(private_key).read_text(encoding="utf-8")
+        if "-----BEGIN" in content:
+            return content
+
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("private_key_pk1="):
+            pk1 = line.split("=", 1)[1].strip()
+            return f"-----BEGIN RSA PRIVATE KEY-----\n{pk1}\n-----END RSA PRIVATE KEY-----"
+        if line.startswith("private_key_pk8="):
+            pk8 = line.split("=", 1)[1].strip()
+            return f"-----BEGIN PRIVATE KEY-----\n{pk8}\n-----END PRIVATE KEY-----"
+
     if os.path.exists(private_key):
         return read_private_key(private_key)
+
     raise ValueError(
         "TigerCredentials.private_key is neither inline PEM nor an existing "
         "file path; provide the RSA private key contents or a valid path"
@@ -205,11 +225,11 @@ class TigerAdapter:
         return TradeClient(config)
 
     # -- time helpers ------------------------------------------------------- #
-    def _since_to_ms(self, since: date | None) -> Optional[int]:
+    def _since_to_ms(self, since: date | None) -> int:
         """Local-midnight of ``since`` as epoch milliseconds (Tiger's start_time
-        unit). ``None`` -> ``None`` (let the API apply its default window)."""
+        unit). Defaults to 2020-01-01 if None to satisfy API requirement."""
         if since is None:
-            return None
+            since = date(2020, 1, 1)
         start = datetime(since.year, since.month, since.day, tzinfo=self._tz)
         return int(start.timestamp() * 1000)
 
@@ -270,18 +290,40 @@ class TigerAdapter:
         return trades
 
     def _get_filled_orders(self, sec_type: SecurityType, since: date | None) -> list:
-        """Fetch filled orders of a security type since a date, failing loud."""
-        result = self._client.get_filled_orders(
-            sec_type=sec_type,
-            market=Market.ALL,
-            start_time=self._since_to_ms(since),
-            limit=1000,
-        )
-        if result is None:
-            # None means the API returned no envelope at all — genuinely nothing
-            # to report for this window (empty history), not an error.
-            return []
-        return list(result)
+        """Fetch filled orders of a security type since a date, chunking into <=89-day windows."""
+        from datetime import timedelta
+        today = datetime.now(tz=self._tz).date()
+        start_date = since if since else date(today.year - 1, today.month, today.day)
+
+        all_orders = []
+        cur_start = start_date
+        while cur_start <= today:
+            cur_end = min(cur_start + timedelta(days=89), today)
+            start_ms = int(datetime(cur_start.year, cur_start.month, cur_start.day, tzinfo=self._tz).timestamp() * 1000)
+            end_ms = int(datetime(cur_end.year, cur_end.month, cur_end.day, 23, 59, 59, tzinfo=self._tz).timestamp() * 1000)
+
+            res = self._client.get_filled_orders(
+                sec_type=sec_type,
+                market=Market.ALL,
+                start_time=start_ms,
+                end_time=end_ms,
+                limit=1000,
+            )
+            if res:
+                all_orders.extend(list(res))
+            cur_start = cur_end + timedelta(days=1)
+
+        seen_ids = set()
+        unique_orders = []
+        for order in all_orders:
+            oid = self._order_id(order)
+            if oid:
+                if oid in seen_ids:
+                    continue
+                seen_ids.add(oid)
+            unique_orders.append(order)
+
+        return unique_orders
 
     # -- positions (seeding + reconciliation, §5/§9) ------------------------ #
     def fetch_positions(self) -> list[Position]:

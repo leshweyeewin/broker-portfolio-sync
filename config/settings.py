@@ -1,4 +1,4 @@
-﻿"""Project-wide settings — reads secrets from env vars or Secret Manager path.
+"""Project-wide settings — reads secrets from env vars or Secret Manager path.
 
 All credentials are injected via environment variables. Nothing is hardcoded.
 The function never raises on import — only raises when a required setting is
@@ -10,6 +10,21 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+
+
+def _load_dotenv_if_exists() -> None:
+    env_file = Path(".env")
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k and k not in os.environ:
+                os.environ[k] = v
+
+_load_dotenv_if_exists()
 
 
 class ConfigError(ValueError):
