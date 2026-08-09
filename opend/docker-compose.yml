@@ -1,0 +1,46 @@
+# Local dev: run the OpenD gateway + the sync job together.
+# The job reaches OpenD over the shared compose network at host "opend".
+#
+# Usage:
+#   1. Provide OpenD (see opend/Dockerfile): either set OPEND_URL in .env or
+#      vendor opend/vendor/OpenD.tar.gz.
+#   2. Put secrets in a .env file next to this compose (gitignored):
+#        MOOMOO_LOGIN_ACCOUNT=...
+#        MOOMOO_LOGIN_PWD_MD5=...      # md5 of the unlock password
+#   3. docker compose -f opend/docker-compose.yml up --build
+#
+# In production this maps to a Cloud Run multi-container service: the OpenD
+# sidecar and the job container share localhost, so the job uses MOOMOO_HOST=127.0.0.1.
+
+services:
+  opend:
+    build:
+      context: .
+      args:
+        OPEND_URL: "${OPEND_URL:-}"
+    environment:
+      MOOMOO_LOGIN_ACCOUNT: "${MOOMOO_LOGIN_ACCOUNT:?set in .env}"
+      MOOMOO_LOGIN_PWD_MD5: "${MOOMOO_LOGIN_PWD_MD5:?set in .env}"
+      MOOMOO_API_IP: "0.0.0.0"
+      MOOMOO_API_PORT: "11111"
+    ports:
+      - "11111:11111"     # optional: expose to the host for debugging
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/11111'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  job:
+    build:
+      context: ..          # repo root (uses the top-level Dockerfile, step 9)
+    depends_on:
+      opend:
+        condition: service_healthy
+    environment:
+      MOOMOO_HOST: "opend"   # reach the gateway by service name on this network
+      MOOMOO_PORT: "11111"
+      MOOMOO_SECURITY_FIRM: "FUTUSG"
+      MOOMOO_MARKETS: "US,HK"
+    # Broker/Google secrets for the job also come from .env / Secret Manager.

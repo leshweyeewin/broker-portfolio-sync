@@ -1,7 +1,7 @@
 # Broker SDKs (see BUILD_SPEC.md §3)
 tigeropen        # Tiger Brokers (step 2 — implemented)
-longport       # Longbridge  (step 6 — not yet implemented)
-# futu-api       # MooMoo via OpenD gateway (step 8 — not yet implemented)
+longport       # Longbridge  (step 6 — implemented)
+moomoo-api     # MooMoo SG via OpenD gateway (step 8 — implemented; import name: `moomoo`)
 
 # Test tooling
 pytest

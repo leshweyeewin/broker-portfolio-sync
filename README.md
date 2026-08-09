@@ -21,15 +21,15 @@ legacy history (fresh start with cost-basis seeding).
 | 1 | Common schema + dataclasses | `adapters/base.py` | ✅ done |
 | 2 | Tiger adapter | `adapters/tiger.py` | ✅ done |
 | 3 | FIFO P/L engine | `core/fifo_pl.py` | ✅ done |
-| 4 | FX module (trade-date vs current, cached) | `core/fx.py` | ⬜ next |
-| 5 | Sheets writer (idempotent upsert) | `sheets/writer.py` | ⬜ |
-| 6 | Longbridge adapter | `adapters/longbridge.py` | ⬜ |
-| 7 | Seeding + reconciliation | `core/reconcile.py` | ⬜ |
-| 8 | MooMoo adapter + OpenD sidecar | `adapters/moomoo.py`, `opend/` | ⬜ |
-| 9 | Alerting + Run Log + Cloud Run/Scheduler | `alerting/`, `run.py` | ⬜ |
+| 4 | FX module (trade-date vs current, cached) | `core/fx.py` | ✅ done |
+| 5 | Sheets writer (idempotent upsert) | `sheets/writer.py` | ✅ done |
+| 6 | Longbridge adapter | `adapters/longbridge.py` | ✅ done |
+| 7 | Seeding + reconciliation | `core/reconcile.py` | ✅ done |
+| 8 | MooMoo adapter + OpenD sidecar | `adapters/moomoo.py`, `opend/` | ✅ done |
+| 9 | Alerting + Run Log + Cloud Run/Scheduler | `alerting/`, `run.py` | ⬜ next |
 | 10 | Lemon8 journal module | `lemon8/`, `skills/` | ⬜ |
 
-**31 tests passing.**
+**99 tests passing.**
 
 ---
 
@@ -206,22 +206,22 @@ broker-portfolio-sync/
 ├─ adapters/          # broker adapters + common schema
 │  ├─ base.py         # ✅ Protocol + dataclasses (the contract)
 │  ├─ tiger.py        # ✅ Tiger (tigeropen)
-│  ├─ longbridge.py   # ⬜ step 6
-│  └─ moomoo.py       # ⬜ step 8
+│  ├─ longbridge.py   # ✅ Longbridge (longport)
+│  └─ moomoo.py       # ✅ MooMoo (moomoo-api, via OpenD)
 ├─ core/              # pure pipeline logic
 │  ├─ fifo_pl.py      # ✅ FIFO realized/unrealized P/L
-│  ├─ fx.py           # ⬜ step 4 — trade-date vs current, cached
+│  ├─ fx.py           # ✅ trade-date vs current, cached (Frankfurter)
 │  ├─ normalize.py    # ⬜ centralize §8 rules
 │  ├─ dedup.py        # (dedup helpers currently in base.py)
-│  └─ reconcile.py    # ⬜ step 7 — post-write qty check
-├─ sheets/writer.py   # ⬜ step 5 — service-account auth, idempotent upsert
+│  └─ reconcile.py    # ✅ seeding + post-write qty check
+├─ sheets/writer.py   # ✅ service-account auth, idempotent upsert
 ├─ alerting/notify.py # ⬜ step 9 — Telegram / email
 ├─ lemon8/            # ⬜ step 10 — weekly journal module (read-only)
 ├─ skills/            # ⬜ step 10 — lemon8-journal-writer skill
 ├─ config/settings.py # secrets from env / Secret Manager
 ├─ run.py             # ⬜ entrypoint: fetch→normalize→compute→write→reconcile→log
 ├─ Dockerfile         # ⬜ job container
-├─ opend/             # ⬜ MooMoo OpenD sidecar config
+├─ opend/             # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
 ├─ tests/             # ✅ FIFO, schema, adapter, dedup idempotency
 ├─ requirements.txt
 ├─ BUILD_SPEC.md      # (external link — source of truth)

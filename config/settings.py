@@ -111,3 +111,21 @@ def get_longbridge_credentials() -> dict:
         "app_secret": _required("LONGBRIDGE_APP_SECRET"),
         "access_token": _required("LONGBRIDGE_ACCESS_TOKEN"),
     }
+
+
+def get_moomoo_settings() -> dict:
+    """Return MooMoo OpenD-gateway connection settings from env vars.
+
+    These describe how to reach the OpenD sidecar, not broker secrets — the
+    broker login lives inside OpenD (see opend/README.md). All optional with
+    sensible defaults, so a missing var never blocks the other broker legs.
+    """
+    markets = _optional("MOOMOO_MARKETS", "US,HK")
+    return {
+        "host": _optional("MOOMOO_HOST", "127.0.0.1"),
+        "port": int(_optional("MOOMOO_PORT", "11111")),
+        "security_firm": _optional("MOOMOO_SECURITY_FIRM", "FUTUSG"),
+        "trd_env": _optional("MOOMOO_TRD_ENV", "REAL"),
+        "acc_id": int(_optional("MOOMOO_ACC_ID", "0")),
+        "markets": tuple(m.strip().upper() for m in markets.split(",") if m.strip()),
+    }

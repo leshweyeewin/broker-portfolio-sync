@@ -6,6 +6,9 @@ service-account*.json
 config/secrets*
 secrets/
 
+# Proprietary OpenD binary — fetched at build time, never committed (§9)
+opend/vendor/
+
 # Python
 .venv/
 __pycache__/
