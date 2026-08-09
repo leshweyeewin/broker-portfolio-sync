@@ -131,7 +131,7 @@ class LongbridgeAdapter:
                     ticker=str(order.symbol).split(".")[0], # Longbridge uses AAPL.US
                     action=StockAction.BUY if order.side == OrderSide.Buy else StockAction.SELL,
                     qty=qty,
-                    price=dec(order.executed_price),
+                    price=dec(order.executed_price or order.price or "0"),
                     fee=fee,
                     currency=str(order.currency),
                     fill_id=str(order.order_id),
