@@ -18,8 +18,12 @@ schema. Field mapping was derived against the installed SDK surface:
   code). Short positions are returned with ``position_side == SHORT`` and are
   **signed negative** so they line up with the FIFO engine's signed holdings and
   with :func:`core.reconcile.reconcile`.
-* Cash movements: the SDK exposes **no** deposit/withdrawal history endpoint, so
-  this returns ``[]`` — MooMoo cash flows are hand-entered (§14 fallback).
+* Cash movements: MooMoo *does* expose ``get_acc_cash_flow``, but it has no
+  Deposit/Withdrawal classification — verified against a live SG account, real
+  funding surfaces only as ``Auto Currency Exchange`` ("TRANSFER FROM UNIVERSAL
+  SECURITIES ACCOUNT") and an ambiguous ``Others`` bucket dominated by
+  trade-settlement IN/OUT pairs. Auto-classifying that would corrupt Net Capital
+  In, so this returns ``[]`` and MooMoo cash flows are hand-entered (§14 fallback).
 
 MooMoo queries are read-only, so no ``unlock_trade`` (trading password) is
 needed. Every query returns ``(ret_code, data)``; a non-OK code raises
@@ -322,8 +326,11 @@ class MooMooAdapter:
 
     # -- cash movements ----------------------------------------------------- #
     def fetch_cash_movements(self, since: date | None) -> list[CashMovement]:
-        """MooMoo's SDK has no deposit/withdrawal history endpoint, so cash flows
-        are hand-entered (§14). Always returns an empty list."""
+        """Always returns an empty list — MooMoo cash flows are hand-entered (§14).
+
+        ``get_acc_cash_flow`` exists but exposes no reliable Deposit/Withdrawal
+        type (see module docstring), so there is nothing safe to auto-classify.
+        """
         return []
 
     # -- field helpers ------------------------------------------------------ #
