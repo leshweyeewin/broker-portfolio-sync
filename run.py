@@ -145,7 +145,7 @@ def _stock_rows(
                 )
             )
         else:
-            rows.append(build_stock_row(t, status="Open"))
+            rows.append(build_stock_row(t, status=""))
     return rows
 
 
@@ -165,7 +165,7 @@ def _option_rows(
                 )
             )
         else:
-            rows.append(build_option_row(t, status="Open"))
+            rows.append(build_option_row(t, status=""))
     return rows
 
 
