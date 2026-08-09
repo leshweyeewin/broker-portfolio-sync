@@ -122,7 +122,7 @@ class LongbridgeAdapter:
             detail = self._client.order_detail(order.order_id)
             fee = Decimal("0")
             if detail and detail.charge_detail:
-                fee = dec(detail.charge_detail.total_amount)
+                fee = dec(detail.charge_detail.total_amount or "0")
 
             trades.append(
                 StockTrade(
