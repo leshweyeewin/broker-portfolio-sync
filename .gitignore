@@ -1,0 +1,14 @@
+# Secrets hygiene (§9) — never commit credentials or keys
+.env
+*.pem
+*.key
+service-account*.json
+config/secrets*
+secrets/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
