@@ -118,11 +118,21 @@ class LongbridgeAdapter:
             if qty == 0:
                 continue
                 
-            # Fetch fee from order details
-            detail = self._client.order_detail(order.order_id)
+            # Fetch fee from order details (with rate limit retry)
+            import time
             fee = Decimal("0")
-            if detail and detail.charge_detail:
-                fee = dec(detail.charge_detail.total_amount or "0")
+            for attempt in range(3):
+                try:
+                    detail = self._client.order_detail(order.order_id)
+                    if detail and detail.charge_detail:
+                        fee = dec(detail.charge_detail.total_amount or "0")
+                    break
+                except Exception as e:
+                    if "429" in str(e) and attempt < 2:
+                        time.sleep(2)  # Wait for rate limit to reset
+                    else:
+                        print(f"Warning: Could not fetch fee for {order.symbol} (ID: {order.order_id}): {e}")
+                        break
 
             trades.append(
                 StockTrade(
