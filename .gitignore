@@ -9,6 +9,10 @@ secrets/
 # Proprietary OpenD binary — fetched at build time, never committed (§9)
 opend/vendor/
 
+# Local working docs — kept on disk, not tracked
+BUILD_SPEC.md
+HANDOFF.md
+
 # Python
 .venv/
 __pycache__/

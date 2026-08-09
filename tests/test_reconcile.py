@@ -84,6 +84,7 @@ class TestReconcile(unittest.TestCase):
             Holding(
                 broker=Broker.TIGER,
                 instrument="AAPL",
+                symbol="AAPL",
                 qty=Decimal("100"),
                 avg_price=Decimal("150"),
                 open_fees=Decimal("0"),
@@ -111,6 +112,7 @@ class TestReconcile(unittest.TestCase):
             Holding(
                 broker=Broker.TIGER,
                 instrument="AAPL",
+                symbol="AAPL",
                 qty=Decimal("100"),
                 avg_price=Decimal("150"),
                 open_fees=Decimal("0"),
@@ -153,6 +155,79 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("Missing from pipeline", warnings[0])
         self.assertIn("TSLA", warnings[0])
+
+    def test_reconcile_option_match(self):
+        # Regression: option keys must match despite Holding.instrument being a
+        # formatted display string ("SPY 2026-03-20 400 Put") while the broker
+        # side uses the raw underlying symbol ("SPY"). Strike 400 vs 400.0 too.
+        holdings = [
+            Holding(
+                broker=Broker.TIGER,
+                instrument="SPY 2026-03-20 400 Put",
+                symbol="SPY",
+                qty=Decimal("-2"),
+                avg_price=Decimal("5"),
+                open_fees=Decimal("0"),
+                currency="USD",
+                multiplier=Decimal("100"),
+                option_type=OptionType.PUT,
+                strike=Decimal("400"),
+                expiry=date(2026, 3, 20),
+            )
+        ]
+        positions = [
+            Position(
+                broker=Broker.TIGER,
+                asset_type=AssetType.OPTION,
+                symbol="SPY",
+                qty=Decimal("-2"),
+                avg_cost=Decimal("5"),
+                currency="USD",
+                option_type=OptionType.PUT,
+                strike=Decimal("400.0"),  # different Decimal repr — must still match
+                expiry=date(2026, 3, 20),
+                multiplier=Decimal("100"),
+            )
+        ]
+
+        warnings = reconcile(holdings, positions)
+        self.assertEqual(warnings, [])
+
+    def test_reconcile_option_qty_mismatch(self):
+        holdings = [
+            Holding(
+                broker=Broker.TIGER,
+                instrument="SPY 2026-03-20 400 Put",
+                symbol="SPY",
+                qty=Decimal("-2"),
+                avg_price=Decimal("5"),
+                open_fees=Decimal("0"),
+                currency="USD",
+                multiplier=Decimal("100"),
+                option_type=OptionType.PUT,
+                strike=Decimal("400"),
+                expiry=date(2026, 3, 20),
+            )
+        ]
+        positions = [
+            Position(
+                broker=Broker.TIGER,
+                asset_type=AssetType.OPTION,
+                symbol="SPY",
+                qty=Decimal("-1"),  # broker shows one closed
+                avg_cost=Decimal("5"),
+                currency="USD",
+                option_type=OptionType.PUT,
+                strike=Decimal("400"),
+                expiry=date(2026, 3, 20),
+                multiplier=Decimal("100"),
+            )
+        ]
+
+        warnings = reconcile(holdings, positions)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Qty mismatch", warnings[0])
+        self.assertIn("SPY", warnings[0])
 
 if __name__ == "__main__":
     unittest.main()

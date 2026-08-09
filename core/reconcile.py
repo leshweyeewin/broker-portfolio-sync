@@ -13,6 +13,7 @@ This module bridges the physical broker state (Positions) and our pipeline state
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Sequence
 
 from adapters.base import (
@@ -89,6 +90,29 @@ def seed_positions(
     return stocks, options
 
 
+def _norm_strike(strike: Decimal) -> str:
+    """Normalize a strike so 200 and 200.0 compare equal on both sides."""
+    return format(Decimal(strike).normalize(), "f")
+
+
+def _instrument_key(
+    symbol: str,
+    option_type,
+    strike: Decimal | None,
+    expiry: date | None,
+) -> str:
+    """Canonical instrument key built from raw components (not display strings).
+
+    Both the pipeline (Holding) and broker (Position) sides feed their raw
+    underlying symbol + option identity through here, so the keys always match.
+    """
+    if option_type is None:
+        return symbol
+    assert strike is not None
+    assert expiry is not None
+    return f"{symbol}:{option_type.value}:{_norm_strike(strike)}:{expiry.isoformat()}"
+
+
 def reconcile(
     holdings: Sequence[Holding], positions: Sequence[Position]
 ) -> list[str]:
@@ -98,34 +122,18 @@ def reconcile(
     """
     warnings: list[str] = []
 
-    # Build maps of (broker, instrument_key) -> qty
-    # Instrument key matches what Holding uses in fifo_pl.py:
-    # Stock: ticker
-    # Option: ticker:type:strike:expiry
     pipeline_map: dict[tuple[str, str], float] = {}
     broker_map: dict[tuple[str, str], float] = {}
 
     for h in holdings:
-        # Holding uses a formatted instrument string like 'AAPL' or 'AAPL PUT 150.0 2025-04-18'
-        # But we also have raw fields on Holding. Let's construct a stable key.
-        if h.option_type is None:
-            key = h.instrument  # typically the ticker
-        else:
-            assert h.strike is not None
-            assert h.expiry is not None
-            key = f"{h.instrument}:{h.option_type.value}:{h.strike}:{h.expiry.isoformat()}"
-        
+        # Use the raw underlying symbol (not the formatted display instrument) so
+        # option keys line up with the broker side. Stocks: symbol == ticker.
+        key = _instrument_key(h.symbol, h.option_type, h.strike, h.expiry)
         pipeline_map[(h.broker.value, key)] = float(h.qty)
 
     for p in positions:
-        if p.asset_type == AssetType.STOCK:
-            key = p.symbol
-        else:
-            assert p.option_type is not None
-            assert p.strike is not None
-            assert p.expiry is not None
-            key = f"{p.symbol}:{p.option_type.value}:{p.strike}:{p.expiry.isoformat()}"
-        
+        otype = None if p.asset_type == AssetType.STOCK else p.option_type
+        key = _instrument_key(p.symbol, otype, p.strike, p.expiry)
         broker_map[(p.broker.value, key)] = broker_map.get((p.broker.value, key), 0.0) + float(p.qty)
 
     all_keys = set(pipeline_map.keys()) | set(broker_map.keys())

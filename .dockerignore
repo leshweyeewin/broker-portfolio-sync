@@ -1,0 +1,14 @@
+# Keep the job image slim and secret-free.
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+tests
+opend/vendor
+*.md
+.env
+*.pem
+*.key
+service-account*.json

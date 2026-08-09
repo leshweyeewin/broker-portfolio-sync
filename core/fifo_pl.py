@@ -97,7 +97,8 @@ class Holding:
     """Remaining open position for an instrument after all executions."""
 
     broker: Broker
-    instrument: str
+    instrument: str  # display key: ticker (stock) or contract string (option)
+    symbol: str  # raw underlying ticker — stable key for reconciliation
     qty: Decimal  # signed: positive long, negative short
     avg_price: Decimal  # weighted-average raw price of remaining lots (positive)
     open_fees: Decimal  # opening fees still attached to remaining lots
@@ -170,6 +171,7 @@ class _Fill:
 def _process_instrument(
     broker: Broker,
     instrument: str,
+    symbol: str,
     currency: str,
     multiplier: Decimal,
     fills: list[_Fill],
@@ -244,14 +246,14 @@ def _process_instrument(
             side = ev_side
 
     holding = _build_holding(
-        broker, instrument, currency, multiplier, side, lots,
+        broker, instrument, symbol, currency, multiplier, side, lots,
         option_type=option_type, strike=strike, expiry=expiry,
     )
     return realizations, holding
 
 
 def _build_holding(
-    broker, instrument, currency, multiplier, side, lots,
+    broker, instrument, symbol, currency, multiplier, side, lots,
     *, option_type, strike, expiry,
 ) -> Optional[Holding]:
     if not lots:
@@ -265,6 +267,7 @@ def _build_holding(
     return Holding(
         broker=broker,
         instrument=instrument,
+        symbol=symbol,
         qty=tot_qty * side,
         avg_price=avg_price,
         open_fees=open_fees,
@@ -329,7 +332,7 @@ def compute_stock_pl(trades: list[StockTrade]) -> FifoResult:
             _Fill(t.dedup_key, t.date, _stock_signed_qty(t), t.price, t.fee)
             for _, t in items
         ]
-        r, h = _process_instrument(broker, ticker, currency, Decimal("1"), fills)
+        r, h = _process_instrument(broker, ticker, ticker, currency, Decimal("1"), fills)
         realizations.extend(r)
         if h is not None:
             holdings.append(h)
@@ -370,7 +373,7 @@ def compute_option_pl(trades: list[OptionTrade]) -> FifoResult:
             for _, t in items
         ]
         r, h = _process_instrument(
-            broker, instrument, currency, multiplier, fills,
+            broker, instrument, underlying, currency, multiplier, fills,
             option_type=otype, strike=strike, expiry=expiry,
         )
         realizations.extend(r)

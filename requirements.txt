@@ -3,5 +3,11 @@ tigeropen        # Tiger Brokers (step 2 — implemented)
 longport       # Longbridge  (step 6 — implemented)
 moomoo-api     # MooMoo SG via OpenD gateway (step 8 — implemented; import name: `moomoo`)
 
+# Google Sheets writer (step 5) — service-account auth + Sheets v4 client
+google-api-python-client
+google-auth
+
+# Alerting (step 9) and FX use stdlib urllib only — no extra deps.
+
 # Test tooling
 pytest

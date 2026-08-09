@@ -26,10 +26,10 @@ legacy history (fresh start with cost-basis seeding).
 | 6 | Longbridge adapter | `adapters/longbridge.py` | ✅ done |
 | 7 | Seeding + reconciliation | `core/reconcile.py` | ✅ done |
 | 8 | MooMoo adapter + OpenD sidecar | `adapters/moomoo.py`, `opend/` | ✅ done |
-| 9 | Alerting + Run Log + Cloud Run/Scheduler | `alerting/`, `run.py` | ⬜ next |
-| 10 | Lemon8 journal module | `lemon8/`, `skills/` | ⬜ |
+| 9 | Alerting + Run Log + entrypoint + deploy | `alerting/`, `run.py`, `Dockerfile`, `DEPLOY.md` | ✅ done |
+| 10 | Lemon8 journal module | `lemon8/`, `skills/` | ⬜ next |
 
-**99 tests passing.**
+**115 tests passing.**
 
 ---
 
@@ -215,14 +215,15 @@ broker-portfolio-sync/
 │  ├─ dedup.py        # (dedup helpers currently in base.py)
 │  └─ reconcile.py    # ✅ seeding + post-write qty check
 ├─ sheets/writer.py   # ✅ service-account auth, idempotent upsert
-├─ alerting/notify.py # ⬜ step 9 — Telegram / email
+├─ alerting/notify.py # ✅ step 9 — Telegram (stdlib urllib, best-effort)
 ├─ lemon8/            # ⬜ step 10 — weekly journal module (read-only)
 ├─ skills/            # ⬜ step 10 — lemon8-journal-writer skill
 ├─ config/settings.py # secrets from env / Secret Manager
-├─ run.py             # ⬜ entrypoint: fetch→normalize→compute→write→reconcile→log
-├─ Dockerfile         # ⬜ job container
+├─ run.py             # ✅ entrypoint: fetch→[seed]→FIFO→FX→write→reconcile→log→alert
+├─ Dockerfile         # ✅ job container (+ .dockerignore)
+├─ DEPLOY.md          # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
 ├─ opend/             # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
-├─ tests/             # ✅ FIFO, schema, adapter, dedup idempotency
+├─ tests/             # ✅ FIFO, schema, adapter, dedup, run, notify (115)
 ├─ requirements.txt
 ├─ BUILD_SPEC.md      # (external link — source of truth)
 └─ HANDOFF.md         # continuation spec for the next builder
