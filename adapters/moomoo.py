@@ -75,8 +75,10 @@ _FILLED_STATUSES = [OrderStatus.FILLED_ALL, OrderStatus.FILLED_PART]
 # Market prefix -> native currency (used when a row has no currency column).
 _MARKET_CCY = {"US": "USD", "HK": "HKD", "SG": "SGD", "CN": "CNH"}
 
-# OCC-style option code body, e.g. "AAPL240119C00190000".
-_OPTION_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d{8})$")
+# Option code body: <UNDERLYING><YYMMDD><C|P><strike*1000>. MooMoo does NOT
+# zero-pad the strike to 8 digits (e.g. "SHOP260821C145000" = strike 145.00),
+# so the strike group is variable-length. OCC-style 8-digit codes still match.
+_OPTION_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+)$")
 
 _OPTION_MULTIPLIER = Decimal("100")  # §14 assumption
 
@@ -196,9 +198,14 @@ class MooMooAdapter:
     # -- executions --------------------------------------------------------- #
     def fetch_stock_executions(self, since: date | None) -> list[StockTrade]:
         trades: list[StockTrade] = []
-        for market in self._markets:
-            rows, fees = self._filled_orders_with_fees(market, since)
-            for row in rows:
+        seen: set[str] = set()  # OpenD ignores the market filter and returns all
+        for market in self._markets:                     # markets per query, so
+            rows, fees = self._filled_orders_with_fees(market, since)  # dedup by
+            for row in rows:                                          # order_id.
+                oid = str(row["order_id"])
+                if oid in seen:
+                    continue
+                seen.add(oid)
                 ticker, opt = self._parse_code(row["code"])
                 if opt is not None:
                     continue  # options handled separately
@@ -222,9 +229,14 @@ class MooMooAdapter:
 
     def fetch_option_executions(self, since: date | None) -> list[OptionTrade]:
         trades: list[OptionTrade] = []
+        seen: set[str] = set()  # dedup across markets (see fetch_stock_executions)
         for market in self._markets:
             rows, fees = self._filled_orders_with_fees(market, since)
             for row in rows:
+                oid = str(row["order_id"])
+                if oid in seen:
+                    continue
+                seen.add(oid)
                 underlying, opt = self._parse_code(row["code"])
                 if opt is None:
                     continue  # stocks handled separately
@@ -288,7 +300,8 @@ class MooMooAdapter:
     # -- positions (seeding + reconciliation, §5/§9) ------------------------ #
     def fetch_positions(self) -> list[Position]:
         positions: list[Position] = []
-        today = datetime.now().date()
+        seen: set[str] = set()  # OpenD returns all positions per market query;
+        today = datetime.now().date()          # dedup by code to avoid doubling.
         for market in self._markets:
             ctx = self._context(market)
             df = self._unwrap(
@@ -298,6 +311,10 @@ class MooMooAdapter:
             if df is None or df.empty:
                 continue
             for row in df.to_dict("records"):
+                code = str(row["code"])
+                if code in seen:
+                    continue
+                seen.add(code)
                 qty = dec(row["qty"])
                 if qty == 0:
                     continue

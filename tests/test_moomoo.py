@@ -183,6 +183,50 @@ def test_multi_market_queries_each_context():
     assert {t.dedup_key for t in trades} == {"MooMoo:U1", "MooMoo:H1"}
 
 
+def test_moomoo_option_code_variable_strike_parsed_as_option():
+    """MooMoo option codes aren't zero-padded to 8 strike digits
+    (e.g. US.SHOP260821C145000 = 145.00 strike) — they must still parse as
+    options, not fall through as stocks (real bug: shorts landed in Stocks)."""
+    ctx = FakeCtx(
+        positions=[
+            {"code": "US.SHOP260821C145000", "qty": -1, "cost_price": 7.13,
+             "nominal_price": 6.0, "currency": "USD", "position_side": "SHORT"},
+        ]
+    )
+    (p,) = _adapter(ctx).fetch_positions()
+    assert p.asset_type is AssetType.OPTION
+    assert p.symbol == "SHOP"
+    assert p.option_type is OptionType.CALL
+    assert p.strike == Decimal("145")
+    assert p.expiry == date(2026, 8, 21)
+    assert p.qty == Decimal("-1")  # short
+
+
+def test_positions_deduped_across_markets():
+    """OpenD returns the full position list for every market context, so querying
+    US+HK must not double-count (real bug: 11 positions became 22)."""
+    same = [
+        {"code": "US.SOXL", "qty": 100, "cost_price": 114.99, "nominal_price": 60.0,
+         "currency": "USD", "position_side": "LONG"},
+    ]
+    us, hk = FakeCtx(positions=same), FakeCtx(positions=same)
+    ctxs = {"US": us, "HK": hk}
+    adapter = MooMooAdapter(context_factory=lambda m: ctxs[m], markets=("US", "HK"))
+    positions = adapter.fetch_positions()
+    assert len(positions) == 1  # not 2
+    assert positions[0].symbol == "SOXL" and positions[0].qty == Decimal("100")
+
+
+def test_executions_deduped_across_markets():
+    same = [{"order_id": "X1", "code": "US.AAPL", "trd_side": "BUY", "dealt_qty": 1,
+             "dealt_avg_price": 10.0, "currency": "USD", "updated_time": "2026-01-02 10:00:00"}]
+    us, hk = FakeCtx(orders=same), FakeCtx(orders=same)
+    ctxs = {"US": us, "HK": hk}
+    adapter = MooMooAdapter(context_factory=lambda m: ctxs[m], markets=("US", "HK"))
+    trades = adapter.fetch_stock_executions(since=None)
+    assert len(trades) == 1  # same order_id from both markets -> one trade
+
+
 def test_close_closes_and_clears_contexts():
     """close() must release every cached context — leaked OpenD connections can
     wedge the gateway across runs (root cause of a real 6-hour hang)."""
