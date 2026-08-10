@@ -237,6 +237,37 @@ def test_all_brokers_failing_is_failed():
     assert len(notifier.messages) == 1
 
 
+def test_collect_broker_data_times_out_on_hang():
+    """A broker that blocks (no timeout of its own — e.g. a wedged OpenD) is
+    abandoned after timeout_s and reported as an error, never hangs the run."""
+    import time
+    from run import collect_broker_data
+
+    class HangingAdapter(FakeAdapter):
+        def fetch_stock_executions(self, since):
+            time.sleep(30)  # would block the whole run without the timeout guard
+            return []
+
+    data = collect_broker_data(HangingAdapter(Broker.MOOMOO.value), since=None, timeout_s=0.2)
+    assert data.error is not None
+    assert "timed out" in data.error
+    assert data.stocks == [] and data.positions == []
+
+
+def test_collect_broker_data_closes_adapter():
+    """The orchestrator calls close() so broker connections aren't leaked."""
+    from run import collect_broker_data
+
+    class ClosableAdapter(FakeAdapter):
+        closed = False
+        def close(self):
+            self.closed = True
+
+    a = ClosableAdapter(Broker.MOOMOO.value)
+    collect_broker_data(a, since=None)
+    assert a.closed is True
+
+
 def test_reconciliation_mismatch_surfaces_and_alerts():
     # Pipeline computes 10 shares from the buy; broker reports 15 -> mismatch.
     buy = StockTrade(

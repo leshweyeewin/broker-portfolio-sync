@@ -28,6 +28,10 @@ class FakeCtx:
         self._fees = pd.DataFrame(fees or [])
         self._positions = pd.DataFrame(positions or [])
         self._fail = fail  # name of a method that should return a non-OK code
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def history_order_list_query(self, status_filter_list, start, end, trd_env, acc_id):
         if self._fail == "history_order_list_query":
@@ -177,6 +181,18 @@ def test_multi_market_queries_each_context():
     trades = adapter.fetch_stock_executions(since=None)
     assert {t.currency for t in trades} == {"USD", "HKD"}
     assert {t.dedup_key for t in trades} == {"MooMoo:U1", "MooMoo:H1"}
+
+
+def test_close_closes_and_clears_contexts():
+    """close() must release every cached context — leaked OpenD connections can
+    wedge the gateway across runs (root cause of a real 6-hour hang)."""
+    us, hk = FakeCtx(), FakeCtx()
+    ctxs = {"US": us, "HK": hk}
+    adapter = MooMooAdapter(context_factory=lambda m: ctxs[m], markets=("US", "HK"))
+    adapter.fetch_positions()  # materialises both contexts
+    adapter.close()
+    assert us.closed is True and hk.closed is True
+    assert adapter._ctx_cache == {}
 
 
 def test_adapter_satisfies_protocol():

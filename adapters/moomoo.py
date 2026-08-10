@@ -49,6 +49,7 @@ from moomoo import (
     OrderStatus,
     PositionSide,
     SecurityFirm,
+    SysConfig,
     TrdEnv,
     TrdMarket,
     TrdSide,
@@ -156,6 +157,9 @@ class MooMooAdapter:
     # -- context management ------------------------------------------------- #
     def _build_context(self, market: str):
         assert self._creds is not None
+        # OpenD SDK spins up background connection threads; make them daemon so a
+        # wedged gateway can never block the process from exiting.
+        SysConfig.set_all_thread_daemon(True)
         return OpenSecTradeContext(
             filter_trdmarket=getattr(TrdMarket, market),
             host=self._creds.host,
@@ -167,6 +171,19 @@ class MooMooAdapter:
         if market not in self._ctx_cache:
             self._ctx_cache[market] = self._context_factory(market)
         return self._ctx_cache[market]
+
+    def close(self) -> None:
+        """Close all cached OpenD contexts. Leaked contexts hold gateway
+        connections that can wedge OpenD across runs, so the orchestrator calls
+        this after each fetch. Safe to call more than once."""
+        for ctx in self._ctx_cache.values():
+            close = getattr(ctx, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                    pass
+        self._ctx_cache.clear()
 
     @staticmethod
     def _unwrap(result, what: str):

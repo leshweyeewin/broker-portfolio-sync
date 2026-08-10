@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -58,6 +59,11 @@ from sheets.writer import (
 log = logging.getLogger("run")
 
 ZERO = Decimal("0")
+
+# A broker leg that blocks longer than this is treated as failed for this run
+# (§9 fail-soft). Guards against a broker SDK with no timeout of its own — e.g. a
+# wedged MooMoo OpenD gateway, which once hung a whole run for 6 hours.
+BROKER_FETCH_TIMEOUT_S = 180.0
 
 # A notifier takes a message and returns True if it was delivered. Injected so
 # tests can assert on alerts; main() uses alerting.notify.notify_safe.
@@ -98,23 +104,51 @@ class RunResult:
 # --------------------------------------------------------------------------- #
 # Fetch — one broker, fail-soft
 # --------------------------------------------------------------------------- #
-def collect_broker_data(adapter: BrokerAdapter, since: Optional[date]) -> BrokerData:
+def collect_broker_data(
+    adapter: BrokerAdapter,
+    since: Optional[date],
+    timeout_s: float = BROKER_FETCH_TIMEOUT_S,
+) -> BrokerData:
     """Fetch a single broker's executions/cash/positions.
 
-    Fail-soft: any exception is captured on ``BrokerData.error`` so one broker's
-    outage can't sink the others. The run-level status downgrades accordingly.
+    Fail-soft (§9): any exception *or* a hang past ``timeout_s`` is captured on
+    ``BrokerData.error`` so one broker's outage can't sink the others — including
+    a broker SDK that blocks forever with no timeout of its own. The fetch runs
+    on a daemon thread, so a wedged call can never block process exit; if it
+    times out we abandon that leg and mark the run PARTIAL.
     """
-    try:
-        return BrokerData(
-            broker=adapter.name,
-            stocks=list(adapter.fetch_stock_executions(since)),
-            options=list(adapter.fetch_option_executions(since)),
-            cash=list(adapter.fetch_cash_movements(since)),
-            positions=list(adapter.fetch_positions()),
-        )
-    except Exception as exc:  # noqa: BLE001 — deliberately broad; recorded, not swallowed
-        log.exception("Broker %s fetch failed", adapter.name)
-        return BrokerData(broker=adapter.name, error=f"{type(exc).__name__}: {exc}")
+    box: dict[str, BrokerData] = {}
+
+    def _fetch() -> None:
+        try:
+            box["data"] = BrokerData(
+                broker=adapter.name,
+                stocks=list(adapter.fetch_stock_executions(since)),
+                options=list(adapter.fetch_option_executions(since)),
+                cash=list(adapter.fetch_cash_movements(since)),
+                positions=list(adapter.fetch_positions()),
+            )
+        except Exception as exc:  # noqa: BLE001 — deliberately broad; recorded, not swallowed
+            log.exception("Broker %s fetch failed", adapter.name)
+            box["data"] = BrokerData(broker=adapter.name, error=f"{type(exc).__name__}: {exc}")
+        finally:
+            # Release broker resources (e.g. MooMoo OpenD contexts) so we don't
+            # leak connections across runs; best-effort.
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    log.warning("Broker %s close() failed", adapter.name, exc_info=True)
+
+    worker = threading.Thread(target=_fetch, name=f"fetch-{adapter.name}", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        log.error("Broker %s fetch timed out after %.0fs — skipping this leg",
+                  adapter.name, timeout_s)
+        return BrokerData(broker=adapter.name, error=f"timed out after {timeout_s:.0f}s")
+    return box["data"]
 
 
 # --------------------------------------------------------------------------- #
