@@ -437,6 +437,14 @@ class TigerAdapter:
                 note_parts.append(f"unmapped fund_type={raw_type}")
             elif raw_type:
                 note_parts.append(raw_type)
+
+            # Deposits/withdrawals come authoritatively from get_funding_history.
+            # fund_details classification of them is unreliable (observed: an
+            # ambiguous row surfacing as a spurious $1,000 deposit), so never let
+            # this endpoint feed external capital into the Transactions tab.
+            if cash_type.is_external_capital:
+                continue
+
             if note_col is not None and row.get(note_col):
                 note_parts.append(str(row[note_col]))
 

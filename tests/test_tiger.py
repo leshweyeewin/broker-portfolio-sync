@@ -169,13 +169,14 @@ def test_cash_movements_classification():
     )
     a = _adapter(FakeClient(fund_df=df))
     moves = a.fetch_cash_movements(since=None)
-    assert len(moves) == 4
     by_type = {m.type for m in moves}
-    assert CashType.DEPOSIT in by_type and CashType.WITHDRAWAL in by_type
+    # Deposits/withdrawals are owned by get_funding_history; fund_details must NOT
+    # emit external capital (its classification of it is unreliable).
+    assert CashType.DEPOSIT not in by_type
+    assert CashType.WITHDRAWAL not in by_type
+    # Non-external types are still returned: the dividend and the unmapped row.
     assert CashType.DIVIDEND in by_type
-    # withdrawal amount stored positive (Transactions tab is positive)
-    wd = next(m for m in moves if m.type is CashType.WITHDRAWAL)
-    assert wd.amount == Decimal("50.0")
+    assert len(moves) == 2
     # unknown type kept, classified out of external capital, tagged in note
     mystery = next(m for m in moves if "unmapped" in m.note)
     assert mystery.type is CashType.INTERNAL_TRANSFER

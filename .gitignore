@@ -17,6 +17,9 @@ opend/vendor/
 BUILD_SPEC.md
 HANDOFF.md
 
+# Local run logs (Windows Task Scheduler daily sync)
+logs/
+
 # Python
 .venv/
 __pycache__/

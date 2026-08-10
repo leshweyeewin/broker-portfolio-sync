@@ -77,7 +77,7 @@ class FakeSheetClient:
 
     # --- reads ---
 
-    def get_values(self, range_: str) -> list[list[Any]]:
+    def get_values(self, range_: str, value_render_option: str = "FORMATTED_VALUE") -> list[list[Any]]:
         tab = range_.split("!")[0]
         return copy.deepcopy(self._data.get(tab, []))
 
@@ -466,6 +466,36 @@ def test_upsert_options_new_row():
     data = client.data_rows(TAB_OPTIONS, header_rows=4)
     assert len(data) == 1
     assert data[0][OPTIONS_HEADERS.index("Stock")] == "AAPL"
+
+
+def test_read_opening_balances_roundtrips_dedup_key():
+    """Opening balances read back must keep their stored _dedup_key, so a forward
+    run updates them in place instead of re-adding duplicates (real bug: a strike
+    read back as 145.0 recomputed a different key)."""
+    from adapters.base import (
+        Broker, StockAction, OptionAction, OptionType, StockTrade, OptionTrade,
+    )
+    client = FakeSheetClient()
+    writer = PortfolioWriter(client)
+    writer.ensure_tabs()
+
+    ob_stock = StockTrade(date=date(2026, 8, 1), broker=Broker.TIGER, ticker="AAPL",
+                          action=StockAction.OPENING_BALANCE, qty=10, price="150", currency="USD")
+    ob_opt = OptionTrade(date=date(2026, 8, 1), broker=Broker.TIGER, underlying="SPY",
+                         option_type=OptionType.PUT, strike="145", qty=1, expiry=date(2026, 9, 19),
+                         action=OptionAction.OPENING_BALANCE, premium="2", currency="USD")
+    writer.upsert_stocks([build_stock_row(ob_stock, status="Open")])
+    writer.upsert_options([build_option_row(ob_opt, status="Open")])
+
+    stocks, options = writer.read_opening_balances()
+
+    assert len(stocks) == 1 and len(options) == 1
+    assert stocks[0].dedup_key == ob_stock.dedup_key
+    assert stocks[0].action is StockAction.OPENING_BALANCE
+    assert stocks[0].ticker == "AAPL" and stocks[0].qty == Decimal("10")
+    assert options[0].dedup_key == ob_opt.dedup_key  # stable despite 145 -> 145.0 readback
+    assert options[0].option_type is OptionType.PUT and options[0].strike == Decimal("145")
+    assert options[0].date == date(2026, 8, 1)
 
 
 def test_upsert_options_idempotent():

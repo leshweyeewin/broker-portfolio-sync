@@ -20,10 +20,12 @@ reconciliation doesn't false-flag it) and the run is marked ``PARTIAL`` with the
 error in the Run Log and an alert — the other brokers still sync. Only if *every*
 broker fails is the run ``FAILED``.
 
-Seeding (``--seed``): on the very first run for an account whose broker API does
-not return full lifetime history, pass ``--seed`` to synthesize Opening Balance
-rows from current positions (stable dedup keys, so re-running ``--seed`` upserts
-rather than duplicates). See HANDOFF.md for the seeding lifecycle caveat.
+Seeding (``--seed``): on the very first run, pass ``--seed`` to synthesize
+Opening Balance rows from current positions (stable dedup keys, so re-running
+``--seed`` upserts rather than duplicates). Thereafter, forward runs (no
+``--seed``) LOAD those persisted opening balances back from the sheet into FIFO
+and only apply fills dated after the seed — so holdings reconcile and realized
+P/L on seeded positions is correct without re-pulling full history (§5/§14).
 """
 
 from __future__ import annotations
@@ -278,11 +280,21 @@ def run_sync(
     cash = [c for d in ok for c in d.cash]
     positions = [p for d in ok for p in d.positions]
 
-    # 2. Seed (first run only) — synthesize Opening Balances from live positions.
+    # 2. Establish opening balances so FIFO reconstructs full holdings.
+    #    --seed synthesizes them from live positions (bootstrap). Otherwise load
+    #    the persisted ones from the sheet (§5/§14 seed persistence) and drop any
+    #    fetched fill dated on/before the seed — those are already baked into the
+    #    opening balance, so keeping them would double-count.
     if seed:
-        seed_stocks, seed_options = seed_positions(positions, today)
-        stocks = seed_stocks + stocks
-        options = seed_options + options
+        ob_stocks, ob_options = seed_positions(positions, today)
+    else:
+        ob_stocks, ob_options = writer.read_opening_balances()
+        cutoff = max((t.date for t in (ob_stocks + ob_options)), default=None)
+        if cutoff is not None:
+            stocks = [t for t in stocks if t.date > cutoff]
+            options = [t for t in options if t.date > cutoff]
+    stocks = ob_stocks + stocks
+    options = ob_options + options
 
     # 3. FIFO realized P/L + remaining holdings.
     stock_result = compute_stock_pl(stocks)

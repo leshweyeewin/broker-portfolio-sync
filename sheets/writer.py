@@ -153,12 +153,21 @@ class SheetClient:
 
     # ---- reads -------------------------------------------------------
 
-    def get_values(self, range_: str) -> list[list[Any]]:
-        """Return 2-D list of cell values for ``range_`` (e.g. ``'Stocks!A:M'``)."""
+    def get_values(self, range_: str, value_render_option: str = "FORMATTED_VALUE") -> list[list[Any]]:
+        """Return 2-D list of cell values for ``range_`` (e.g. ``'Stocks!A:M'``).
+
+        ``value_render_option='UNFORMATTED_VALUE'`` returns raw values (dates as
+        Sheets serial numbers, numbers as numbers) — used when reading data back
+        for computation so locale date formatting can't corrupt parsing.
+        """
         result = (
             self._service.spreadsheets()
             .values()
-            .get(spreadsheetId=self._spreadsheet_id, range=range_)
+            .get(
+                spreadsheetId=self._spreadsheet_id,
+                range=range_,
+                valueRenderOption=value_render_option,
+            )
             .execute()
         )
         return result.get("values", [])
@@ -318,6 +327,75 @@ class PortfolioWriter:
         self._client.batch_update_values([
             {"range": f"{TAB_DASHBOARD}!A1", "values": blocks}
         ])
+
+    def read_opening_balances(self):
+        """Read persisted Opening Balance rows back as OPENING_BALANCE trades.
+
+        A forward run (no ``--seed``) must feed these into FIFO — otherwise the
+        engine sees only the newly-fetched fills and reconciliation flags every
+        long-held position as missing (§5/§14 "seed persistence"). Returns
+        ``(stock_trades, option_trades)``; empty lists if the tabs don't exist.
+        """
+        # Imported here to keep the writer's core free of adapter deps.
+        from adapters.base import (
+            Broker, OptionAction, OptionTrade, OptionType, StockAction, StockTrade,
+        )
+
+        def _read(tab: str, headers: list[str]) -> list[list[Any]]:
+            try:
+                vals = self._client.get_values(
+                    f"{tab}!A:{_col_letter(len(headers))}",
+                    value_render_option="UNFORMATTED_VALUE",
+                )
+            except Exception:  # noqa: BLE001 — no tab yet / read error -> nothing to load
+                log.warning("Could not read %s for opening balances", tab, exc_info=True)
+                return []
+            hr = DATA_HEADER_ROWS.get(tab, 1)
+            return vals[hr:] if len(vals) > hr else []
+
+        def cell(row: list[Any], i: int) -> Any:
+            return row[i] if i < len(row) else ""
+
+        # Reuse the stored _dedup_key rather than recomputing it: values read back
+        # from Sheets (e.g. a strike 145 -> 145.0) would otherwise yield a
+        # different key and re-add the opening balance as a duplicate.
+        stocks: list[StockTrade] = []
+        si = {h: i for i, h in enumerate(STOCKS_HEADERS)}
+        for r in _read(TAB_STOCKS, STOCKS_HEADERS):
+            if str(cell(r, si["Action"])) != StockAction.OPENING_BALANCE.value:
+                continue
+            stocks.append(StockTrade(
+                date=_parse_sheet_date(cell(r, si["Date"])),
+                broker=Broker(str(cell(r, si["Broker"]))),
+                ticker=str(cell(r, si["Ticker"])),
+                action=StockAction.OPENING_BALANCE,
+                qty=cell(r, si["Qty"]),
+                price=cell(r, si["Price"]),
+                fee=0,
+                currency=str(cell(r, si["Currency"])),
+                dedup_key=str(cell(r, si["_dedup_key"])),
+            ))
+
+        options: list[OptionTrade] = []
+        oi = {h: i for i, h in enumerate(OPTIONS_HEADERS)}
+        for r in _read(TAB_OPTIONS, OPTIONS_HEADERS):
+            if str(cell(r, oi["Action"])) != OptionAction.OPENING_BALANCE.value:
+                continue
+            options.append(OptionTrade(
+                date=_parse_sheet_date(cell(r, oi["Date"])),
+                broker=Broker(str(cell(r, oi["Broker"]))),
+                underlying=str(cell(r, oi["Stock"])),
+                option_type=OptionType(str(cell(r, oi["Type"]))),
+                strike=cell(r, oi["Strike"]),
+                qty=cell(r, oi["Qty"]),
+                expiry=_parse_sheet_date(cell(r, oi["Expiry"])),
+                action=OptionAction.OPENING_BALANCE,
+                premium=cell(r, oi["Premium"]),
+                fee=0,
+                currency=str(cell(r, oi["Currency"])),
+                dedup_key=str(cell(r, oi["_dedup_key"])),
+            ))
+        return stocks, options
 
     # ------------------------------------------------------------------ #
     # Core upsert logic
@@ -633,6 +711,24 @@ class PortfolioWriter:
                     }
                 })
             
+            # Force ticker/underlying columns to TEXT so zero-padded symbols
+            # (e.g. HK "07709") aren't coerced to numbers on write, which would
+            # otherwise break reconciliation against the broker's padded symbol.
+            text_col = 2 if tab == TAB_STOCKS else (3 if tab == TAB_OPTIONS else None)
+            if text_col is not None:
+                requests.append({
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": header_row_0 + 1,
+                            "startColumnIndex": text_col,
+                            "endColumnIndex": text_col + 1,
+                        },
+                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
+                        "fields": "userEnteredFormat.numberFormat",
+                    }
+                })
+
             # 4. Currency Formatting
             money_cols = []
             if tab == TAB_STOCKS:
@@ -667,6 +763,29 @@ class PortfolioWriter:
 # --------------------------------------------------------------------------- #
 # Column-letter helper
 # --------------------------------------------------------------------------- #
+
+_SHEETS_EPOCH = date(1899, 12, 30)  # Sheets/Excel day 0
+
+
+def _parse_sheet_date(value: object) -> date:
+    """Parse a date read back from Sheets.
+
+    UNFORMATTED reads return dates as serial day-counts from 1899-12-30; older
+    hand-entered cells may be ISO strings. Handles both.
+    """
+    if isinstance(value, bool):  # guard: bool is an int subclass
+        raise ValueError(f"cannot parse date from bool {value!r}")
+    if isinstance(value, (int, float)):
+        from datetime import timedelta
+        return _SHEETS_EPOCH + timedelta(days=int(value))
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"cannot parse sheet date value {value!r}")
+
 
 def _col_letter(n: int) -> str:
     """Convert 1-based column count to a Sheets column letter (A, B, ..., Z, AA, ...)."""

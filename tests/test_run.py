@@ -72,16 +72,21 @@ class FakeAdapter:
 class FakeWriter:
     """Records what the orchestrator asked to be written."""
 
-    def __init__(self):
+    def __init__(self, opening_stocks=None, opening_options=None):
         self.ensured = False
         self.stock_rows: list[list[Any]] = []
         self.option_rows: list[list[Any]] = []
         self.txn_rows: list[list[Any]] = []
         self.run_log: list[list[Any]] = []
         self.dashboard: list[list[Any]] = []
+        self._opening_stocks = opening_stocks or []
+        self._opening_options = opening_options or []
 
     def ensure_tabs(self):
         self.ensured = True
+
+    def read_opening_balances(self):
+        return list(self._opening_stocks), list(self._opening_options)
 
     def upsert_stocks(self, rows):
         self.stock_rows = rows
@@ -266,6 +271,63 @@ def test_collect_broker_data_closes_adapter():
     a = ClosableAdapter(Broker.MOOMOO.value)
     collect_broker_data(a, since=None)
     assert a.closed is True
+
+
+# --------------------------------------------------------------------------- #
+# Seed persistence (§5/§14): forward runs load persisted opening balances
+# --------------------------------------------------------------------------- #
+def test_forward_run_loads_opening_balances_and_reconciles():
+    """A non-seed run must load persisted opening balances into FIFO, else it
+    would flag every long-held position as missing from the pipeline."""
+    ob = StockTrade(date=date(2026, 8, 1), broker=Broker.TIGER, ticker="AAPL",
+                    action=StockAction.OPENING_BALANCE, qty=10, price="150", currency="USD")
+    position = Position(broker=Broker.TIGER, asset_type=AssetType.STOCK, symbol="AAPL",
+                        qty=10, avg_cost="150", currency="USD")
+    adapter = FakeAdapter(Broker.TIGER.value, stocks=[], positions=[position])
+    writer = FakeWriter(opening_stocks=[ob])
+    notifier = RecordingNotifier()
+
+    result = run_sync([adapter], writer, FakeFx(), today=TODAY, notifier=notifier)
+
+    assert result.reconciliation == "OK"  # opening balance -> holding matches broker
+    assert notifier.messages == []
+
+
+def test_forward_run_sell_closes_seeded_position_with_pl():
+    """A new sell against a seeded position computes realized P/L off the seed
+    cost basis and leaves holdings flat."""
+    ob = StockTrade(date=date(2026, 8, 1), broker=Broker.TIGER, ticker="AAPL",
+                    action=StockAction.OPENING_BALANCE, qty=10, price="100", currency="USD")
+    sell = StockTrade(date=date(2026, 8, 5), broker=Broker.TIGER, ticker="AAPL",
+                      action=StockAction.SELL, qty=10, price="120", currency="USD")
+    adapter = FakeAdapter(Broker.TIGER.value, stocks=[sell], positions=[])  # broker now flat
+    writer = FakeWriter(opening_stocks=[ob])
+
+    result = run_sync([adapter], writer, FakeFx(), today=TODAY, notifier=RecordingNotifier())
+
+    assert result.reconciliation == "OK"
+    sell_row = next(r for r in writer.stock_rows if _col(r, STOCKS_HEADERS, "Action") == "Sell")
+    assert _col(sell_row, STOCKS_HEADERS, "Status") == "Closed"
+    assert _col(sell_row, STOCKS_HEADERS, "Realized P/L") == 200.0  # (120-100)*10
+
+
+def test_forward_run_drops_fills_on_or_before_seed():
+    """Fills dated on/before the seed are already baked into the opening balance,
+    so they must be dropped to avoid double-counting."""
+    ob = StockTrade(date=date(2026, 8, 1), broker=Broker.TIGER, ticker="AAPL",
+                    action=StockAction.OPENING_BALANCE, qty=10, price="100", currency="USD")
+    pre = StockTrade(date=date(2026, 7, 20), broker=Broker.TIGER, ticker="AAPL",
+                     action=StockAction.BUY, qty=10, price="90", currency="USD")
+    position = Position(broker=Broker.TIGER, asset_type=AssetType.STOCK, symbol="AAPL",
+                        qty=10, avg_cost="100", currency="USD")
+    adapter = FakeAdapter(Broker.TIGER.value, stocks=[pre], positions=[position])
+    writer = FakeWriter(opening_stocks=[ob])
+
+    result = run_sync([adapter], writer, FakeFx(), today=TODAY, notifier=RecordingNotifier())
+
+    assert result.reconciliation == "OK"  # 10 (opening), not 20 (opening + dropped buy)
+    actions = {_col(r, STOCKS_HEADERS, "Action") for r in writer.stock_rows}
+    assert actions == {"Opening Balance"}  # the pre-seed buy was dropped
 
 
 def test_reconciliation_mismatch_surfaces_and_alerts():
