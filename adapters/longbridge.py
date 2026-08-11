@@ -220,20 +220,22 @@ class LongbridgeAdapter:
             if amount == 0:
                 continue
                 
+            # Human-readable note from the flow name + description (the
+            # business_type is an opaque enum like "BalanceType.Unknown", so we
+            # don't surface it).
             note_parts = []
-            if cf.business_type:
-                note_parts.append(str(cf.business_type))
+            flow_name = str(cf.transaction_flow_name or "").strip()
+            if flow_name and flow_name.lower() != "none":
+                note_parts.append(flow_name)
             if cf.description:
-                note_parts.append(str(cf.description))
-                
-            # Classify business_type
-            # 1=Deposit, 2=Withdraw, 3=Buy, 4=Sell, 5=Dividend, 6=Fee, etc (guessing type mapping)
-            # Longport has no BusinessType enum, business_type is likely int.
-            # We'll map known ints or just map based on transaction_flow_name.
-            b_type = str(cf.business_type)
+                desc_str = str(cf.description).strip()
+                if desc_str and desc_str.lower() != "none":
+                    note_parts.append(desc_str)
+
+            # Classify from the transaction flow name / description.
             name = str(cf.transaction_flow_name).upper()
             desc = str(cf.description).upper()
-            
+
             cash_type = CashType.INTERNAL_TRANSFER
             if "DEPOSIT" in name or "DEPOSIT" in desc:
                 cash_type = CashType.DEPOSIT
@@ -245,7 +247,7 @@ class LongbridgeAdapter:
                 cash_type = CashType.FEE
             elif "CONVERSION" in name or "EXCHANGE" in name:
                 cash_type = CashType.FX_CONVERSION
-                
+
             movements.append(
                 CashMovement(
                     date=self._timestamp_to_date(cf.business_time.timestamp()),
