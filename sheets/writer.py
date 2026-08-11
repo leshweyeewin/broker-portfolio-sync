@@ -87,8 +87,8 @@ DASHBOARD_HEADERS = ["Metric", "Longbridge", "Tiger", "MooMoo", "Total (SGD)"]
 # 1 = just the column header row. The summary block is placed off to the right.
 DATA_HEADER_ROWS = {
     TAB_TRANSACTIONS: 1,
-    TAB_STOCKS: 4,
-    TAB_OPTIONS: 4,
+    TAB_STOCKS: 3,   # rows 1-2 = Total P/L + Total Fees summary; row 3 = column headers
+    TAB_OPTIONS: 3,
     TAB_RUN_LOG: 1,
 }
 
@@ -499,39 +499,34 @@ class PortfolioWriter:
         write_data = []
         for tab, headers in tab_headers.items():
             header_row = DATA_HEADER_ROWS.get(tab, 1)
-            col_letter = _col_letter(len(headers))
-            existing = self._client.get_values(f"{tab}!A{header_row}:{col_letter}{header_row}")
-            if not existing or not existing[0]:
-                write_data.append({
-                    "range": f"{tab}!A{header_row}",
-                    "values": [[str(h) for h in headers]],
-                })
-                
-            # Write summary blocks for Stocks and Options on the left side
-            # Always ensure the summary block formulas are present
+            # Force-write the header row every time: leftover data must never be
+            # able to block it (a stale header row corrupts the whole layout).
+            write_data.append({
+                "range": f"{tab}!A{header_row}",
+                "values": [[str(h) for h in headers]],
+            })
+
+            # Summary block for Stocks/Options: Total P/L (row 1) + Total Fees
+            # (row 2), directly above the header row (row 3); data starts row 4.
             if tab in (TAB_STOCKS, TAB_OPTIONS):
                 if tab == TAB_STOCKS:
-                    # K = Realized P/L, L = Realized P/L (SGD), H = Fee
+                    # K = Realized P/L, H = Fee; data starts row 4.
                     write_data.append({
-                        "range": f"{tab}!A1:B3",
+                        "range": f"{tab}!A1:B2",
                         "values": [
-                            ["Stocks Portfolio Summary", ""],
-                            ["Total P/L", f"=SUM(K5:K)"],
-                            ["Total Fees", f"=SUM(H5:H)"]
+                            ["Total P/L", "=SUM(K4:K)"],
+                            ["Total Fees", "=SUM(H4:H)"],
                         ]
                     })
                 else:
-                    # Options: P = P/L (now O = P/L after removing Direction), Q = SGD (now P = SGD), M = Fee (now L = Fee)
-                    # Let's verify Options columns after removing Direction:
-                    # A=Date, B=Broker, C=Strategy, D=Stock, E=Type, F=Strike,
-                    # G=Qty, H=Expiry, I=Action, J=Premium, K=Total, L=Fee,
-                    # M=Currency, N=Status, O=P/L, P=P/L (SGD), Q=_dedup_key
+                    # Options cols: A=Date B=Broker C=Strategy D=Stock E=Type
+                    # F=Strike G=Qty H=Expiry I=Action J=Premium K=Total L=Fee
+                    # M=Currency N=Status O=P/L P=P/L(SGD) Q=_dedup_key.
                     write_data.append({
-                        "range": f"{tab}!A1:B3",
+                        "range": f"{tab}!A1:B2",
                         "values": [
-                            ["Options Portfolio Summary", ""],
-                            ["Total P/L", f"=SUM(O5:O)"],
-                            ["Total Fees", f"=SUM(L5:L)"]
+                            ["Total P/L", "=SUM(O4:O)"],
+                            ["Total Fees", "=SUM(L4:L)"],
                         ]
                     })
 
@@ -570,191 +565,179 @@ class PortfolioWriter:
             self._client.batch_update(requests)
 
     def _apply_formatting(self) -> None:
-        """Apply colors, bold text, frozen rows, filters, and number formats."""
-        requests = []
-        
+        """Apply colors, frozen rows, filters, number formats — idempotently.
+
+        Runs on every sync, so it must not accumulate state: it deletes existing
+        conditional-format rules and resets the background first, then re-applies.
+        Otherwise rules pile up and green creeps across the whole tab. Green is the
+        header row only; Buy rows go green and Sell rows red via conditional rules.
+        """
         tab_headers = {
             TAB_TRANSACTIONS: TRANSACTIONS_HEADERS,
             TAB_STOCKS:       STOCKS_HEADERS,
             TAB_OPTIONS:      OPTIONS_HEADERS,
         }
-        
-        # We need the sheet IDs to apply formatting
+
+        # How many conditional-format rules each sheet already has, so we can
+        # delete them before re-adding (prevents runaway accumulation).
+        try:
+            meta = self._client.get_sheet_metadata()
+            cf_counts = {
+                s["properties"]["sheetId"]: len(s.get("conditionalFormats", []))
+                for s in meta.get("sheets", [])
+            }
+        except Exception:  # noqa: BLE001
+            cf_counts = {}
+
+        requests: list[dict] = []
         for tab, headers in tab_headers.items():
             sheet_id = self._sheet_ids.get(tab)
             if sheet_id is None:
                 continue
-                
-            header_row_0 = DATA_HEADER_ROWS.get(tab, 1) - 1 # 0-based
+
+            header_row_0 = DATA_HEADER_ROWS.get(tab, 1) - 1   # 0-based header row
+            first_data_0 = header_row_0 + 1                    # 0-based first data row
             col_count = len(headers)
-            
-            # 1. Header Styling (Grey background, White bold text)
+
+            # (a) Delete every existing conditional-format rule on this sheet.
+            for _ in range(cf_counts.get(sheet_id, 0)):
+                requests.append({"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": 0}})
+
+            # (b) Reset the whole sheet's background AND number format (clears
+            #     lingering fills and stale per-column formats left over from
+            #     earlier layouts, e.g. currency stuck on the wrong column after a
+            #     column was removed). Specific formats are re-applied below.
             requests.append({
                 "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": header_row_0,
-                        "endRowIndex": header_row_0 + 1,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": col_count
-                    },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": {"red": 0.15, "green": 0.5, "blue": 0.25},
-                            "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True}
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat)"
+                    "range": {"sheetId": sheet_id, "startRowIndex": 0, "startColumnIndex": 0},
+                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
+                    "fields": "userEnteredFormat(backgroundColor,numberFormat)",
                 }
             })
-            
-            # Format the Summary Block at A1:B3 if it exists (Stocks & Options)
+
+            # (c) Header row only: green background, white bold text.
+            requests.append({
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": header_row_0,
+                              "endRowIndex": header_row_0 + 1, "startColumnIndex": 0,
+                              "endColumnIndex": col_count},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": {"red": 0.15, "green": 0.5, "blue": 0.25},
+                        "textFormat": {"foregroundColor": {"red": 1, "green": 1, "blue": 1}, "bold": True},
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)",
+                }
+            })
+
+            # (d) Summary block (rows 1-2, cols A-B): light grey, bold.
             if tab in (TAB_STOCKS, TAB_OPTIONS):
                 requests.append({
                     "repeatCell": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 0,
-                            "endRowIndex": 3,
-                            "startColumnIndex": 0,
-                            "endColumnIndex": 2
-                        },
-                        "cell": {
-                            "userEnteredFormat": {
-                                "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95},
-                                "textFormat": {"bold": True}
-                            }
-                        },
-                        "fields": "userEnteredFormat(backgroundColor,textFormat)"
-                    }
-                })
-            
-            # 2. Freeze the header rows
-            requests.append({
-                "updateSheetProperties": {
-                    "properties": {
-                        "sheetId": sheet_id,
-                        "gridProperties": {"frozenRowCount": header_row_0 + 1}
-                    },
-                    "fields": "gridProperties.frozenRowCount"
-                }
-            })
-            
-            # 3. Add Basic Filter (to easily filter "Status" = "")
-            status_col = 9 if tab == TAB_STOCKS else (13 if tab == TAB_OPTIONS else None)
-            filter_payload = {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": header_row_0,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": col_count
-                }
-            }
-            if status_col is not None:
-                filter_payload["criteria"] = {
-                    str(status_col): {"hiddenValues": ["Closed"]}
-                }
-                
-            requests.append({
-                "setBasicFilter": {
-                    "filter": filter_payload
-                }
-            })
-            
-            # Add Conditional Formatting (Buy/Sell colors)
-            action_col = 3 if tab == TAB_STOCKS else (8 if tab == TAB_OPTIONS else None)
-            if action_col is not None:
-                for action, rgb in [("Buy", {"red": 0.85, "green": 0.95, "blue": 0.85}), ("Sell", {"red": 0.95, "green": 0.85, "blue": 0.85})]:
-                    requests.append({
-                        "addConditionalFormatRule": {
-                            "rule": {
-                                "ranges": [{"sheetId": sheet_id, "startRowIndex": header_row_0 + 1, "startColumnIndex": action_col, "endColumnIndex": action_col + 1}],
-                                "booleanRule": {
-                                    "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": action}]},
-                                    "format": {"backgroundColor": rgb}
-                                }
-                            },
-                            "index": 0
-                        }
-                    })
-            # Add Conditional Formatting (Closed Status -> Grey out cell)
-            if status_col is not None:
-                requests.append({
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [{"sheetId": sheet_id, "startRowIndex": header_row_0 + 1, "startColumnIndex": status_col, "endColumnIndex": status_col + 1}],
-                            "booleanRule": {
-                                "condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "Closed"}]},
-                                "format": {
-                                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
-                                    "textFormat": {"foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}
-                                }
-                            }
-                        },
-                        "index": 0
-                    }
-                })
-                    
-            # Add Conditional Formatting (Expiry within 7 days -> Yellow)
-            if tab == TAB_OPTIONS:
-                expiry_col = 7 # Column H
-                requests.append({
-                    "addConditionalFormatRule": {
-                        "rule": {
-                            "ranges": [{"sheetId": sheet_id, "startRowIndex": header_row_0 + 1, "startColumnIndex": expiry_col, "endColumnIndex": expiry_col + 1}],
-                            "booleanRule": {
-                                "condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": "=AND(H5<>\"\", H5>=TODAY(), H5<=TODAY()+7)"}]},
-                                "format": {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.8}}
-                            }
-                        },
-                        "index": 0
-                    }
-                })
-            
-            # Force ticker/underlying columns to TEXT so zero-padded symbols
-            # (e.g. HK "07709") aren't coerced to numbers on write, which would
-            # otherwise break reconciliation against the broker's padded symbol.
-            text_col = 2 if tab == TAB_STOCKS else (3 if tab == TAB_OPTIONS else None)
-            if text_col is not None:
-                requests.append({
-                    "repeatCell": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": header_row_0 + 1,
-                            "startColumnIndex": text_col,
-                            "endColumnIndex": text_col + 1,
-                        },
-                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
-                        "fields": "userEnteredFormat.numberFormat",
+                        "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 2,
+                                  "startColumnIndex": 0, "endColumnIndex": 2},
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95},
+                            "textFormat": {"bold": True},
+                        }},
+                        "fields": "userEnteredFormat(backgroundColor,textFormat)",
                     }
                 })
 
-            # 4. Currency Formatting
+            # (e) Freeze the header zone (summary + header rows).
+            requests.append({
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": header_row_0 + 1}},
+                    "fields": "gridProperties.frozenRowCount",
+                }
+            })
+
+            # (f) Basic filter on the header row; default-hide Closed rows.
+            status_col = 9 if tab == TAB_STOCKS else (13 if tab == TAB_OPTIONS else None)
+            filter_payload = {"range": {"sheetId": sheet_id, "startRowIndex": header_row_0,
+                                        "startColumnIndex": 0, "endColumnIndex": col_count}}
+            if status_col is not None:
+                filter_payload["criteria"] = {str(status_col): {"hiddenValues": ["Closed"]}}
+            requests.append({"setBasicFilter": {"filter": filter_payload}})
+
+            # (g) Conditional: Buy -> green, Sell -> red (Action column, data rows).
+            action_col = 3 if tab == TAB_STOCKS else (8 if tab == TAB_OPTIONS else None)
+            if action_col is not None:
+                for action, rgb in [("Buy", {"red": 0.84, "green": 0.94, "blue": 0.82}),
+                                     ("Sell", {"red": 0.96, "green": 0.82, "blue": 0.82})]:
+                    requests.append({"addConditionalFormatRule": {"rule": {
+                        "ranges": [{"sheetId": sheet_id, "startRowIndex": first_data_0,
+                                    "startColumnIndex": action_col, "endColumnIndex": action_col + 1}],
+                        "booleanRule": {"condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": action}]},
+                                        "format": {"backgroundColor": rgb}},
+                    }, "index": 0}})
+
+            # (h) Conditional: Closed status -> grey.
+            if status_col is not None:
+                requests.append({"addConditionalFormatRule": {"rule": {
+                    "ranges": [{"sheetId": sheet_id, "startRowIndex": first_data_0,
+                                "startColumnIndex": status_col, "endColumnIndex": status_col + 1}],
+                    "booleanRule": {"condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "Closed"}]},
+                                    "format": {"backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                                               "textFormat": {"foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}}},
+                }, "index": 0}})
+
+            # (i) Conditional: option expiry within 7 days -> yellow.
+            if tab == TAB_OPTIONS:
+                expiry_col = 7  # Column H
+                cell_ref = f"H{first_data_0 + 1}"  # 1-based first data row
+                requests.append({"addConditionalFormatRule": {"rule": {
+                    "ranges": [{"sheetId": sheet_id, "startRowIndex": first_data_0,
+                                "startColumnIndex": expiry_col, "endColumnIndex": expiry_col + 1}],
+                    "booleanRule": {"condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue":
+                                    f'=AND({cell_ref}<>"", {cell_ref}>=TODAY(), {cell_ref}<=TODAY()+7)'}]},
+                                    "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 0.8}}},
+                }, "index": 0}})
+
+            # (j) TEXT format for ticker/underlying so zero-padded symbols (HK
+            #     "07709") aren't coerced to numbers (would break reconciliation).
+            text_col = 2 if tab == TAB_STOCKS else (3 if tab == TAB_OPTIONS else None)
+            if text_col is not None:
+                requests.append({"repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": first_data_0,
+                              "startColumnIndex": text_col, "endColumnIndex": text_col + 1},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "TEXT"}}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }})
+
+            # (k) Currency format for money columns.
             money_cols = []
             if tab == TAB_STOCKS:
-                money_cols = [5, 6, 7, 10, 11] # Price, Total, Fee, Realized P/L, SGD
+                money_cols = [5, 6, 7, 10, 11]         # Price, Total, Fee, Realized P/L, SGD
             elif tab == TAB_OPTIONS:
-                money_cols = [5, 9, 10, 11, 14, 15] # Strike, Premium, Total, Fee, P/L, SGD
+                money_cols = [5, 9, 10, 11, 14, 15]    # Strike, Premium, Total, Fee, P/L, SGD
             elif tab == TAB_TRANSACTIONS:
-                money_cols = [3, 5] # Amount, Amount (SGD)
-                
+                money_cols = [3, 5]                    # Amount, Amount (SGD)
             for col in money_cols:
-                requests.append({
-                    "repeatCell": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": header_row_0 + 1, # Apply to data rows only
-                            "startColumnIndex": col,
-                            "endColumnIndex": col + 1
-                        },
-                        "cell": {
-                            "userEnteredFormat": {
-                                "numberFormat": {"type": "CURRENCY", "pattern": "\"$\"#,##0.00"}
-                            }
-                        },
-                        "fields": "userEnteredFormat.numberFormat"
-                    }
-                })
+                requests.append({"repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": first_data_0,
+                              "startColumnIndex": col, "endColumnIndex": col + 1},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": "\"$\"#,##0.00"}}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }})
+
+            # (l) Date columns -> ISO date display (stored as Sheets serials).
+            date_cols = [0, 7] if tab == TAB_OPTIONS else [0]  # Options also has Expiry (H)
+            for col in date_cols:
+                requests.append({"repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": first_data_0,
+                              "startColumnIndex": col, "endColumnIndex": col + 1},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }})
+
+            # (m) Summary totals (B1:B2) -> currency.
+            if tab in (TAB_STOCKS, TAB_OPTIONS):
+                requests.append({"repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 2,
+                              "startColumnIndex": 1, "endColumnIndex": 2},
+                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": "\"$\"#,##0.00"}}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }})
 
         if requests:
             self._client.batch_update(requests)

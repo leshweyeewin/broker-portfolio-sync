@@ -36,9 +36,9 @@ from sheets.writer import (
 from tests.test_writer import FakeSheetClient
 
 
-# Stocks/Options tabs carry a 3-row summary block above the header row (row 4),
+# Stocks/Options tabs carry a 2-row summary block above the header row (row 3),
 # exactly as the writer lays them out.
-_SUMMARY_BLOCK = [["Summary", ""], ["Total P/L", ""], ["Total Fees", ""]]
+_SUMMARY_BLOCK = [["Total P/L", ""], ["Total Fees", ""]]
 
 
 def _setup_sheet_with_closed_rows() -> FakeSheetClient:
