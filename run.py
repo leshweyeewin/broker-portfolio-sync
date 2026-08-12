@@ -36,15 +36,17 @@ import os
 import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional, Sequence
 
 from adapters.base import (
     BrokerAdapter,
     CashMovement,
+    OptionAction,
     OptionTrade,
     Position,
+    StockAction,
     StockTrade,
 )
 from core.fifo_pl import FifoResult, compute_option_pl, compute_stock_pl
@@ -64,8 +66,9 @@ ZERO = Decimal("0")
 
 # A broker leg that blocks longer than this is treated as failed for this run
 # (§9 fail-soft). Guards against a broker SDK with no timeout of its own — e.g. a
-# wedged MooMoo OpenD gateway, which once hung a whole run for 6 hours.
-BROKER_FETCH_TIMEOUT_S = 180.0
+# wedged MooMoo OpenD gateway, which once hung a whole run for 6 hours. Override
+# via env for a one-time full-history bootstrap (Tiger's multi-year pull is slow).
+BROKER_FETCH_TIMEOUT_S = float(os.environ.get("BROKER_FETCH_TIMEOUT_S", "180"))
 
 # A notifier takes a message and returns True if it was delivered. Injected so
 # tests can assert on alerts; main() uses alerting.notify.notify_safe.
@@ -255,6 +258,106 @@ def _build_dashboard(
 
 
 # --------------------------------------------------------------------------- #
+# Seeding — opening balance as (current position − forward journal)
+# --------------------------------------------------------------------------- #
+def _stock_instrument(t: StockTrade) -> tuple:
+    return (t.broker, t.ticker)
+
+
+def _option_instrument(t: OptionTrade) -> tuple:
+    return (t.broker, t.underlying, t.option_type, t.strike, t.expiry)
+
+
+def _backout_openings(openings: list, journal: list, seed_date: date, key) -> list:
+    """Seed Opening-Balance rows representing the position *before* the forward
+    journal, over the union of current positions and journaled instruments.
+
+    The position-derived seed already includes the journaled fills, so keeping
+    both would double-count. The pre-journal quantity is:
+
+        opening_qty = current_qty − Σ(signed journal qty)   (acquisitions +, disposals −)
+
+    computed for every instrument in *either* the seed *or* the journal. This
+    reconstructs holdings back to the broker exactly for every instrument —
+    including one that was fully **closed** during the journal window (current
+    qty 0, so it has no position-derived seed row, but its closing fill still
+    needs a lot to close against). Rows that net to zero are dropped.
+
+    Cost basis on the opening lot:
+    * instrument still held  → broker position avg cost (from the seed row);
+    * instrument now flat     → VWAP of its journaled fills (best available proxy).
+    Either way this is an approximation for realized P/L on a journaled sell of a
+    pre-seed lot — the true pre-seed basis isn't fetchable (§5, documented).
+    """
+    net: dict[tuple, Decimal] = defaultdict(lambda: ZERO)
+    jtrades: dict[tuple, list] = defaultdict(list)
+    for t in journal:
+        net[key(t)] += t.qty if t.action.is_acquisition else -t.qty
+        jtrades[key(t)].append(t)
+
+    ob_by_key = {key(ob): ob for ob in openings}
+
+    adjusted: list = []
+    for k in ob_by_key.keys() | net.keys():
+        cur = ob_by_key[k].qty if k in ob_by_key else ZERO
+        qty = cur - net.get(k, ZERO)
+        if qty == 0:
+            continue
+        if k in ob_by_key:
+            adjusted.append(_reseed_qty(ob_by_key[k], qty, seed_date))
+        else:
+            adjusted.append(_synth_opening(jtrades[k], qty, seed_date))
+    return adjusted
+
+
+def _vwap(trades: list) -> Decimal:
+    """Volume-weighted average price/premium over |qty| of ``trades``."""
+    num = sum((t.qty * _unit_price(t) for t in trades), ZERO)
+    den = sum((t.qty for t in trades), ZERO)
+    return num / den if den else _unit_price(trades[0])
+
+
+def _unit_price(t) -> Decimal:
+    return t.price if isinstance(t, StockTrade) else t.premium
+
+
+def _reseed_qty(ob, qty: Decimal, seed_date: date):
+    """Rebuild a position-derived Opening-Balance row with an adjusted qty."""
+    if isinstance(ob, StockTrade):
+        return StockTrade(
+            date=seed_date, broker=ob.broker, ticker=ob.ticker,
+            action=StockAction.OPENING_BALANCE, qty=qty, price=ob.price,
+            fee=0, currency=ob.currency,
+        )
+    return OptionTrade(
+        date=seed_date, broker=ob.broker, underlying=ob.underlying,
+        option_type=ob.option_type, strike=ob.strike, qty=qty, expiry=ob.expiry,
+        action=OptionAction.OPENING_BALANCE, premium=ob.premium, fee=0,
+        currency=ob.currency, multiplier=ob.multiplier,
+    )
+
+
+def _synth_opening(journal: list, qty: Decimal, seed_date: date):
+    """Synthesize an Opening-Balance row for an instrument that is in the journal
+    but not in current positions (fully closed during the window), priced at the
+    journal VWAP so its close reconciles with ≈0 realized P/L."""
+    t0 = journal[0]
+    price = _vwap(journal)
+    if isinstance(t0, StockTrade):
+        return StockTrade(
+            date=seed_date, broker=t0.broker, ticker=t0.ticker,
+            action=StockAction.OPENING_BALANCE, qty=qty, price=price,
+            fee=0, currency=t0.currency,
+        )
+    return OptionTrade(
+        date=seed_date, broker=t0.broker, underlying=t0.underlying,
+        option_type=t0.option_type, strike=t0.strike, qty=qty, expiry=t0.expiry,
+        action=OptionAction.OPENING_BALANCE, premium=price, fee=0,
+        currency=t0.currency, multiplier=t0.multiplier,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
 def run_sync(
@@ -270,7 +373,22 @@ def run_sync(
     """Run one full sync pass over ``adapters`` into ``writer``. See module docs."""
     today = today or date.today()
 
-    # 1. Fetch every broker (fail-soft per broker).
+    # 1. On a forward run, load the persisted Opening Balances FIRST so we can
+    #    bound the fetch to the forward-journal window (seed date + 1). This makes
+    #    every daily run fetch the *same* window the seed used, so the results are
+    #    identical and idempotent — a wider window would surface pre-seed lots the
+    #    seed's back-out never accounted for (phantom shorts) and drift the sheet,
+    #    besides hammering per-order fee endpoints into rate limits.
+    ob_stocks: list[StockTrade] = []
+    ob_options: list[OptionTrade] = []
+    cutoff: Optional[date] = None
+    if not seed:
+        ob_stocks, ob_options = writer.read_opening_balances()
+        cutoff = max((t.date for t in (ob_stocks + ob_options)), default=None)
+        if since is None and cutoff is not None:
+            since = cutoff + timedelta(days=1)
+
+    # 2. Fetch every broker (fail-soft per broker).
     datas = [collect_broker_data(a, since) for a in adapters]
     fetch_errors = [(d.broker, d.error) for d in datas if d.error]
     ok = [d for d in datas if d.error is None]
@@ -280,19 +398,23 @@ def run_sync(
     cash = [c for d in ok for c in d.cash]
     positions = [p for d in ok for p in d.positions]
 
-    # 2. Establish opening balances so FIFO reconstructs full holdings.
-    #    --seed synthesizes them from live positions (bootstrap). Otherwise load
-    #    the persisted ones from the sheet (§5/§14 seed persistence) and drop any
-    #    fetched fill dated on/before the seed — those are already baked into the
-    #    opening balance, so keeping them would double-count.
+    # 3. Establish opening balances so FIFO reconstructs full holdings.
+    #    --seed synthesizes them from live positions (bootstrap). Otherwise the
+    #    persisted ones were loaded above; drop any fetched fill dated on/before
+    #    the seed — those are already baked into the opening balance, so keeping
+    #    them would double-count.
     if seed:
-        ob_stocks, ob_options = seed_positions(positions, today)
-    else:
-        ob_stocks, ob_options = writer.read_opening_balances()
-        cutoff = max((t.date for t in (ob_stocks + ob_options)), default=None)
-        if cutoff is not None:
-            stocks = [t for t in stocks if t.date > cutoff]
-            options = [t for t in options if t.date > cutoff]
+        # Opening balance dates the day *before* the forward journal (--since) so
+        # FIFO sees it as the pre-existing lot; falls back to today for a plain
+        # snapshot seed. Back out the journaled fills so the seed isn't double-
+        # counted (current positions already include them).
+        seed_date = (since - timedelta(days=1)) if since else today
+        ob_stocks, ob_options = seed_positions(positions, seed_date)
+        ob_stocks = _backout_openings(ob_stocks, stocks, seed_date, _stock_instrument)
+        ob_options = _backout_openings(ob_options, options, seed_date, _option_instrument)
+    elif cutoff is not None:
+        stocks = [t for t in stocks if t.date > cutoff]
+        options = [t for t in options if t.date > cutoff]
     stocks = ob_stocks + stocks
     options = ob_options + options
 
@@ -313,8 +435,10 @@ def run_sync(
     t_res = writer.upsert_transactions(txn_rows)
 
     # Re-apply formatting now that data rows exist: appended rows inherit the
-    # header's fill/text, so this resets them to the theme default.
+    # header's fill/text, so this resets them to the theme default. Then sort
+    # each tab chronologically (appends land at the bottom).
     writer.apply_formatting()
+    writer.sort_data_tabs()
 
     # 6. Reconcile computed holdings against broker-reported positions.
     holdings = list(stock_result.holdings) + list(option_result.holdings)

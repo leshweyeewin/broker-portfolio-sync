@@ -189,6 +189,39 @@ class TestFxRates(unittest.TestCase):
                 fx.rate("USDSGD", date(2025, 3, 14))
         self.assertIn("429", str(cm.exception))
 
+    # Frankfurter down (403) -> er-api fallback for a recent date
+    def test_recent_date_falls_back_to_erapi_when_frankfurter_fails(self):
+        import urllib.error
+        from datetime import timedelta
+        fx = self._make_fx()
+        recent = date.today() - timedelta(days=1)
+
+        def route(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "frankfurter" in url:
+                raise urllib.error.HTTPError(url=url, code=403, msg="Forbidden", hdrs=None, fp=None)
+            # er-api shape: {"result":"success","rates":{"SGD":1.2801,...}}
+            return _make_http_response(json.dumps({"result": "success", "rates": {"SGD": 1.2801}}))
+
+        with patch("urllib.request.urlopen", side_effect=route):
+            r = fx.rate("USDSGD", recent)
+        self.assertEqual(r, Decimal("1.2801"))
+
+    # Frankfurter down for an OLD date -> no guessing, re-raise
+    def test_old_date_does_not_fall_back(self):
+        import urllib.error
+        fx = self._make_fx()
+
+        def route(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "frankfurter" in url:
+                raise urllib.error.HTTPError(url=url, code=403, msg="Forbidden", hdrs=None, fp=None)
+            return _make_http_response(json.dumps({"result": "success", "rates": {"SGD": 1.2801}}))
+
+        with patch("urllib.request.urlopen", side_effect=route):
+            with self.assertRaises(FxFetchError):
+                fx.rate("USDSGD", date(2020, 1, 2))  # too old to proxy with a current rate
+
     # FxFetchError on network error
     def test_network_error_raises_fx_fetch_error(self):
         import urllib.error

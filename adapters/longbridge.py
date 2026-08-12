@@ -111,50 +111,82 @@ class LongbridgeAdapter:
         return datetime.fromtimestamp(ts, tz=self._tz).date()
 
     # -- executions --------------------------------------------------------- #
+    def _order_fee(self, order) -> Decimal:
+        """Fetch an order's total charge from order_detail, with a rate-limit retry."""
+        import time
+        for attempt in range(3):
+            try:
+                detail = self._client.order_detail(order.order_id)
+                if detail and detail.charge_detail:
+                    return dec(detail.charge_detail.total_amount or "0")
+                return Decimal("0")
+            except Exception as e:  # noqa: BLE001
+                if "429" in str(e) and attempt < 2:
+                    time.sleep(2)  # Wait for rate limit to reset
+                else:
+                    print(f"Warning: Could not fetch fee for {order.symbol} (ID: {order.order_id}): {e}")
+                    return Decimal("0")
+        return Decimal("0")
+
     def fetch_stock_executions(self, since: date | None) -> list[StockTrade]:
-        orders = self._get_filled_orders(since)
         trades: list[StockTrade] = []
-        for order in orders:
+        for order in self._get_filled_orders(since):
             qty = dec(order.executed_quantity)
             if qty == 0:
                 continue
-                
-            # Fetch fee from order details (with rate limit retry)
-            import time
-            fee = Decimal("0")
-            for attempt in range(3):
-                try:
-                    detail = self._client.order_detail(order.order_id)
-                    if detail and detail.charge_detail:
-                        fee = dec(detail.charge_detail.total_amount or "0")
-                    break
-                except Exception as e:
-                    if "429" in str(e) and attempt < 2:
-                        time.sleep(2)  # Wait for rate limit to reset
-                    else:
-                        print(f"Warning: Could not fetch fee for {order.symbol} (ID: {order.order_id}): {e}")
-                        break
+            code = str(order.symbol).split(".")[0]  # Longbridge uses AAPL.US
+            if parse_option_code(code) is not None:
+                continue  # option execution — handled by fetch_option_executions
 
             trades.append(
                 StockTrade(
                     date=self._timestamp_to_date(order.updated_at.timestamp()),
                     broker=Broker.LONGBRIDGE,
-                    ticker=str(order.symbol).split(".")[0], # Longbridge uses AAPL.US
+                    ticker=code,
                     action=StockAction.BUY if order.side == OrderSide.Buy else StockAction.SELL,
                     qty=qty,
                     price=dec(order.executed_price or order.price or "0"),
-                    fee=fee,
+                    fee=self._order_fee(order),
                     currency=str(order.currency),
                     fill_id=str(order.order_id),
+                    timestamp=getattr(order, "updated_at", None),
                 )
             )
         return trades
 
     def fetch_option_executions(self, since: date | None) -> list[OptionTrade]:
-        # Longbridge currently does not provide an options API via openapi SDK 
-        # (OptionPosition doesn't exist, options are managed via mobile app mostly).
-        # We return empty for now unless options are supported in the future.
-        return []
+        """Option executions also arrive via ``history_orders`` — the order symbol
+        is an OCC-style code (e.g. ``PYPL260828C60000.US``). Route those here so
+        they land in the Options tab, not Stocks."""
+        trades: list[OptionTrade] = []
+        for order in self._get_filled_orders(since):
+            qty = dec(order.executed_quantity)
+            if qty == 0:
+                continue
+            code = str(order.symbol).split(".")[0]
+            parsed = parse_option_code(code)
+            if parsed is None:
+                continue  # stock — handled by fetch_stock_executions
+            underlying, otype, strike, expiry = parsed
+
+            trades.append(
+                OptionTrade(
+                    date=self._timestamp_to_date(order.updated_at.timestamp()),
+                    broker=Broker.LONGBRIDGE,
+                    underlying=underlying,
+                    option_type=otype,
+                    strike=strike,
+                    qty=qty,
+                    expiry=expiry,
+                    action=OptionAction.BUY if order.side == OrderSide.Buy else OptionAction.SELL,
+                    premium=dec(order.executed_price or order.price or "0"),
+                    fee=self._order_fee(order),
+                    currency=str(order.currency),
+                    fill_id=str(order.order_id),
+                    timestamp=getattr(order, "updated_at", None),
+                )
+            )
+        return trades
 
     def _get_filled_orders(self, since: date | None) -> list:
         start_at = self._since_to_datetime(since)

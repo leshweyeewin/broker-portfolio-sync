@@ -30,7 +30,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Optional, Protocol, runtime_checkable
@@ -270,6 +270,9 @@ class StockTrade:
     total: Optional[Decimal] = None
     fill_id: Optional[str] = None
     dedup_key: str = field(default="", compare=False)
+    # Full execution timestamp (UTC). Enables datetime-precise incremental
+    # capture; None for synthetic/opening rows. Excluded from equality/dedup.
+    timestamp: Optional[datetime] = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ticker", self.ticker.strip())
@@ -326,6 +329,7 @@ class OptionTrade:
     total: Optional[Decimal] = None
     fill_id: Optional[str] = None
     dedup_key: str = field(default="", compare=False)
+    timestamp: Optional[datetime] = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "underlying", self.underlying.strip())

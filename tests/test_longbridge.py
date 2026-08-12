@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from longport.openapi import OrderSide, OrderStatus, CashFlowDirection
 from adapters.longbridge import LongbridgeAdapter, LongbridgeCredentials
-from adapters.base import Broker, StockAction, CashType, AssetType
+from adapters.base import (
+    Broker, StockAction, CashType, AssetType, OptionAction, OptionType,
+)
 
 
 # --- SDK Fakes ---
@@ -106,6 +108,33 @@ class TestLongbridgeAdapter(unittest.TestCase):
         self.assertEqual(t2.action, StockAction.SELL)
         self.assertEqual(t2.fee, Decimal("2.00"))
         self.assertEqual(t2.ticker, "TSLA")
+
+    def test_option_orders_route_to_options_not_stocks(self):
+        # Option executions arrive via history_orders with an OCC-style symbol.
+        # fetch_stock_executions must skip them; fetch_option_executions claims them.
+        dt = datetime(2026, 8, 12, 14, 0, tzinfo=timezone.utc)
+        self.mock_client.history_orders.return_value = [
+            FakeOrder("s1", "AAPL.US", OrderSide.Buy, "150.00", "10", dt),
+            FakeOrder("o1", "PYPL260828C60000.US", OrderSide.Buy, "0.98", "1", dt),
+        ]
+        self.mock_client.order_detail.return_value = FakeOrderDetail("0.10")
+
+        stocks = self.adapter.fetch_stock_executions(date(2026, 8, 10))
+        self.assertEqual([t.ticker for t in stocks], ["AAPL"])  # option excluded
+
+        opts = self.adapter.fetch_option_executions(date(2026, 8, 10))
+        self.assertEqual(len(opts), 1)
+        o = opts[0]
+        self.assertEqual(o.broker, Broker.LONGBRIDGE)
+        self.assertEqual(o.underlying, "PYPL")
+        self.assertEqual(o.option_type, OptionType.CALL)
+        self.assertEqual(o.strike, Decimal("60"))
+        self.assertEqual(o.expiry, date(2026, 8, 28))
+        self.assertEqual(o.action, OptionAction.BUY)
+        self.assertEqual(o.qty, Decimal("1"))
+        self.assertEqual(o.premium, Decimal("0.98"))
+        self.assertEqual(o.fee, Decimal("0.10"))
+        self.assertEqual(o.fill_id, "o1")
 
     def test_fetch_positions(self):
         self.mock_client.stock_positions.return_value = FakePositionsResponse([

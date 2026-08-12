@@ -88,6 +88,9 @@ class FakeWriter:
     def apply_formatting(self):
         pass
 
+    def sort_data_tabs(self):
+        pass
+
     def read_opening_balances(self):
         return list(self._opening_stocks), list(self._opening_options)
 
@@ -371,3 +374,47 @@ def test_seeding_creates_opening_balance_rows():
     assert _col(writer.stock_rows[0], STOCKS_HEADERS, "Action") == "Opening Balance"
     # Seed matches the reported position -> reconciliation clean.
     assert result.reconciliation == "OK"
+
+
+# --------------------------------------------------------------------------- #
+# Seed back-out: opening balance = current position − forward-journal net
+# --------------------------------------------------------------------------- #
+def test_backout_openings_reconciles_including_closed_instrument():
+    """opening + Σ(journal net) must reconstruct the current position for every
+    instrument — including one fully closed during the window (no position row)."""
+    from core.reconcile import seed_positions
+    from run import _backout_openings, _stock_instrument
+
+    seed_date = date(2026, 8, 9)
+    positions = [
+        Position(broker=Broker.TIGER, asset_type=AssetType.STOCK, symbol="AAPL",
+                 qty=Decimal("100"), avg_cost=Decimal("200"), currency="USD"),
+    ]
+    journal = [
+        # partial sell of a still-held pre-seed lot
+        StockTrade(date=date(2026, 8, 10), broker=Broker.TIGER, ticker="AAPL",
+                   action=StockAction.SELL, qty=40, price="210", currency="USD", fill_id="a1"),
+        # a lot fully closed in-window: not in current positions
+        StockTrade(date=date(2026, 8, 11), broker=Broker.TIGER, ticker="CEG",
+                   action=StockAction.SELL, qty=50, price="9", currency="USD", fill_id="c1"),
+    ]
+
+    ob_stocks, _ = seed_positions(positions, seed_date)
+    openings = _backout_openings(ob_stocks, journal, seed_date, _stock_instrument)
+    by_ticker = {o.ticker: o for o in openings}
+
+    # AAPL: held 100 now, sold 40 in-window -> opened the window with 140.
+    assert by_ticker["AAPL"].qty == Decimal("140")
+    # CEG: flat now, sold 50 in-window -> opened the window long 50 (synthesized).
+    assert by_ticker["CEG"].qty == Decimal("50")
+    assert by_ticker["CEG"].action == StockAction.OPENING_BALANCE
+    assert by_ticker["CEG"].price == Decimal("9")  # journal VWAP
+    # all openings dated the seed date, one row per instrument
+    assert all(o.date == seed_date for o in openings)
+
+    # Reconcile property: opening + net journal == current position.
+    def net(ticker):
+        return sum((t.qty if t.action.is_acquisition else -t.qty)
+                   for t in journal if t.ticker == ticker)
+    assert by_ticker["AAPL"].qty + net("AAPL") == Decimal("100")
+    assert by_ticker["CEG"].qty + net("CEG") == Decimal("0")

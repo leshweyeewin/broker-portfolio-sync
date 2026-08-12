@@ -205,12 +205,32 @@ class TigerAdapter:
         tz_name = timezone or (credentials.timezone if credentials else "Asia/Singapore")
         self._tz = ZoneInfo(tz_name)
         self._cash_enabled = cash_movements_enabled
+        self._account_ids_cache: Optional[list] = None
 
         if client is not None:
             self._client = client
         else:
             assert credentials is not None
             self._client = self._build_client(credentials)
+
+    # -- accounts ----------------------------------------------------------- #
+    def _account_ids(self) -> list:
+        """Real (non-paper) Tiger account ids to query — a login can hold several
+        (e.g. a margin account plus a CASH 'boost' account). ``[None]`` falls back
+        to the client's default account when the list can't be determined."""
+        if self._account_ids_cache is None:
+            ids: list = []
+            try:
+                for a in (self._client.get_managed_accounts() or []):
+                    if str(getattr(a, "account_type", "")).upper() == "PAPER":
+                        continue
+                    acct = getattr(a, "account", None)
+                    if acct:
+                        ids.append(str(acct))
+            except Exception as exc:  # noqa: BLE001 — fall back to default account
+                log.warning("Tiger get_managed_accounts failed: %s", exc)
+            self._account_ids_cache = ids or [None]
+        return self._account_ids_cache
 
     # -- client construction ------------------------------------------------ #
     @staticmethod
@@ -261,6 +281,7 @@ class TigerAdapter:
                     fee=self._order_fee(order),
                     currency=self._currency(contract),
                     fill_id=self._order_id(order),
+                    timestamp=self._order_datetime(order),
                 )
             )
         return trades
@@ -288,6 +309,7 @@ class TigerAdapter:
                     currency=self._currency(contract),
                     multiplier=self._multiplier(contract),
                     fill_id=self._order_id(order),
+                    timestamp=self._order_datetime(order),
                 )
             )
         return trades
@@ -299,22 +321,24 @@ class TigerAdapter:
         start_date = since if since else date(today.year - 1, today.month, today.day)
 
         all_orders = []
-        cur_start = start_date
-        while cur_start <= today:
-            cur_end = min(cur_start + timedelta(days=89), today)
-            start_ms = int(datetime(cur_start.year, cur_start.month, cur_start.day, tzinfo=self._tz).timestamp() * 1000)
-            end_ms = int(datetime(cur_end.year, cur_end.month, cur_end.day, 23, 59, 59, tzinfo=self._tz).timestamp() * 1000)
+        for account in self._account_ids():
+            cur_start = start_date
+            while cur_start <= today:
+                cur_end = min(cur_start + timedelta(days=89), today)
+                start_ms = int(datetime(cur_start.year, cur_start.month, cur_start.day, tzinfo=self._tz).timestamp() * 1000)
+                end_ms = int(datetime(cur_end.year, cur_end.month, cur_end.day, 23, 59, 59, tzinfo=self._tz).timestamp() * 1000)
 
-            res = self._client.get_filled_orders(
-                sec_type=sec_type,
-                market=Market.ALL,
-                start_time=start_ms,
-                end_time=end_ms,
-                limit=1000,
-            )
-            if res:
-                all_orders.extend(list(res))
-            cur_start = cur_end + timedelta(days=1)
+                res = self._client.get_filled_orders(
+                    account=account,
+                    sec_type=sec_type,
+                    market=Market.ALL,
+                    start_time=start_ms,
+                    end_time=end_ms,
+                    limit=1000,
+                )
+                if res:
+                    all_orders.extend(list(res))
+                cur_start = cur_end + timedelta(days=1)
 
         seen_ids = set()
         unique_orders = []
@@ -336,9 +360,13 @@ class TigerAdapter:
         return positions
 
     def _fetch_positions(self, sec_type: SecurityType) -> list[Position]:
-        result = self._client.get_positions(
-            sec_type=sec_type, currency=Currency.ALL, market=Market.ALL
-        )
+        result = []
+        for account in self._account_ids():
+            res = self._client.get_positions(
+                account=account, sec_type=sec_type, currency=Currency.ALL, market=Market.ALL
+            )
+            if res:
+                result.extend(list(res))
         if not result:
             return []
         today = datetime.now(tz=self._tz).date()
@@ -531,6 +559,13 @@ class TigerAdapter:
         if ts is None:
             raise ValueError(f"Tiger order {self._order_id(order)} has no trade_time")
         return self._epoch_ms_to_date(ts)
+
+    def _order_datetime(self, order) -> Optional[datetime]:
+        """Full execution timestamp (tz-aware), for datetime-precise incrementals."""
+        ts = getattr(order, "trade_time", None) or getattr(order, "order_time", None)
+        if ts is None:
+            return None
+        return datetime.fromtimestamp(int(ts) / 1000, tz=self._tz)
 
     @staticmethod
     def _order_fee(order) -> Decimal:

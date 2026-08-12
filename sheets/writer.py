@@ -309,6 +309,49 @@ class PortfolioWriter:
                 for s in meta["sheets"]
             }
         self._apply_formatting()
+        self._write_summary_formulas()
+
+    def _write_summary_formulas(self) -> None:
+        """(Re-)assert the Total P/L / Total Fees SUM formulas AFTER data rows
+        exist. The append uses INSERT_ROWS, which shifts an ``=SUM(K4:K)`` written
+        pre-append down to ``=SUM(K<n+1>:K)`` (summing nothing). Writing it here,
+        after the upsert, pins it back to the fixed data range."""
+        self._client.batch_update_values([
+            {"range": f"{TAB_STOCKS}!A1:B2", "values": [
+                ["Total P/L", "=SUM(K4:K)"], ["Total Fees", "=SUM(H4:H)"]]},
+            {"range": f"{TAB_OPTIONS}!A1:B2", "values": [
+                ["Total P/L", "=SUM(O4:O)"], ["Total Fees", "=SUM(L4:L)"]]},
+        ])
+
+    def sort_data_tabs(self) -> None:
+        """Sort each data tab's rows by Date (column A) ascending. Call after
+        writes — the upsert appends new rows at the bottom, so the sheet needs a
+        re-sort to stay chronological."""
+        if not self._sheet_ids:
+            self.apply_formatting()  # populates sheet ids as a side effect
+        tab_widths = {
+            TAB_TRANSACTIONS: len(TRANSACTIONS_HEADERS),
+            TAB_STOCKS: len(STOCKS_HEADERS),
+            TAB_OPTIONS: len(OPTIONS_HEADERS),
+        }
+        requests = []
+        for tab, ncols in tab_widths.items():
+            sheet_id = self._sheet_ids.get(tab)
+            if sheet_id is None:
+                continue
+            requests.append({
+                "sortRange": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": DATA_HEADER_ROWS.get(tab, 1),  # first data row (0-based)
+                        "startColumnIndex": 0,
+                        "endColumnIndex": ncols,
+                    },
+                    "sortSpecs": [{"dimensionIndex": 0, "sortOrder": "ASCENDING"}],
+                }
+            })
+        if requests:
+            self._client.batch_update(requests)
 
     def upsert_transactions(self, rows: list[list[Any]]) -> UpsertResult:
         """Idempotent upsert for the Transactions tab.

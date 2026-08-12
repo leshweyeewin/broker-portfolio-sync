@@ -1,12 +1,17 @@
 # Daily broker portfolio sync (Windows Task Scheduler entrypoint).
 #
-# Incremental forward run: `run.py --since <7 days ago>` (NO --seed). run.py
-# loads the persisted Opening Balances from the sheet into FIFO and drops any
-# fetched fill dated on/before the seed, so holdings reconcile and realized P/L
-# is correct while new trades accumulate. The 7-day window catches late-settling
-# fills; the idempotent upsert dedups the overlap.
+# Forward run: `run.py` with NO --since and NO --seed. run.py loads the persisted
+# Opening Balances (seeded as of 2026-08-09) from the sheet into FIFO and drops
+# every fetched fill dated on/before that seed, keeping the whole forward journal.
 #
-# One-time bootstrap (already done) was `run.py --seed --since <future>`.
+# Why no --since: the sheet persists only the Opening-Balance rows, not the
+# journaled Buy/Sell rows, so FIFO must re-see *all* post-seed fills each run to
+# price a later sale of a post-seed lot correctly. A rolling window would lose the
+# basis of anything bought before it. The idempotent upsert means re-fetching the
+# forward journal every run only updates in place — nothing duplicates or drifts.
+# (Tiger's API returns ~1 year regardless of --since; the pre-seed part is dropped.)
+#
+# One-time bootstrap (already done) was `run.py --seed --since 2026-08-10`.
 #
 # MooMoo only syncs if the OpenD gateway is running at run time; if it isn't,
 # MooMoo fails-soft (PARTIAL) and Tiger + Longbridge still sync.
@@ -24,10 +29,9 @@ Set-Location $repo
 $logDir = Join-Path $repo "logs"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 
-$since = (Get-Date).AddDays(-7).ToString("yyyy-MM-dd")
 $log = Join-Path $logDir ("sync_" + (Get-Date).ToString("yyyyMMdd_HHmmss") + ".log")
 
-& "$repo\.venv\Scripts\python.exe" run.py --since $since *> $log
+& "$repo\.venv\Scripts\python.exe" run.py *> $log
 $exit = $LASTEXITCODE
 
 # Keep the log directory tidy — drop runs older than 30 days.
