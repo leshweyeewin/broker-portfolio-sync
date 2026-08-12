@@ -312,6 +312,10 @@ def run_sync(
     o_res = writer.upsert_options(option_rows)
     t_res = writer.upsert_transactions(txn_rows)
 
+    # Re-apply formatting now that data rows exist: appended rows inherit the
+    # header's fill/text, so this resets them to the theme default.
+    writer.apply_formatting()
+
     # 6. Reconcile computed holdings against broker-reported positions.
     holdings = list(stock_result.holdings) + list(option_result.holdings)
     recon_warnings = reconcile(holdings, positions)

@@ -85,6 +85,9 @@ class FakeWriter:
     def ensure_tabs(self):
         self.ensured = True
 
+    def apply_formatting(self):
+        pass
+
     def read_opening_balances(self):
         return list(self._opening_stocks), list(self._opening_options)
 

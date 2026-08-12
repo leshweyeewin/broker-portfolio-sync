@@ -294,6 +294,22 @@ class PortfolioWriter:
         # Hide _dedup_key column on data tabs
         self._hide_dedup_columns()
 
+    def apply_formatting(self) -> None:
+        """Re-apply colours/number formats — call AFTER writing data rows.
+
+        Data rows are appended *below* the header, so they inherit the header's
+        green fill + white text; re-running the (idempotent) formatting once the
+        rows exist resets them to the theme default. Populates sheet IDs if a
+        prior ``ensure_tabs`` hasn't already.
+        """
+        if not self._sheet_ids:
+            meta = self._client.get_sheet_metadata()
+            self._sheet_ids = {
+                s["properties"]["title"]: s["properties"]["sheetId"]
+                for s in meta["sheets"]
+            }
+        self._apply_formatting()
+
     def upsert_transactions(self, rows: list[list[Any]]) -> UpsertResult:
         """Idempotent upsert for the Transactions tab.
 
@@ -603,15 +619,18 @@ class PortfolioWriter:
             for _ in range(cf_counts.get(sheet_id, 0)):
                 requests.append({"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": 0}})
 
-            # (b) Reset the whole sheet's background AND number format (clears
-            #     lingering fills and stale per-column formats left over from
-            #     earlier layouts, e.g. currency stuck on the wrong column after a
-            #     column was removed). Specific formats are re-applied below.
+            # (b) CLEAR background, text colour and number format over the whole
+            #     sheet — reverting to the theme default (so dark mode stays dark,
+            #     light stays light) and wiping stale fills/formats. Crucially
+            #     this also strips the green fill + white text that appended data
+            #     rows inherit from the header. Specific formats re-applied below.
             requests.append({
                 "repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": 0, "startColumnIndex": 0},
-                    "cell": {"userEnteredFormat": {"backgroundColor": {"red": 1, "green": 1, "blue": 1}}},
-                    "fields": "userEnteredFormat(backgroundColor,numberFormat)",
+                    "cell": {},
+                    "fields": ("userEnteredFormat.backgroundColor,"
+                               "userEnteredFormat.textFormat.foregroundColor,"
+                               "userEnteredFormat.numberFormat"),
                 }
             })
 

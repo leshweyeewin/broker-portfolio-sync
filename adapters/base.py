@@ -28,6 +28,7 @@ you receive is positive.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -51,6 +52,7 @@ __all__ = [
     "BrokerAdapter",
     "make_dedup_key",
     "opening_dedup_key",
+    "parse_option_code",
 ]
 
 
@@ -188,6 +190,27 @@ def opening_dedup_key(broker: Broker, ticker: str) -> str:
 def _signed_total(is_acquisition: bool, magnitude: Decimal) -> Decimal:
     """Apply the total sign convention: acquisitions negative, sells positive."""
     return -magnitude if is_acquisition else magnitude
+
+
+_OPTION_CODE_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+)$")
+
+
+def parse_option_code(code: str) -> Optional[tuple]:
+    """Parse an OCC-style option code body into its parts, or ``None`` for a
+    plain stock ticker (so callers can branch stock vs. option).
+
+    ``"SNDQ260821P23000"`` -> ``("SNDQ", OptionType.PUT, Decimal("23"),
+    date(2026, 8, 21))``. Strike is the trailing digits / 1000 (brokers such as
+    MooMoo and Longbridge omit OCC's zero-padding).
+    """
+    m = _OPTION_CODE_RE.match(str(code).strip())
+    if not m:
+        return None
+    otype = OptionType.CALL if m.group("cp") == "C" else OptionType.PUT
+    strike = dec(int(m.group("s"))) / Decimal("1000")
+    d = m.group("d")
+    expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
+    return m.group("u"), otype, strike, expiry
 
 
 # --------------------------------------------------------------------------- #

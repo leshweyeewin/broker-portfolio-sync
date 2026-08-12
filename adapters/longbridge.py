@@ -40,6 +40,7 @@ from adapters.base import (
     StockAction,
     StockTrade,
     dec,
+    parse_option_code,
 )
 
 # --------------------------------------------------------------------------- #
@@ -182,19 +183,25 @@ class LongbridgeAdapter:
                 qty = dec(pos.quantity)
                 if qty == 0:
                     continue
-                    
-                positions.append(
-                    Position(
-                        broker=Broker.LONGBRIDGE,
-                        asset_type=AssetType.STOCK,
-                        symbol=str(pos.symbol).split(".")[0],
-                        qty=qty,
-                        avg_cost=dec(pos.cost_price),
-                        currency=str(pos.currency),
-                        market_price=None, # SDK doesn't return market_price directly in position
-                        as_of=today,
-                    )
+
+                code = str(pos.symbol).split(".")[0]
+                opt = parse_option_code(code)
+                common = dict(
+                    broker=Broker.LONGBRIDGE,
+                    qty=qty,
+                    avg_cost=dec(pos.cost_price),
+                    currency=str(pos.currency),
+                    market_price=None,  # SDK doesn't return market_price on the position
+                    as_of=today,
                 )
+                if opt is None:
+                    positions.append(Position(asset_type=AssetType.STOCK, symbol=code, **common))
+                else:
+                    underlying, otype, strike, expiry = opt
+                    positions.append(Position(
+                        asset_type=AssetType.OPTION, symbol=underlying,
+                        option_type=otype, strike=strike, expiry=expiry, **common,
+                    ))
         return positions
 
     # -- cash movements (§8, best-effort per §14) --------------------------- #
