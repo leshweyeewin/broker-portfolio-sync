@@ -743,7 +743,11 @@ class PortfolioWriter:
                                                "textFormat": {"foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}}},
                 }, "index": 0}})
 
-            # (i) Conditional: option expiry within 7 days -> yellow.
+            # (i) Conditional: option expiring THIS week (today through the coming
+            #     Saturday) -> yellow. `TODAY()+MOD(6-WEEKDAY(TODAY(),2),7)` is the
+            #     upcoming Saturday (WEEKDAY(...,2): Mon=1..Sun=7; Sat=6), so a
+            #     next-week expiry like Aug 19 isn't highlighted, only the current
+            #     week's Fri/Sat expiries.
             if tab == TAB_OPTIONS:
                 expiry_col = 7  # Column H
                 cell_ref = f"H{first_data_0 + 1}"  # 1-based first data row
@@ -751,7 +755,8 @@ class PortfolioWriter:
                     "ranges": [{"sheetId": sheet_id, "startRowIndex": first_data_0,
                                 "startColumnIndex": expiry_col, "endColumnIndex": expiry_col + 1}],
                     "booleanRule": {"condition": {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue":
-                                    f'=AND({cell_ref}<>"", {cell_ref}>=TODAY(), {cell_ref}<=TODAY()+7)'}]},
+                                    f'=AND({cell_ref}<>"", {cell_ref}>=TODAY(), '
+                                    f'{cell_ref}<=TODAY()+MOD(6-WEEKDAY(TODAY(),2),7))'}]},
                                     "format": {"backgroundColor": {"red": 1, "green": 1, "blue": 0.8}}},
                 }, "index": 0}})
 

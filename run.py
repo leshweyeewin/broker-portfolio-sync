@@ -70,6 +70,12 @@ ZERO = Decimal("0")
 # via env for a one-time full-history bootstrap (Tiger's multi-year pull is slow).
 BROKER_FETCH_TIMEOUT_S = float(os.environ.get("BROKER_FETCH_TIMEOUT_S", "180"))
 
+# Over-fetch this far before the opening-balance cutoff so a broker's coarse,
+# timezone-shifted `since` filter can't drop a boundary fill that is actually
+# after the cutoff on our (SGT) calendar. The pre-cutoff overshoot is dropped
+# after fetch by our own trade dates. 4 days safely spans a weekend + TZ skew.
+_FETCH_BUFFER = timedelta(days=4)
+
 # A notifier takes a message and returns True if it was delivered. Injected so
 # tests can assert on alerts; main() uses alerting.notify.notify_safe.
 Notifier = Callable[[str], bool]
@@ -373,23 +379,32 @@ def run_sync(
     """Run one full sync pass over ``adapters`` into ``writer``. See module docs."""
     today = today or date.today()
 
-    # 1. On a forward run, load the persisted Opening Balances FIRST so we can
-    #    bound the fetch to the forward-journal window (seed date + 1). This makes
-    #    every daily run fetch the *same* window the seed used, so the results are
-    #    identical and idempotent — a wider window would surface pre-seed lots the
-    #    seed's back-out never accounted for (phantom shorts) and drift the sheet,
-    #    besides hammering per-order fee endpoints into rate limits.
+    # 1. Establish the opening-balance CUTOFF (fills on/before it belong to the
+    #    opening balance; fills after it are the forward journal) and the fetch
+    #    window. On a forward run the cutoff comes from the persisted Opening
+    #    Balances; on a seed it's the day before --since. Both modes then fetch and
+    #    drop against the SAME cutoff, so a daily run reproduces the seed's journal
+    #    exactly (idempotent, no drift).
     ob_stocks: list[StockTrade] = []
     ob_options: list[OptionTrade] = []
-    cutoff: Optional[date] = None
-    if not seed:
+    seed_date: Optional[date] = None
+    if seed:
+        seed_date = (since - timedelta(days=1)) if since else today
+        cutoff: Optional[date] = seed_date
+    else:
         ob_stocks, ob_options = writer.read_opening_balances()
         cutoff = max((t.date for t in (ob_stocks + ob_options)), default=None)
-        if since is None and cutoff is not None:
-            since = cutoff + timedelta(days=1)
+
+    # Fetch a few days BEFORE the cutoff: a broker's `since` filter is coarse and
+    # applied in the broker's own timezone, so an early-in-the-day fill that is
+    # after the cutoff on our (SGT) calendar can fall before it on theirs and get
+    # dropped. We over-fetch, then drop the pre-cutoff overshoot by our own date.
+    fetch_since = since
+    if cutoff is not None:
+        fetch_since = cutoff - _FETCH_BUFFER
 
     # 2. Fetch every broker (fail-soft per broker).
-    datas = [collect_broker_data(a, since) for a in adapters]
+    datas = [collect_broker_data(a, fetch_since) for a in adapters]
     fetch_errors = [(d.broker, d.error) for d in datas if d.error]
     ok = [d for d in datas if d.error is None]
 
@@ -398,23 +413,18 @@ def run_sync(
     cash = [c for d in ok for c in d.cash]
     positions = [p for d in ok for p in d.positions]
 
-    # 3. Establish opening balances so FIFO reconstructs full holdings.
-    #    --seed synthesizes them from live positions (bootstrap). Otherwise the
-    #    persisted ones were loaded above; drop any fetched fill dated on/before
-    #    the seed — those are already baked into the opening balance, so keeping
-    #    them would double-count.
+    # 3. Drop fills on/before the cutoff (baked into the opening balance) using our
+    #    own trade dates, keeping the forward journal. Then establish the opening
+    #    balances: --seed synthesizes them from live positions with the journal
+    #    backed out (so the seed isn't double-counted); a forward run reuses the
+    #    persisted ones loaded above.
+    if cutoff is not None:
+        stocks = [t for t in stocks if t.date > cutoff]
+        options = [t for t in options if t.date > cutoff]
     if seed:
-        # Opening balance dates the day *before* the forward journal (--since) so
-        # FIFO sees it as the pre-existing lot; falls back to today for a plain
-        # snapshot seed. Back out the journaled fills so the seed isn't double-
-        # counted (current positions already include them).
-        seed_date = (since - timedelta(days=1)) if since else today
         ob_stocks, ob_options = seed_positions(positions, seed_date)
         ob_stocks = _backout_openings(ob_stocks, stocks, seed_date, _stock_instrument)
         ob_options = _backout_openings(ob_options, options, seed_date, _option_instrument)
-    elif cutoff is not None:
-        stocks = [t for t in stocks if t.date > cutoff]
-        options = [t for t in options if t.date > cutoff]
     stocks = ob_stocks + stocks
     options = ob_options + options
 
