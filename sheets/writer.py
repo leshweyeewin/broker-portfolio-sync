@@ -713,12 +713,14 @@ class PortfolioWriter:
                 }
             })
 
-            # (f) Basic filter on the header row; default-hide Closed rows.
+            # (f) Basic filter on the header row (enables the column filter
+            #     dropdowns). Deliberately NO hidden-values criteria: hiding rows
+            #     also makes sortRange reorder only the visible rows — leaving the
+            #     hidden ones pinned and the underlying data jumbled. The user can
+            #     filter manually via the dropdowns if they want.
             status_col = 9 if tab == TAB_STOCKS else (13 if tab == TAB_OPTIONS else None)
             filter_payload = {"range": {"sheetId": sheet_id, "startRowIndex": header_row_0,
                                         "startColumnIndex": 0, "endColumnIndex": col_count}}
-            if status_col is not None:
-                filter_payload["criteria"] = {str(status_col): {"hiddenValues": ["Closed"]}}
             requests.append({"setBasicFilter": {"filter": filter_payload}})
 
             # (g) Conditional: Buy -> green, Sell -> red (Action column, data rows).
