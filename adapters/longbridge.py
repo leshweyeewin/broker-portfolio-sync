@@ -236,6 +236,21 @@ class LongbridgeAdapter:
                     ))
         return positions
 
+    # -- account value (§4 dashboard) --------------------------------------- #
+    def fetch_account_value(self) -> list[tuple[Decimal, str]]:
+        """Net asset value per currency balance, as (amount, currency)."""
+        out: list[tuple[Decimal, str]] = []
+        try:
+            balances = self._client.account_balance()
+        except Exception as e:  # noqa: BLE001
+            print(f"Warning: Longbridge account_balance failed: {e}")
+            return out
+        for b in (balances or []):
+            na = getattr(b, "net_assets", None)
+            if na is not None:
+                out.append((dec(na), str(getattr(b, "currency", "SGD") or "SGD")))
+        return out
+
     # -- cash movements (§8, best-effort per §14) --------------------------- #
     def fetch_cash_movements(self, since: date | None) -> list[CashMovement]:
         if not self._cash_enabled:

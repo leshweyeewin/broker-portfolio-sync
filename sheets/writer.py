@@ -324,32 +324,45 @@ class PortfolioWriter:
         ])
 
     def sort_data_tabs(self) -> None:
-        """Sort each data tab's rows by Date (column A) ascending. Call after
-        writes — the upsert appends new rows at the bottom, so the sheet needs a
-        re-sort to stay chronological."""
+        """Sort each data tab's rows by Date (column A) ascending, keeping the
+        hide-Closed filter on the Stocks/Options view.
+
+        Order matters: a basic filter that hides rows makes ``sortRange`` reorder
+        only the *visible* rows, pinning the hidden ones and jumbling the data. So
+        for each tab we clear the filter, sort ALL rows, then re-apply the filter
+        (hiding Closed on Stocks/Options). Net effect: fully sorted underlying
+        data, Closed rows hidden in the view. Call after writes — the upsert
+        appends new rows at the bottom."""
         if not self._sheet_ids:
             self.apply_formatting()  # populates sheet ids as a side effect
-        tab_widths = {
-            TAB_TRANSACTIONS: len(TRANSACTIONS_HEADERS),
-            TAB_STOCKS: len(STOCKS_HEADERS),
-            TAB_OPTIONS: len(OPTIONS_HEADERS),
+        # tab -> (column count, Status column index for the hide-Closed filter)
+        tabs = {
+            TAB_TRANSACTIONS: (len(TRANSACTIONS_HEADERS), None),
+            TAB_STOCKS: (len(STOCKS_HEADERS), 9),
+            TAB_OPTIONS: (len(OPTIONS_HEADERS), 13),
         }
         requests = []
-        for tab, ncols in tab_widths.items():
+        for tab, (ncols, status_col) in tabs.items():
             sheet_id = self._sheet_ids.get(tab)
             if sheet_id is None:
                 continue
-            requests.append({
-                "sortRange": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": DATA_HEADER_ROWS.get(tab, 1),  # first data row (0-based)
-                        "startColumnIndex": 0,
-                        "endColumnIndex": ncols,
-                    },
-                    "sortSpecs": [{"dimensionIndex": 0, "sortOrder": "ASCENDING"}],
-                }
-            })
+            header_row_0 = DATA_HEADER_ROWS.get(tab, 1) - 1
+            first_data_0 = DATA_HEADER_ROWS.get(tab, 1)
+            # 1. Clear the filter so the sort covers every row.
+            requests.append({"clearBasicFilter": {"sheetId": sheet_id}})
+            # 2. Sort all data rows ascending by date.
+            requests.append({"sortRange": {
+                "range": {"sheetId": sheet_id, "startRowIndex": first_data_0,
+                          "startColumnIndex": 0, "endColumnIndex": ncols},
+                "sortSpecs": [{"dimensionIndex": 0, "sortOrder": "ASCENDING"}],
+            }})
+            # 3. Re-apply the filter (dropdowns on the header; hide Closed rows on
+            #    Stocks/Options). This only hides in the view — data stays sorted.
+            filter_payload = {"range": {"sheetId": sheet_id, "startRowIndex": header_row_0,
+                                        "startColumnIndex": 0, "endColumnIndex": ncols}}
+            if status_col is not None:
+                filter_payload["criteria"] = {str(status_col): {"hiddenValues": ["Closed"]}}
+            requests.append({"setBasicFilter": {"filter": filter_payload}})
         if requests:
             self._client.batch_update(requests)
 
@@ -386,6 +399,57 @@ class PortfolioWriter:
         self._client.batch_update_values([
             {"range": f"{TAB_DASHBOARD}!A1", "values": blocks}
         ])
+        # Currency-format the numeric region (broker columns B..E of the money
+        # rows) so values read as clean SGD amounts, not raw 4-dp floats.
+        sheet_id = self._sheet_ids.get(TAB_DASHBOARD)
+        if sheet_id is None:
+            meta = self._client.get_sheet_metadata()
+            self._sheet_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
+                               for s in meta["sheets"]}
+            sheet_id = self._sheet_ids.get(TAB_DASHBOARD)
+        # Money rows only (Net Capital In, Account Value, Total P/L, Realized P/L)
+        # — rows 2..5. Excludes the integer Open-Positions counts and text rows.
+        money_end = min(5, len(blocks))
+        if sheet_id is not None and money_end > 1:
+            self._client.batch_update([{"repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": money_end,
+                          "startColumnIndex": 1, "endColumnIndex": len(DASHBOARD_HEADERS)},
+                "cell": {"userEnteredFormat": {"numberFormat": {
+                    "type": "CURRENCY", "pattern": "#,##0.00"}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }}])
+
+    def read_net_capital_in_by_broker(self) -> dict[str, "Decimal"]:
+        """Net external capital per broker = Σ Deposits − Σ Withdrawals, in SGD,
+        read from the Transactions tab (which holds full history; a single run only
+        fetches a recent window). Used by the Dashboard to compute Total P/L."""
+        from decimal import Decimal
+        try:
+            vals = self._client.get_values(
+                f"{TAB_TRANSACTIONS}!A:{_col_letter(len(TRANSACTIONS_HEADERS))}",
+                value_render_option="UNFORMATTED_VALUE",
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("Could not read Transactions for net capital in", exc_info=True)
+            return {}
+        idx = {h: i for i, h in enumerate(TRANSACTIONS_HEADERS)}
+        bi, ti, si = idx["Broker"], idx["Type"], idx["Amount (SGD)"]
+        hr = DATA_HEADER_ROWS.get(TAB_TRANSACTIONS, 1)
+        out: dict[str, Decimal] = {}
+        for row in vals[hr:] if len(vals) > hr else []:
+            if len(row) <= si:
+                continue
+            typ = str(row[ti]).strip().lower()
+            sign = 1 if typ == "deposit" else (-1 if typ == "withdrawal" else 0)
+            if not sign:
+                continue
+            try:
+                amt = Decimal(str(row[si]))
+            except Exception:  # noqa: BLE001
+                continue
+            broker = str(row[bi]).strip()
+            out[broker] = out.get(broker, Decimal("0")) + sign * amt
+        return out
 
     def read_opening_balances(self):
         """Read persisted Opening Balance rows back as OPENING_BALANCE trades.
@@ -713,15 +777,11 @@ class PortfolioWriter:
                 }
             })
 
-            # (f) Basic filter on the header row (enables the column filter
-            #     dropdowns). Deliberately NO hidden-values criteria: hiding rows
-            #     also makes sortRange reorder only the visible rows — leaving the
-            #     hidden ones pinned and the underlying data jumbled. The user can
-            #     filter manually via the dropdowns if they want.
+            # (f) The basic filter (which hides Closed rows) is owned by
+            #     sort_data_tabs, not here: it must be cleared *around* the sort so
+            #     the sort reorders ALL rows, then re-applied. status_col is still
+            #     needed for the Closed->grey conditional format below.
             status_col = 9 if tab == TAB_STOCKS else (13 if tab == TAB_OPTIONS else None)
-            filter_payload = {"range": {"sheetId": sheet_id, "startRowIndex": header_row_0,
-                                        "startColumnIndex": 0, "endColumnIndex": col_count}}
-            requests.append({"setBasicFilter": {"filter": filter_payload}})
 
             # (g) Conditional: Buy -> green, Sell -> red (Action column, data rows).
             action_col = 3 if tab == TAB_STOCKS else (8 if tab == TAB_OPTIONS else None)

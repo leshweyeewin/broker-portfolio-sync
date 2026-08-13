@@ -367,6 +367,21 @@ class MooMooAdapter:
         """
         return []
 
+    # -- account value (§4 dashboard) --------------------------------------- #
+    def fetch_account_value(self) -> list[tuple[Decimal, str]]:
+        """Total account assets as (amount, currency). ``accinfo_query`` is
+        account-wide (OpenD ignores the market filter), so query once."""
+        ctx = self._context(self._markets[0])
+        ret, data = ctx.accinfo_query(refresh_cache=True)
+        if ret != 0 or not hasattr(data, "iterrows"):
+            return []
+        out: list[tuple[Decimal, str]] = []
+        for _, row in data.iterrows():
+            total = row.get("total_assets")
+            if total is not None:
+                out.append((Decimal(str(total)), str(row.get("currency", "HKD") or "HKD")))
+        return out
+
     # -- field helpers ------------------------------------------------------ #
     @staticmethod
     def _parse_code(code: str):

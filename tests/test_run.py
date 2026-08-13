@@ -94,6 +94,9 @@ class FakeWriter:
     def read_opening_balances(self):
         return list(self._opening_stocks), list(self._opening_options)
 
+    def read_net_capital_in_by_broker(self):
+        return dict(getattr(self, "_net_capital_in", {}))
+
     def upsert_stocks(self, rows):
         self.stock_rows = rows
         return UpsertResult(tab="Stocks", added=len(rows), updated=0)
@@ -418,3 +421,29 @@ def test_backout_openings_reconciles_including_closed_instrument():
                    for t in journal if t.ticker == ticker)
     assert by_ticker["AAPL"].qty + net("AAPL") == Decimal("100")
     assert by_ticker["CEG"].qty + net("CEG") == Decimal("0")
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard: Net Capital In / Account Value / Total P/L
+# --------------------------------------------------------------------------- #
+def test_dashboard_total_pl_is_value_minus_capital():
+    from run import _build_dashboard
+    dash = _build_dashboard(
+        "OK", [], {}, "OK",
+        account_value_sgd={"Tiger": Decimal("150"), "Longbridge": Decimal("60"),
+                           "MooMoo": Decimal("80")},
+        net_capital_in={"Tiger": Decimal("100"), "Longbridge": Decimal("50")},
+    )
+    rows = {r[0]: r for r in dash}
+    # header order: [Metric, Longbridge, Tiger, MooMoo, Total (SGD)]
+    cap = rows["Net Capital In (SGD)"]
+    val = rows["Account Value (SGD)"]
+    pl = rows["Total P/L (SGD)"]
+    assert cap[1] == 50.0 and cap[2] == 100.0            # Longbridge, Tiger
+    assert val[2] == 150.0 and val[3] == 80.0            # Tiger, MooMoo
+    # Total P/L = value - capital: Longbridge 10, Tiger 50
+    assert pl[1] == 10.0 and pl[2] == 50.0
+    # MooMoo holds value but capital-in unknown -> blank, not a misleading number
+    assert pl[3] == ""
+    # Total column excludes the un-computable MooMoo leg
+    assert pl[4] == 60.0

@@ -93,6 +93,8 @@ class BrokerData:
     options: list[OptionTrade] = field(default_factory=list)
     cash: list[CashMovement] = field(default_factory=list)
     positions: list[Position] = field(default_factory=list)
+    # Current net-liquidation value per account, as (amount, currency).
+    account_value: list[tuple[Decimal, str]] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -115,6 +117,19 @@ class RunResult:
 # --------------------------------------------------------------------------- #
 # Fetch — one broker, fail-soft
 # --------------------------------------------------------------------------- #
+def _safe_account_value(adapter: BrokerAdapter) -> list[tuple[Decimal, str]]:
+    """Fetch an adapter's account value if it supports it, guarded so a failure
+    (or an adapter without the method) never sinks the broker's whole fetch."""
+    fn = getattr(adapter, "fetch_account_value", None)
+    if fn is None:
+        return []
+    try:
+        return list(fn())
+    except Exception:  # noqa: BLE001
+        log.warning("Account-value fetch failed for %s", adapter.name, exc_info=True)
+        return []
+
+
 def collect_broker_data(
     adapter: BrokerAdapter,
     since: Optional[date],
@@ -138,6 +153,7 @@ def collect_broker_data(
                 options=list(adapter.fetch_option_executions(since)),
                 cash=list(adapter.fetch_cash_movements(since)),
                 positions=list(adapter.fetch_positions()),
+                account_value=_safe_account_value(adapter),
             )
         except Exception as exc:  # noqa: BLE001 — deliberately broad; recorded, not swallowed
             log.exception("Broker %s fetch failed", adapter.name)
@@ -229,22 +245,60 @@ def _build_dashboard(
     holdings: Sequence,
     realized_sgd_by_broker: dict[str, Decimal],
     reconciliation: str,
+    *,
+    account_value_sgd: Optional[dict[str, Decimal]] = None,
+    net_capital_in: Optional[dict[str, Decimal]] = None,
 ) -> list[list[Any]]:
-    """A small machine-computed summary block for the Dashboard tab.
+    """Machine-computed summary block for the Dashboard tab (§4).
 
-    Deliberately minimal (§9 scope): per-broker realized P/L in SGD, open-position
-    counts, and run health. The fuller §4 dashboard (net capital in, live
-    unrealized valuation) can be layered on later without touching the pipeline.
+    Per broker (+ SGD total):
+      * Net Capital In (SGD)   = Σ deposits − Σ withdrawals (from Transactions)
+      * Account Value (SGD)    = live net-liquidation value
+      * Total P/L (SGD)        = Account Value − Net Capital In
+      * Realized P/L (SGD), Open Positions, and run health.
+
+    Total P/L is the all-in gain (realized + unrealized + dividends − fees) vs the
+    money actually put in. A broker whose deposits can't be pulled (MooMoo) shows
+    Net Capital In 0 until they're hand-entered, so its Total P/L is blank rather
+    than a misleading figure.
     """
+    account_value_sgd = account_value_sgd or {}
+    net_capital_in = net_capital_in or {}
     brokers = DASHBOARD_HEADERS[1:-1]  # ["Longbridge", "Tiger", "MooMoo"]
 
-    realized_row: list[Any] = ["Realized P/L (SGD)"]
-    total = ZERO
+    def _row(label: str, by_broker: dict[str, Decimal]) -> tuple[list[Any], Decimal]:
+        row: list[Any] = [label]
+        total = ZERO
+        for b in brokers:
+            v = by_broker.get(b, ZERO)
+            row.append(float(v))
+            total += v
+        row.append(float(total))
+        return row, total
+
+    capital_row, capital_total = _row("Net Capital In (SGD)", net_capital_in)
+    value_row, value_total = _row("Account Value (SGD)", account_value_sgd)
+
+    # Total P/L = value − capital, per broker; blank where capital is unknown
+    # (no deposits recorded but the broker holds value, e.g. MooMoo).
+    pl_row: list[Any] = ["Total P/L (SGD)"]
+    pl_total = ZERO
     for b in brokers:
-        v = realized_sgd_by_broker.get(b, ZERO)
-        realized_row.append(float(v))
-        total += v
-    realized_row.append(float(total))
+        val = account_value_sgd.get(b)
+        cap = net_capital_in.get(b)
+        if val is None or (cap is None and val is None):
+            pl_row.append("")
+            continue
+        val = val or ZERO
+        if cap is None and (val != ZERO):
+            pl_row.append("")  # holds value but capital-in unknown -> can't compute
+            continue
+        pl = val - (cap or ZERO)
+        pl_row.append(float(pl))
+        pl_total += pl
+    pl_row.append(float(pl_total))
+
+    realized_row, _ = _row("Realized P/L (SGD)", realized_sgd_by_broker)
 
     counts = Counter(h.broker.value for h in holdings)
     open_row: list[Any] = ["Open Positions"]
@@ -255,6 +309,9 @@ def _build_dashboard(
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return [
         DASHBOARD_HEADERS,
+        capital_row,
+        value_row,
+        pl_row,
         realized_row,
         open_row,
         ["Status", status, "", "", ""],
@@ -454,10 +511,25 @@ def run_sync(
     holdings = list(stock_result.holdings) + list(option_result.holdings)
     recon_warnings = reconcile(holdings, positions)
 
-    # 7. Dashboard summary.
+    # 7. Dashboard summary: realized P/L, net capital in, current value, total P/L.
     realized_sgd_by_broker: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for r in list(stock_result.realizations) + list(option_result.realizations):
         realized_sgd_by_broker[r.broker.value] += realized_sgd.get(r.key, ZERO)
+
+    # Current account value per broker in SGD (live rate — this is a snapshot, not
+    # a historical row, so it uses the current FX, not a trade-date rate).
+    account_value_sgd: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for d in ok:
+        for amount, ccy in d.account_value:
+            try:
+                account_value_sgd[d.broker] += fx.current_to_sgd(amount, ccy)
+            except Exception:  # noqa: BLE001 — FX outage shouldn't sink the run
+                log.warning("Could not convert %s %s to SGD for %s dashboard",
+                            amount, ccy, d.broker, exc_info=True)
+
+    # Net external capital per broker (Σ deposits − Σ withdrawals, SGD) from the
+    # full Transactions history on the sheet.
+    net_capital_in = writer.read_net_capital_in_by_broker()
 
     # 8. Status + warnings.
     if not ok:
@@ -472,7 +544,11 @@ def run_sync(
     reconciliation = "OK" if not recon_warnings else f"{len(recon_warnings)} mismatch(es)"
 
     writer.overwrite_dashboard(
-        _build_dashboard(status, holdings, dict(realized_sgd_by_broker), reconciliation)
+        _build_dashboard(
+            status, holdings, dict(realized_sgd_by_broker), reconciliation,
+            account_value_sgd=dict(account_value_sgd),
+            net_capital_in=net_capital_in,
+        )
     )
 
     # 9. Run Log.

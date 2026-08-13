@@ -410,6 +410,28 @@ class TigerAdapter:
         positions.extend(self._fetch_positions(SecurityType.OPT))
         return positions
 
+    # -- account value (§4 dashboard) --------------------------------------- #
+    def fetch_account_value(self) -> list[tuple[Decimal, str]]:
+        """Net liquidation value per live account, as (amount, currency).
+
+        Summed across both Tiger accounts (margin + cash/boost); the caller
+        converts to SGD. Best-effort: an account that can't be read is skipped.
+        """
+        out: list[tuple[Decimal, str]] = []
+        for account in self._account_ids():
+            try:
+                res = (self._client.get_assets(account=account)
+                       if account is not None else self._client.get_assets())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Tiger get_assets failed for %s: %s", account, exc)
+                continue
+            for a in (res or []):
+                s = getattr(a, "summary", None)
+                nl = getattr(s, "net_liquidation", None)
+                if nl is not None:
+                    out.append((dec(nl), str(getattr(s, "currency", "USD") or "USD")))
+        return out
+
     def _fetch_positions(self, sec_type: SecurityType) -> list[Position]:
         result = []
         for account in self._account_ids():
