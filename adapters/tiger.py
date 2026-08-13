@@ -567,19 +567,44 @@ class TigerAdapter:
         return movements
 
     def _funding_history_movements(self) -> list[CashMovement]:
-        """Deposits / withdrawals from ``get_funding_history``.
+        """Deposits / withdrawals from ``get_funding_history``, per account.
 
-        Best-effort (§14): not every account can read this endpoint, so a
-        failure is logged and skipped rather than aborting the cash fetch.
-        """
+        ``get_funding_history`` takes no account argument — it is scoped to the
+        client's configured account and returns a *disjoint* set of records per
+        account. So a login with a margin + cash account has funding in BOTH, and
+        querying only the configured one silently drops the other's deposits. We
+        loop every real account (temporarily pointing the client at each) and tag
+        each movement with its account. Best-effort (§14): a per-account failure
+        is logged and skipped rather than aborting the whole cash fetch."""
+        movements: list[CashMovement] = []
+        for account in self._account_ids():
+            movements.extend(self._funding_for_account(account))
+        return movements
+
+    def _funding_for_account(self, account: Optional[str]) -> list[CashMovement]:
+        cfg = getattr(self._client, "_TigerOpenClient__config", None)
+        prev_account = getattr(self._client, "_account", None)
+        prev_cfg_account = getattr(cfg, "account", None) if cfg is not None else None
         try:
+            if account is not None:
+                self._client._account = account
+                if cfg is not None:
+                    cfg.account = account
             funding_df = self._client.get_funding_history()
-        except Exception as exc:
-            log.warning("Could not fetch Tiger funding history: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not fetch Tiger funding history for %s: %s", account, exc)
             return []
+        finally:
+            if account is not None:
+                if prev_account is not None:
+                    self._client._account = prev_account
+                if cfg is not None and prev_cfg_account is not None:
+                    cfg.account = prev_cfg_account
+
         if funding_df is None or getattr(funding_df, "empty", True):
             return []
 
+        label = account or self._funding_account
         movements: list[CashMovement] = []
         for _, row in funding_df.iterrows():
             raw_type = str(row.get("type_desc", "")).strip().lower()
@@ -591,8 +616,8 @@ class TigerAdapter:
                 continue
 
             note = f"Tiger funding {raw_type}"
-            if self._funding_account:
-                note += f" · Acct {self._funding_account}"
+            if label:
+                note += f" · Acct {label}"
             movements.append(
                 CashMovement(
                     date=self._cash_date(row["created_at"]),
