@@ -128,6 +128,31 @@ def get_longbridge_credentials() -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Lemon8 blog auto-commit (step 10 — §11b)
+# --------------------------------------------------------------------------- #
+
+def get_blog_settings() -> dict:
+    """GitHub target for the Lemon8 weekly blog-draft commit.
+
+    All optional: if ``GITHUB_TOKEN`` or ``BLOG_REPO`` is unset, ``token``/``repo``
+    come back empty and the weekly job skips the GitHub step (fail-soft), so the
+    file/PNG/Telegram outputs still run. ``branch`` defaults to a *drafts* branch
+    (never the production branch Cloudflare Pages builds), so a draft can never be
+    published unattended (§11b).
+
+    * BLOG_REPO   — "owner/name" of the blog repo.
+    * BLOG_BRANCH — target branch (default "lemon8-drafts").
+    * BLOG_PATH   — directory prefix for posts (default "content/trading/drafts").
+    """
+    return {
+        "token": _optional("GITHUB_TOKEN"),
+        "repo": _optional("BLOG_REPO"),
+        "branch": _optional("BLOG_BRANCH", "lemon8-drafts"),
+        "path": _optional("BLOG_PATH", "content/trading/drafts"),
+    }
+
+
 def get_moomoo_settings() -> dict:
     """Return MooMoo OpenD-gateway connection settings from env vars.
 

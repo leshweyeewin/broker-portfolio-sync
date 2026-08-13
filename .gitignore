@@ -20,6 +20,9 @@ HANDOFF.md
 # Local run logs (Windows Task Scheduler daily sync)
 logs/
 
+# Lemon8 weekly journal output (generated packages — copy-paste, not tracked)
+lemon8_out/
+
 # Python
 .venv/
 __pycache__/

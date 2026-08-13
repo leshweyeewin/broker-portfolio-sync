@@ -9,5 +9,13 @@ google-auth
 
 # Alerting (step 9) and FX use stdlib urllib only — no extra deps.
 
+# Lemon8 weekly journal (step 10 — §11b): SVG card -> PNG for upload.
+# reportlab's raster backend needs rlPyCairo (+ pycairo, Windows wheels exist).
+# GitHub blog-draft commit uses stdlib urllib only.
+svglib
+reportlab
+rlPyCairo
+pycairo
+
 # Test tooling
 pytest
