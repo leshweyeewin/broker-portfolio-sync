@@ -206,6 +206,10 @@ class TigerAdapter:
         self._tz = ZoneInfo(tz_name)
         self._cash_enabled = cash_movements_enabled
         self._account_ids_cache: Optional[list] = None
+        # get_funding_history() is scoped to the configured account, so its
+        # deposits/withdrawals belong to this account (Tiger exposes no per-account
+        # attribution beyond it). Surfaced in the movement note.
+        self._funding_account: Optional[str] = credentials.account if credentials else None
 
         if client is not None:
             self._client = client
@@ -586,6 +590,9 @@ class TigerAdapter:
             else:
                 continue
 
+            note = f"Tiger funding {raw_type}"
+            if self._funding_account:
+                note += f" · Acct {self._funding_account}"
             movements.append(
                 CashMovement(
                     date=self._cash_date(row["created_at"]),
@@ -593,7 +600,7 @@ class TigerAdapter:
                     type=cash_type,
                     amount=abs(dec(row["amount"])),
                     currency=str(row["currency"]),
-                    note=f"Tiger funding {raw_type}",
+                    note=note,
                     fill_id=str(row["id"]) if "id" in row else None,
                 )
             )
