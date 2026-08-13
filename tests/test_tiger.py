@@ -62,15 +62,21 @@ def _order(**kw):
 
 class FakeClient:
     def __init__(self, stock_orders=None, option_orders=None, positions=None,
-                 fund_df=None, funding_df=None):
+                 fund_df=None, funding_df=None, mleg_orders=None):
         self._stock_orders = stock_orders or []
         self._option_orders = option_orders or []
+        self._mleg_orders = mleg_orders or []
         self._positions = positions or {}
         self._fund_df = fund_df
         self._funding_df = funding_df
 
     def get_filled_orders(self, sec_type=None, **kw):
-        return self._stock_orders if str(sec_type).endswith("STK") else self._option_orders
+        st = str(sec_type)
+        if st.endswith("STK"):
+            return self._stock_orders
+        if st.endswith("MLEG"):
+            return self._mleg_orders
+        return self._option_orders
 
     def get_positions(self, sec_type=None, **kw):
         key = "OPT" if str(sec_type).endswith("OPT") else "STK"
@@ -131,6 +137,40 @@ def test_option_sell_put_mapping():
     assert t.action is OptionAction.SELL
     assert t.multiplier == Decimal("100")
     assert t.total == Decimal("300.0")  # 1.5 * 2 * 100 credit
+
+
+def _leg(**kw):
+    base = dict(action="BUY", filled_quantity=1, total_quantity=1, symbol="NBIS",
+                put_call="PUT", strike="175.0", expiry="20260821",
+                avg_filled_price=0.96, currency="USD", multiplier=100)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_mleg_combo_decomposed_into_legs():
+    # A vertical: sell the 175 put, buy the 180 put — one MLEG order, two legs
+    # each with its own action/strike/price. Must become two OptionTrades.
+    mleg = _order(
+        id=9001, contract=_contract(symbol="NBIS", strike=None, put_call=None),
+        contract_legs=[
+            _leg(action="SELL", strike="175.0", avg_filled_price=0.96),
+            _leg(action="BUY", strike="180.0", avg_filled_price=1.30),
+        ],
+    )
+    a = _adapter(FakeClient(mleg_orders=[mleg]))
+    trades = sorted(a.fetch_option_executions(since=None), key=lambda t: t.strike)
+
+    assert len(trades) == 2
+    short, long_ = trades  # 175 then 180
+    assert short.underlying == "NBIS" and short.strike == Decimal("175.0")
+    assert short.option_type is OptionType.PUT
+    assert short.action is OptionAction.SELL
+    assert short.premium == Decimal("0.96")
+    assert long_.strike == Decimal("180.0") and long_.action is OptionAction.BUY
+    # order fee lands on the first leg only (not multiplied across legs)
+    assert short.fee == Decimal("1.5") and long_.fee == Decimal("0")
+    # distinct, stable dedup keys per leg
+    assert short.dedup_key == "Tiger:9001:0" and long_.dedup_key == "Tiger:9001:1"
 
 
 # --- positions ------------------------------------------------------------- #

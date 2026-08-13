@@ -287,9 +287,10 @@ class TigerAdapter:
         return trades
 
     def fetch_option_executions(self, since: date | None) -> list[OptionTrade]:
-        orders = self._get_filled_orders(SecurityType.OPT, since)
         trades: list[OptionTrade] = []
-        for order in orders:
+
+        # Single-leg option orders.
+        for order in self._get_filled_orders(SecurityType.OPT, since):
             qty = self._filled_qty(order)
             if qty == 0:
                 continue
@@ -312,7 +313,57 @@ class TigerAdapter:
                     timestamp=self._order_datetime(order),
                 )
             )
+
+        # Multi-leg combo orders (verticals, calendars, diagonals, rolls). Tiger
+        # returns these under sec_type MLEG with a single net contract; the actual
+        # legs (each with its own action/strike/expiry/price) live on
+        # ``order.contract_legs``. Decompose each into per-leg option trades so
+        # spreads/rolls show individually and reconcile against positions.
+        for order in self._get_filled_orders(SecurityType.MLEG, since):
+            trades.extend(self._decompose_mleg(order))
+
         return trades
+
+    def _decompose_mleg(self, order) -> list[OptionTrade]:
+        legs = getattr(order, "contract_legs", None) or []
+        oid = self._order_id(order)
+        order_date = self._order_date(order)
+        ts = self._order_datetime(order)
+        # The order fee is charged once for the whole combo — attribute it to the
+        # first leg so Total Fees isn't multiplied across legs.
+        order_fee = self._order_fee(order)
+        out: list[OptionTrade] = []
+        for i, leg in enumerate(legs):
+            qty = dec(getattr(leg, "filled_quantity", 0) or getattr(leg, "total_quantity", 0) or 0)
+            if qty == 0:
+                continue
+            right = str(getattr(leg, "put_call", "")).strip().upper()
+            otype = OptionType.CALL if right.startswith("C") else OptionType.PUT
+            action = (
+                OptionAction.BUY
+                if str(getattr(leg, "action", "")).strip().upper() == "BUY"
+                else OptionAction.SELL
+            )
+            out.append(
+                OptionTrade(
+                    date=order_date,
+                    broker=Broker.TIGER,
+                    underlying=str(leg.symbol).strip(),
+                    option_type=otype,
+                    strike=dec(leg.strike),
+                    qty=qty,
+                    expiry=self._parse_expiry(leg.expiry),
+                    action=action,
+                    premium=dec(getattr(leg, "avg_filled_price", 0) or 0),
+                    fee=order_fee if i == 0 else Decimal("0"),
+                    currency=str(getattr(leg, "currency", "") or "USD"),
+                    multiplier=dec(getattr(leg, "multiplier", 100) or 100),
+                    # Unique, stable per leg so re-runs upsert rather than collide.
+                    fill_id=f"{oid}:{i}" if oid else None,
+                    timestamp=ts,
+                )
+            )
+        return out
 
     def _get_filled_orders(self, sec_type: SecurityType, since: date | None) -> list:
         """Fetch filled orders of a security type since a date, chunking into <=89-day windows."""
