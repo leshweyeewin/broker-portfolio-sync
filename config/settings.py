@@ -153,6 +153,13 @@ def get_blog_settings() -> dict:
     }
 
 
+def get_pancherry_repo() -> str:
+    """Local path to the pancherry site clone whose data files get regenerated
+    (Phase 2 — pancherry_export). Defaults to the known clone location; override
+    with PANCHERRY_REPO."""
+    return _optional("PANCHERRY_REPO", r"D:\Learn\Google\pancherry")
+
+
 def get_moomoo_settings() -> dict:
     """Return MooMoo OpenD-gateway connection settings from env vars.
 

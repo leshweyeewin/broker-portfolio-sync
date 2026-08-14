@@ -55,6 +55,7 @@ class ClosedPosition:
     option_type: str = ""
     strike: str = ""
     expiry: str = ""
+    strategy: str = ""                    # option Strategy cell; "Stock" for stocks
 
     @property
     def is_win(self) -> Optional[bool]:
@@ -139,11 +140,15 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         option_type = str(_cell(row, idx["Type"]))
         strike = str(_cell(row, idx["Strike"]))
         expiry = str(_cell(row, idx["Expiry"]))
+        # Strategy is always in OPTIONS_HEADERS, but read defensively so a future
+        # column drop degrades to an empty label rather than a KeyError.
+        strategy = str(_cell(row, idx["Strategy"])) if "Strategy" in idx else ""
     else:
         symbol = str(_cell(row, idx["Ticker"]))
         pl = _dec(_cell(row, idx["Realized P/L"]))
         pl_sgd = _dec(_cell(row, idx["Realized P/L (SGD)"]))
         option_type = strike = expiry = ""
+        strategy = "Stock"
 
     total = _dec(_cell(row, idx["Total"]))
     return ClosedPosition(
@@ -158,6 +163,7 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         option_type=option_type,
         strike=strike,
         expiry=expiry,
+        strategy=strategy,
     )
 
 
