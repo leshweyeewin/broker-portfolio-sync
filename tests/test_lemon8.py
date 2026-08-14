@@ -20,6 +20,7 @@ from lemon8.reader import (
     SheetReadError,
     read_closed_positions,
     _return_pct,
+    _dec,
 )
 from lemon8.card import render_card_summary, render_card_svg
 from lemon8.journal import (
@@ -92,6 +93,19 @@ def test_read_closed_positions():
     assert opt_pos.option_type == "PUT"
     assert opt_pos.label == "TSLA 200.0 PUT"
     assert opt_pos.is_win is True
+
+
+def test_dec_parses_currency_formatted_cells():
+    # The sheet returns money FORMATTED as currency; _dec must strip $ / commas
+    # / accounting negatives or every real P/L silently becomes None.
+    assert _dec("$1,234.56") == Decimal("1234.56")
+    assert _dec("-$500.00") == Decimal("-500.00")
+    assert _dec("($250.00)") == Decimal("-250.00")
+    assert _dec("$0.00") == Decimal("0")
+    assert _dec("42") == Decimal("42")
+    assert _dec("") is None
+    assert _dec(None) is None
+    assert _dec("n/a") is None
 
 
 def test_read_closed_positions_missing_header_raises():

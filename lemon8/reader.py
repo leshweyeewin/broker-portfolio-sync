@@ -185,10 +185,22 @@ def _cell(row: list[Any], i: int) -> Any:
 
 
 def _dec(val: Any) -> Optional[Decimal]:
-    """Coerce a sheet cell to Decimal; '' / None -> None (not an error)."""
+    """Coerce a sheet cell to Decimal; '' / None -> None (not an error).
+
+    Money cells are read back FORMATTED (the sheet formats them as currency), so
+    a P/L arrives as ``"$1,234.56"`` or ``"-$500.00"`` — strip the currency
+    symbol, thousands separators, and any parentheses-negative before parsing, or
+    every real P/L would silently become ``None``.
+    """
     if val is None or val == "":
         return None
+    s = str(val).strip()
+    neg = s.startswith("(") and s.endswith(")")   # accounting-style negative
+    s = s.strip("()").replace(",", "").replace("$", "").replace("−", "-").strip()
+    if not s:
+        return None
     try:
-        return Decimal(str(val))
+        d = Decimal(s)
     except (InvalidOperation, ValueError):
         return None
+    return -d if neg else d
