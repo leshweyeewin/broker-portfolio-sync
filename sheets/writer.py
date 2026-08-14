@@ -464,61 +464,128 @@ class PortfolioWriter:
             Broker, OptionAction, OptionTrade, OptionType, StockAction, StockTrade,
         )
 
-        def _read(tab: str, headers: list[str]) -> list[list[Any]]:
-            try:
-                vals = self._client.get_values(
-                    f"{tab}!A:{_col_letter(len(headers))}",
-                    value_render_option="UNFORMATTED_VALUE",
-                )
-            except Exception:  # noqa: BLE001 — no tab yet / read error -> nothing to load
-                log.warning("Could not read %s for opening balances", tab, exc_info=True)
-                return []
-            hr = DATA_HEADER_ROWS.get(tab, 1)
-            return vals[hr:] if len(vals) > hr else []
-
-        def cell(row: list[Any], i: int) -> Any:
-            return row[i] if i < len(row) else ""
-
-        # Reuse the stored _dedup_key rather than recomputing it: values read back
-        # from Sheets (e.g. a strike 145 -> 145.0) would otherwise yield a
-        # different key and re-add the opening balance as a duplicate.
         stocks: list[StockTrade] = []
-        si = {h: i for i, h in enumerate(STOCKS_HEADERS)}
-        for r in _read(TAB_STOCKS, STOCKS_HEADERS):
-            if str(cell(r, si["Action"])) != StockAction.OPENING_BALANCE.value:
-                continue
-            stocks.append(StockTrade(
-                date=_parse_sheet_date(cell(r, si["Date"])),
-                broker=Broker(str(cell(r, si["Broker"]))),
-                ticker=str(cell(r, si["Ticker"])),
-                action=StockAction.OPENING_BALANCE,
-                qty=cell(r, si["Qty"]),
-                price=cell(r, si["Price"]),
-                fee=0,
-                currency=str(cell(r, si["Currency"])),
-                dedup_key=str(cell(r, si["_dedup_key"])),
-            ))
+        for item in self.read_all_stock_trades():
+            if item["trade"].action == StockAction.OPENING_BALANCE:
+                stocks.append(item["trade"])
 
         options: list[OptionTrade] = []
-        oi = {h: i for i, h in enumerate(OPTIONS_HEADERS)}
-        for r in _read(TAB_OPTIONS, OPTIONS_HEADERS):
-            if str(cell(r, oi["Action"])) != OptionAction.OPENING_BALANCE.value:
-                continue
-            options.append(OptionTrade(
-                date=_parse_sheet_date(cell(r, oi["Date"])),
-                broker=Broker(str(cell(r, oi["Broker"]))),
-                underlying=str(cell(r, oi["Stock"])),
-                option_type=OptionType(str(cell(r, oi["Type"]))),
-                strike=cell(r, oi["Strike"]),
-                qty=cell(r, oi["Qty"]),
-                expiry=_parse_sheet_date(cell(r, oi["Expiry"])),
-                action=OptionAction.OPENING_BALANCE,
-                premium=cell(r, oi["Premium"]),
-                fee=0,
-                currency=str(cell(r, oi["Currency"])),
-                dedup_key=str(cell(r, oi["_dedup_key"])),
-            ))
+        for item in self.read_all_option_trades():
+            if item["trade"].action == OptionAction.OPENING_BALANCE:
+                options.append(item["trade"])
+
         return stocks, options
+
+    def _read_data_rows(self, tab: str, headers: list[str]) -> list[list[Any]]:
+        try:
+            vals = self._client.get_values(
+                f"{tab}!A:{_col_letter(len(headers))}",
+                value_render_option="UNFORMATTED_VALUE",
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("Could not read %s", tab, exc_info=True)
+            return []
+        hr = DATA_HEADER_ROWS.get(tab, 1)
+        return vals[hr:] if len(vals) > hr else []
+
+    @staticmethod
+    def _cell(row: list[Any], i: int) -> Any:
+        return row[i] if i < len(row) else ""
+
+    def read_all_stock_trades(self) -> list[dict[str, Any]]:
+        """Read all stock rows with sheet row index, StockTrade object, status, and raw values."""
+        from adapters.base import Broker, StockAction, StockTrade
+        rows = self._read_data_rows(TAB_STOCKS, STOCKS_HEADERS)
+        si = {h: i for i, h in enumerate(STOCKS_HEADERS)}
+        hr = DATA_HEADER_ROWS.get(TAB_STOCKS, 1)
+        out = []
+        for offset, r in enumerate(rows):
+            row_idx = hr + offset + 1
+            act_str = str(self._cell(r, si["Action"])).strip()
+            if not act_str:
+                continue
+            try:
+                action = StockAction(act_str)
+                trade_date = _parse_sheet_date(self._cell(r, si["Date"]))
+                broker = Broker(str(self._cell(r, si["Broker"])).strip())
+            except Exception:
+                continue
+            trade = StockTrade(
+                date=trade_date,
+                broker=broker,
+                ticker=str(self._cell(r, si["Ticker"])).strip(),
+                action=action,
+                qty=self._cell(r, si["Qty"]),
+                price=self._cell(r, si["Price"]),
+                fee=self._cell(r, si["Fee"]) or 0,
+                currency=str(self._cell(r, si["Currency"])).strip(),
+                dedup_key=str(self._cell(r, si["_dedup_key"])).strip(),
+            )
+            status = str(self._cell(r, si["Status"])).strip() or "Open"
+            out.append({
+                "row_idx": row_idx,
+                "trade": trade,
+                "status": status,
+                "raw": r,
+            })
+        return out
+
+    def read_all_option_trades(self) -> list[dict[str, Any]]:
+        """Read all option rows with sheet row index, OptionTrade object, status, and raw values."""
+        from adapters.base import Broker, OptionAction, OptionTrade, OptionType
+        rows = self._read_data_rows(TAB_OPTIONS, OPTIONS_HEADERS)
+        oi = {h: i for i, h in enumerate(OPTIONS_HEADERS)}
+        hr = DATA_HEADER_ROWS.get(TAB_OPTIONS, 1)
+        out = []
+        for offset, r in enumerate(rows):
+            row_idx = hr + offset + 1
+            act_str = str(self._cell(r, oi["Action"])).strip()
+            if not act_str:
+                continue
+            try:
+                action = OptionAction(act_str)
+                trade_date = _parse_sheet_date(self._cell(r, oi["Date"]))
+                expiry = _parse_sheet_date(self._cell(r, oi["Expiry"]))
+                broker = Broker(str(self._cell(r, oi["Broker"])).strip())
+                otype = OptionType(str(self._cell(r, oi["Type"])).strip())
+            except Exception:
+                continue
+            trade = OptionTrade(
+                date=trade_date,
+                broker=broker,
+                underlying=str(self._cell(r, oi["Stock"])).strip(),
+                option_type=otype,
+                strike=self._cell(r, oi["Strike"]),
+                qty=self._cell(r, oi["Qty"]),
+                expiry=expiry,
+                action=action,
+                premium=self._cell(r, oi["Premium"]),
+                fee=self._cell(r, oi["Fee"]) or 0,
+                currency=str(self._cell(r, oi["Currency"])).strip(),
+                strategy=str(self._cell(r, oi["Strategy"])).strip(),
+                dedup_key=str(self._cell(r, oi["_dedup_key"])).strip(),
+            )
+            status = str(self._cell(r, oi["Status"])).strip() or "Open"
+            out.append({
+                "row_idx": row_idx,
+                "trade": trade,
+                "status": status,
+                "raw": r,
+            })
+        return out
+
+    def update_status_batch(self, tab: str, updates: list[tuple[int, str]]) -> None:
+        """Update the Status column (1-based row index) for a list of rows."""
+        if not updates:
+            return
+        status_col = "J" if tab == TAB_STOCKS else ("N" if tab == TAB_OPTIONS else "")
+        if not status_col:
+            raise ValueError(f"Unknown tab for status update: {tab}")
+        data = [
+            {"range": f"{tab}!{status_col}{row_idx}", "values": [[status]]}
+            for row_idx, status in updates
+        ]
+        self._client.batch_update_values(data)
 
     # ------------------------------------------------------------------ #
     # Core upsert logic

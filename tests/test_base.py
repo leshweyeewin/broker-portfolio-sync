@@ -16,8 +16,11 @@ from adapters.base import (
     StockAction,
     StockTrade,
     dec,
+    is_option_code,
     make_dedup_key,
     opening_dedup_key,
+    parse_option_code,
+    parse_option_legs,
 )
 
 
@@ -163,3 +166,58 @@ def test_cash_movement_amount_is_decimal_and_currency_normalized():
     assert m.amount == Decimal("1000.00")
     assert m.currency == "SGD"
     assert m.dedup_key.startswith("Tiger:")
+
+
+# --- option parsing -------------------------------------------------------- #
+def test_parse_option_code_single_legs():
+    assert parse_option_code("AAPL") is None
+    assert parse_option_code("US.AAPL") is None
+    assert parse_option_code("HK.00700") is None
+
+    u, otype, strike, expiry = parse_option_code("SNDQ260821P23000")
+    assert u == "SNDQ" and otype is OptionType.PUT and strike == Decimal("23") and expiry == date(2026, 8, 21)
+
+    u, otype, strike, expiry = parse_option_code("US.AAPL240119C00190000")
+    assert u == "AAPL" and otype is OptionType.CALL and strike == Decimal("190") and expiry == date(2024, 1, 19)
+
+    u, otype, strike, expiry = parse_option_code("SHOP260821C145000")
+    assert u == "SHOP" and otype is OptionType.CALL and strike == Decimal("145") and expiry == date(2026, 8, 21)
+
+    u, otype, strike, expiry = parse_option_code("PYPL260828C60000.US")
+    assert u == "PYPL" and otype is OptionType.CALL and strike == Decimal("60") and expiry == date(2026, 8, 28)
+
+    u, otype, strike, expiry = parse_option_code("US.MARA260821C23500")
+    assert u == "MARA" and otype is OptionType.CALL and strike == Decimal("23.5") and expiry == date(2026, 8, 21)
+
+
+def test_parse_option_legs_combo_spread():
+    legs = parse_option_legs("US.SHOP260821P130/145")
+    assert legs is not None and len(legs) == 2
+    l1, l2 = legs
+    assert l1 == ("SHOP", OptionType.PUT, Decimal("130"), date(2026, 8, 21))
+    assert l2 == ("SHOP", OptionType.PUT, Decimal("145"), date(2026, 8, 21))
+
+    legs_zeros = parse_option_legs("US.SHOP260821P130000/145000")
+    assert legs_zeros is not None and len(legs_zeros) == 2
+    l1, l2 = legs_zeros
+    assert l1 == ("SHOP", OptionType.PUT, Decimal("130"), date(2026, 8, 21))
+    assert l2 == ("SHOP", OptionType.PUT, Decimal("145"), date(2026, 8, 21))
+
+    legs_types = parse_option_legs("SHOP260821P130000/C145000")
+    assert legs_types is not None and len(legs_types) == 2
+    assert legs_types[0] == ("SHOP", OptionType.PUT, Decimal("130"), date(2026, 8, 21))
+    assert legs_types[1] == ("SHOP", OptionType.CALL, Decimal("145"), date(2026, 8, 21))
+
+    legs_full = parse_option_legs("US.SHOP260821P130000/US.SHOP260821P145000")
+    assert legs_full is not None and len(legs_full) == 2
+    assert legs_full[0] == ("SHOP", OptionType.PUT, Decimal("130"), date(2026, 8, 21))
+    assert legs_full[1] == ("SHOP", OptionType.PUT, Decimal("145"), date(2026, 8, 21))
+
+
+def test_is_option_code():
+    assert is_option_code("AAPL") is False
+    assert is_option_code("US.AAPL") is False
+    assert is_option_code("US.AAPL240119C00190000") is True
+    assert is_option_code("SHOP260821P130/145") is True
+    assert is_option_code("US.SHOP260821P130000/145000") is True
+    assert is_option_code("US.SHOP260821P130000/US.SHOP260821P145000") is True

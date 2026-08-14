@@ -245,3 +245,105 @@ def test_adapter_satisfies_protocol():
     a = _adapter(FakeCtx())
     assert isinstance(a, BrokerAdapter)
     assert a.name == "MooMoo"
+
+
+def test_moomoo_combo_spread_decomposed_into_legs():
+    # BUY vertical put spread US.SHOP260821P130/145 x 1 @ 2.50, fee 1.50
+    ctx = FakeCtx(
+        orders=[
+            {
+                "order_id": "O_SHOP_SPREAD",
+                "code": "US.SHOP260821P130/145",
+                "trd_side": "BUY",
+                "dealt_qty": 1,
+                "dealt_avg_price": 2.50,
+                "currency": "USD",
+                "updated_time": "2026-01-05 10:00:00",
+            }
+        ],
+        fees=[{"order_id": "O_SHOP_SPREAD", "fee_amount": 1.50}],
+    )
+    # Must NOT land in stock executions
+    stk_trades = _adapter(ctx).fetch_stock_executions(since=None)
+    assert len(stk_trades) == 0
+
+    # Must decompose into 2 OptionTrades
+    opt_trades = _adapter(ctx).fetch_option_executions(since=None)
+    assert len(opt_trades) == 2
+
+    leg0, leg1 = opt_trades
+    assert leg0.underlying == "SHOP" and leg0.strike == Decimal("130")
+    assert leg0.option_type is OptionType.PUT
+    assert leg0.expiry == date(2026, 8, 21)
+    assert leg0.action is OptionAction.BUY
+    assert leg0.qty == Decimal("1")
+    assert leg0.premium == Decimal("2.50")
+    assert leg0.fee == Decimal("1.50")
+    assert leg0.total == Decimal("-250.00")  # BUY outflow
+    assert leg0.dedup_key == "MooMoo:O_SHOP_SPREAD:0"
+
+    assert leg1.underlying == "SHOP" and leg1.strike == Decimal("145")
+    assert leg1.option_type is OptionType.PUT
+    assert leg1.expiry == date(2026, 8, 21)
+    assert leg1.action is OptionAction.SELL
+    assert leg1.qty == Decimal("1")
+    assert leg1.premium == Decimal("0")
+    assert leg1.fee == Decimal("0")
+    assert leg1.total == Decimal("0")
+    assert leg1.dedup_key == "MooMoo:O_SHOP_SPREAD:1"
+
+
+def test_moomoo_combo_spread_with_full_zeros_strike():
+    # US.SHOP260821P130000/145000 with SELL trd_side
+    ctx = FakeCtx(
+        orders=[
+            {
+                "order_id": "O_SELL_SPREAD",
+                "code": "US.SHOP260821P130000/145000",
+                "trd_side": "SELL",
+                "dealt_qty": 2,
+                "dealt_avg_price": 3.00,
+                "currency": "USD",
+                "updated_time": "2026-01-05 10:00:00",
+            }
+        ],
+        fees=[{"order_id": "O_SELL_SPREAD", "fee_amount": 2.00}],
+    )
+    opt_trades = _adapter(ctx).fetch_option_executions(since=None)
+    assert len(opt_trades) == 2
+
+    leg0, leg1 = opt_trades
+    assert leg0.strike == Decimal("130") and leg0.action is OptionAction.SELL
+    assert leg0.qty == Decimal("2")
+    assert leg0.premium == Decimal("3.00")
+    assert leg0.fee == Decimal("2.00")
+    assert leg0.total == Decimal("600.00")  # SELL inflow (3 * 2 * 100)
+
+    assert leg1.strike == Decimal("145") and leg1.action is OptionAction.BUY
+    assert leg1.qty == Decimal("2")
+    assert leg1.premium == Decimal("0")
+    assert leg1.fee == Decimal("0")
+    assert leg1.total == Decimal("0")
+
+
+def test_moomoo_fractional_and_slashed_positions():
+    ctx = FakeCtx(
+        positions=[
+            {"code": "US.MARA260821C23500", "qty": -2, "cost_price": 1.5,
+             "nominal_price": 1.2, "currency": "USD", "position_side": "SHORT"},
+            {"code": "US.SHOP260821P130000/US.SHOP260821P145000", "qty": 1, "cost_price": 2.0,
+             "nominal_price": 2.2, "currency": "USD", "position_side": "LONG"},
+        ]
+    )
+    positions = _adapter(ctx).fetch_positions()
+    assert len(positions) == 3
+
+    mara = positions[0]
+    assert mara.symbol == "MARA"
+    assert mara.strike == Decimal("23.5")
+    assert mara.qty == Decimal("-2")
+
+    shop1, shop2 = positions[1], positions[2]
+    assert shop1.symbol == "SHOP" and shop1.strike == Decimal("130")
+    assert shop2.symbol == "SHOP" and shop2.strike == Decimal("145")
+

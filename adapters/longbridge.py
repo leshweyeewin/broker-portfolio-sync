@@ -40,6 +40,7 @@ from adapters.base import (
     StockAction,
     StockTrade,
     dec,
+    is_option_code,
     parse_option_code,
 )
 
@@ -135,7 +136,7 @@ class LongbridgeAdapter:
             if qty == 0:
                 continue
             code = str(order.symbol).split(".")[0]  # Longbridge uses AAPL.US
-            if parse_option_code(code) is not None:
+            if is_option_code(code):
                 continue  # option execution — handled by fetch_option_executions
 
             trades.append(

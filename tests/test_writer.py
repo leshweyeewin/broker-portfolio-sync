@@ -98,23 +98,25 @@ class FakeSheetClient:
             if tab not in self._data:
                 self._data[tab] = []
 
-            # Parse start row (1-based) from cell like "A1", "A5:M5"
+            # Parse start row and col (1-based) from cell like "A1", "J4", "A5:M5"
             cell_ref = cell.split(":")[0]
             row_num = int("".join(c for c in cell_ref if c.isdigit())) - 1  # 0-based
+            col_str = "".join(c for c in cell_ref if c.isalpha())
+            col_num = 0
+            if col_str:
+                for char in col_str.upper():
+                    col_num = col_num * 26 + (ord(char) - ord('A') + 1)
+                col_num -= 1
 
             for i, row_vals in enumerate(values):
                 target = row_num + i
                 while len(self._data[tab]) <= target:
                     self._data[tab].append([])
-                # Ensure row is wide enough
                 cur = self._data[tab][target]
-                while len(cur) < len(row_vals):
+                while len(cur) < col_num + len(row_vals):
                     cur.append("")
                 for j, v in enumerate(row_vals):
-                    if j < len(cur):
-                        cur[j] = v
-                    else:
-                        cur.append(v)
+                    cur[col_num + j] = v
         return {}
 
     def append_values(self, range_: str, values: list[list[Any]]) -> dict:
@@ -590,6 +592,62 @@ def test_build_stock_row_sell_sign():
     assert row[total_idx] == pytest.approx(1600.0)
 
 
+def test_read_all_trades_and_update_status_batch():
+    client = FakeSheetClient()
+    writer = PortfolioWriter(client)
+    writer.ensure_tabs()
+
+    stk = StockTrade(
+        date=date(2026, 3, 14),
+        broker=Broker.TIGER,
+        ticker="AAPL",
+        action=StockAction.BUY,
+        qty=Decimal("5"),
+        price=Decimal("100"),
+        fee=Decimal("1.5"),
+        currency="USD",
+        fill_id="f1",
+    )
+    writer.upsert_stocks([build_stock_row(stk, status="Open")])
+
+    opt = OptionTrade(
+        date=date(2026, 3, 14),
+        broker=Broker.TIGER,
+        underlying="AAPL",
+        option_type=OptionType.PUT,
+        strike=Decimal("140"),
+        qty=Decimal("1"),
+        expiry=date(2026, 4, 18),
+        action=OptionAction.BUY,
+        premium=Decimal("5.0"),
+        fee=Decimal("0.5"),
+        currency="USD",
+        fill_id="o1",
+    )
+    writer.upsert_options([build_option_row(opt, status="Open")])
+
+    stock_items = writer.read_all_stock_trades()
+    assert len(stock_items) == 1
+    assert stock_items[0]["trade"].ticker == stk.ticker
+    assert stock_items[0]["status"] == "Open"
+
+    opt_items = writer.read_all_option_trades()
+    assert len(opt_items) == 1
+    assert opt_items[0]["trade"].underlying == opt.underlying
+    assert opt_items[0]["status"] == "Open"
+
+    # Update status to Closed
+    writer.update_status_batch(TAB_STOCKS, [(stock_items[0]["row_idx"], "Closed")])
+    writer.update_status_batch(TAB_OPTIONS, [(opt_items[0]["row_idx"], "Closed")])
+
+    updated_stocks = writer.read_all_stock_trades()
+    assert updated_stocks[0]["status"] == "Closed"
+
+    updated_options = writer.read_all_option_trades()
+    assert updated_options[0]["status"] == "Closed"
+
+
 if __name__ == "__main__":
     import pytest as pt
     pt.main([__file__, "-v"])
+

@@ -229,5 +229,60 @@ class TestReconcile(unittest.TestCase):
         self.assertIn("Qty mismatch", warnings[0])
         self.assertIn("SPY", warnings[0])
 
+    def test_find_stale_open_rows_detects_expired_and_closed_positions(self):
+        from scripts.reconcile_fixup import find_stale_open_rows
+        from sheets.writer import PortfolioWriter, build_stock_row, build_option_row
+        from tests.test_writer import FakeSheetClient
+        from adapters.base import StockTrade, OptionTrade, StockAction, OptionAction, OptionType, Broker
+
+        class DummyAdapter:
+            name = "Tiger"
+            def fetch_positions(self):
+                # Broker holds no open positions
+                return []
+
+        client = FakeSheetClient()
+        writer = PortfolioWriter(client)
+        writer.ensure_tabs()
+
+        stk = StockTrade(
+            date=date(2026, 3, 14),
+            broker=Broker.TIGER,
+            ticker="AAPL",
+            action=StockAction.BUY,
+            qty=Decimal("10"),
+            price=Decimal("150"),
+            fee=Decimal("1.5"),
+            currency="USD",
+            fill_id="stk1",
+        )
+        writer.upsert_stocks([build_stock_row(stk, status="Open")])
+
+        # Expired option
+        opt = OptionTrade(
+            date=date(2026, 1, 1),
+            broker=Broker.TIGER,
+            underlying="SHOP",
+            option_type=OptionType.PUT,
+            strike=Decimal("130"),
+            qty=Decimal("-1"),
+            expiry=date(2026, 1, 1),
+            action=OptionAction.OPENING_BALANCE,
+            premium=Decimal("3.5"),
+            fee=Decimal("0"),
+            currency="USD",
+            fill_id="opt1",
+        )
+        writer.upsert_options([build_option_row(opt, status="Open")])
+
+        stock_fixups, option_fixups = find_stale_open_rows(writer, [DummyAdapter()], today=date(2026, 8, 14))
+        self.assertEqual(len(stock_fixups), 1)
+        self.assertEqual(stock_fixups[0]["instrument"], "AAPL")
+
+        self.assertEqual(len(option_fixups), 1)
+        self.assertTrue(option_fixups[0]["is_expired"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

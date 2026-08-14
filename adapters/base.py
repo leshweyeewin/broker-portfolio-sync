@@ -53,6 +53,8 @@ __all__ = [
     "make_dedup_key",
     "opening_dedup_key",
     "parse_option_code",
+    "parse_option_legs",
+    "is_option_code",
 ]
 
 
@@ -192,25 +194,117 @@ def _signed_total(is_acquisition: bool, magnitude: Decimal) -> Decimal:
     return -magnitude if is_acquisition else magnitude
 
 
-_OPTION_CODE_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+)$")
+_OPTION_SINGLE_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+(?:\.\d+)?)$")
+_OPTION_COMBO_RE = re.compile(
+    r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s1>\d+(?:\.\d+)?)/(?:(?P<cp2>[CP])?(?P<s2>\d+(?:\.\d+)?))$"
+)
 
 
-def parse_option_code(code: str) -> Optional[tuple]:
+def _parse_strike(s: str) -> Decimal:
+    """Parse strike string from OCC 8-digit, MooMoo 1000x, or shorthand dollar values."""
+    s = s.strip()
+    if "." in s:
+        return dec(s)
+    ival = int(s)
+    if len(s) == 8 or (len(s) >= 4 and s.endswith("000")) or ival >= 1000:
+        return dec(ival) / Decimal("1000")
+    return dec(ival)
+
+
+def _parse_single_leg(clean: str) -> Optional[tuple[str, OptionType, Decimal, date]]:
+    """Parse a single clean option code body without market prefix."""
+    m_single = _OPTION_SINGLE_RE.match(clean)
+    if not m_single:
+        return None
+    u = m_single.group("u")
+    d = m_single.group("d")
+    expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
+    otype = OptionType.CALL if m_single.group("cp") == "C" else OptionType.PUT
+    strike = _parse_strike(m_single.group("s"))
+    return (u, otype, strike, expiry)
+
+
+def parse_option_legs(code: str) -> Optional[list[tuple[str, OptionType, Decimal, date]]]:
+    """Parse an option code (single-leg or multi-leg spread/combo) into leg tuples:
+    ``[(underlying, OptionType, strike, expiry), ...]``.
+
+    Returns ``None`` for plain stock tickers (e.g. ``"AAPL"``, ``"US.AAPL"``, ``"00700"``).
+    Handles:
+    - Standard OCC / single codes: ``"US.AAPL240119C00190000"``, ``"SHOP260821C145000"``
+    - Combo spreads: ``"SHOP260821P130/145"``, ``"US.SHOP260821P130000/145000"``, ``"SHOP260821P130000/P145000"``
+    - Slashed full codes: ``"US.SHOP260821P130000/US.SHOP260821P145000"``
+    """
+    raw = str(code).strip()
+    if not raw:
+        return None
+
+    # Handle full slash-separated legs e.g. "US.SHOP260821P130000/US.SHOP260821P145000"
+    if "/" in raw:
+        parts = [p.strip() for p in raw.split("/")]
+        if len(parts) > 1:
+            full_legs = []
+            for p in parts:
+                # Strip prefix for each part if present
+                clean_p = p
+                if clean_p.startswith(("US.", "HK.", "SG.", "CN.")):
+                    clean_p = clean_p[3:]
+                elif clean_p.endswith((".US", ".HK", ".SG", ".CN")):
+                    clean_p = clean_p[:-3]
+                single = _parse_single_leg(clean_p)
+                if single is None:
+                    full_legs = None
+                    break
+                full_legs.append(single)
+            if full_legs:
+                return full_legs
+
+    # Strip market prefix "US." / "HK." / "SG." or suffix ".US"
+    clean = raw
+    if clean.startswith(("US.", "HK.", "SG.", "CN.")):
+        clean = clean[3:]
+    elif clean.endswith((".US", ".HK", ".SG", ".CN")):
+        clean = clean[:-3]
+
+    # Check combo / spread shorthand: "SHOP260821P130/145", "SHOP260821P130000/145000"
+    m_combo = _OPTION_COMBO_RE.match(clean)
+    if m_combo:
+        u = m_combo.group("u")
+        d = m_combo.group("d")
+        expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
+        cp1 = m_combo.group("cp")
+        otype1 = OptionType.CALL if cp1 == "C" else OptionType.PUT
+        s1 = _parse_strike(m_combo.group("s1"))
+
+        cp2 = m_combo.group("cp2") or cp1
+        otype2 = OptionType.CALL if cp2 == "C" else OptionType.PUT
+        s2 = _parse_strike(m_combo.group("s2"))
+
+        return [(u, otype1, s1, expiry), (u, otype2, s2, expiry)]
+
+    # Check single option code: "SHOP260821C145000", "AAPL240119C00190000"
+    single = _parse_single_leg(clean)
+    if single:
+        return [single]
+
+    return None
+
+
+def is_option_code(code: str) -> bool:
+    """Return True if `code` represents an option (single leg or combo/spread)."""
+    return parse_option_legs(code) is not None
+
+
+def parse_option_code(code: str) -> Optional[tuple[str, OptionType, Decimal, date]]:
     """Parse an OCC-style option code body into its parts, or ``None`` for a
     plain stock ticker (so callers can branch stock vs. option).
 
     ``"SNDQ260821P23000"`` -> ``("SNDQ", OptionType.PUT, Decimal("23"),
-    date(2026, 8, 21))``. Strike is the trailing digits / 1000 (brokers such as
-    MooMoo and Longbridge omit OCC's zero-padding).
+    date(2026, 8, 21))``.
     """
-    m = _OPTION_CODE_RE.match(str(code).strip())
-    if not m:
-        return None
-    otype = OptionType.CALL if m.group("cp") == "C" else OptionType.PUT
-    strike = dec(int(m.group("s"))) / Decimal("1000")
-    d = m.group("d")
-    expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
-    return m.group("u"), otype, strike, expiry
+    legs = parse_option_legs(code)
+    if legs and len(legs) == 1:
+        return legs[0]
+    return None
 
 
 # --------------------------------------------------------------------------- #

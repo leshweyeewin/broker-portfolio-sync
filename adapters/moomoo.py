@@ -67,6 +67,8 @@ from adapters.base import (
     StockAction,
     StockTrade,
     dec,
+    is_option_code,
+    parse_option_legs,
 )
 
 # Filled (fully or partially) — the only orders that represent executions.
@@ -74,11 +76,6 @@ _FILLED_STATUSES = [OrderStatus.FILLED_ALL, OrderStatus.FILLED_PART]
 
 # Market prefix -> native currency (used when a row has no currency column).
 _MARKET_CCY = {"US": "USD", "HK": "HKD", "SG": "SGD", "CN": "CNH"}
-
-# Option code body: <UNDERLYING><YYMMDD><C|P><strike*1000>. MooMoo does NOT
-# zero-pad the strike to 8 digits (e.g. "SHOP260821C145000" = strike 145.00),
-# so the strike group is variable-length. OCC-style 8-digit codes still match.
-_OPTION_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+)$")
 
 _OPTION_MULTIPLIER = Decimal("100")  # §14 assumption
 
@@ -206,12 +203,12 @@ class MooMooAdapter:
                 if oid in seen:
                     continue
                 seen.add(oid)
-                ticker, opt = self._parse_code(row["code"])
-                if opt is not None:
-                    continue  # options handled separately
+                if is_option_code(str(row["code"])):
+                    continue  # options (single or combo) handled separately
                 qty = dec(row["dealt_qty"])
                 if qty == 0:
                     continue
+                ticker = str(row["code"]).split(".")[-1].strip()
                 trades.append(
                     StockTrade(
                         date=self._row_date(row),
@@ -237,30 +234,60 @@ class MooMooAdapter:
                 if oid in seen:
                     continue
                 seen.add(oid)
-                underlying, opt = self._parse_code(row["code"])
-                if opt is None:
+                legs = parse_option_legs(str(row["code"]))
+                if legs is None:
                     continue  # stocks handled separately
                 qty = dec(row["dealt_qty"])
                 if qty == 0:
                     continue
-                otype, strike, expiry = opt
-                trades.append(
-                    OptionTrade(
-                        date=self._row_date(row),
-                        broker=Broker.MOOMOO,
-                        underlying=underlying,
-                        option_type=otype,
-                        strike=strike,
-                        qty=qty,
-                        expiry=expiry,
-                        action=self._option_action(row["trd_side"]),
-                        premium=dec(row["dealt_avg_price"]),
-                        fee=fees.get(str(row["order_id"]), Decimal("0")),
-                        currency=self._row_currency(row, ticker_market=market),
-                        multiplier=_OPTION_MULTIPLIER,
-                        fill_id=str(row["order_id"]),
+                order_date = self._row_date(row)
+                order_fee = fees.get(str(row["order_id"]), Decimal("0"))
+                ccy = self._row_currency(row, ticker_market=market)
+                is_buy = self._is_buy(row["trd_side"])
+
+                if len(legs) == 1:
+                    underlying, otype, strike, expiry = legs[0]
+                    trades.append(
+                        OptionTrade(
+                            date=order_date,
+                            broker=Broker.MOOMOO,
+                            underlying=underlying,
+                            option_type=otype,
+                            strike=strike,
+                            qty=qty,
+                            expiry=expiry,
+                            action=self._option_action(row["trd_side"]),
+                            premium=dec(row["dealt_avg_price"]),
+                            fee=order_fee,
+                            currency=ccy,
+                            multiplier=_OPTION_MULTIPLIER,
+                            fill_id=str(row["order_id"]),
+                        )
                     )
-                )
+                else:
+                    # Multi-leg combo spread (e.g. SHOP260821P130/145).
+                    # Decompose into per-leg option trades matching broker position convention:
+                    # Leg 0 is primary action (BUY if order is buy), Leg 1 is opposite (SELL).
+                    # Whole order fee & premium land on Leg 0 so totals are preserved.
+                    for i, (underlying, otype, strike, expiry) in enumerate(legs):
+                        leg_action = OptionAction.BUY if (is_buy if i == 0 else not is_buy) else OptionAction.SELL
+                        trades.append(
+                            OptionTrade(
+                                date=order_date,
+                                broker=Broker.MOOMOO,
+                                underlying=underlying,
+                                option_type=otype,
+                                strike=strike,
+                                qty=qty,
+                                expiry=expiry,
+                                action=leg_action,
+                                premium=dec(row["dealt_avg_price"]) if i == 0 else Decimal("0"),
+                                fee=order_fee if i == 0 else Decimal("0"),
+                                currency=ccy,
+                                multiplier=_OPTION_MULTIPLIER,
+                                fill_id=f"{oid}:{i}",
+                            )
+                        )
         return trades
 
     def _filled_orders_with_fees(self, market: str, since: date | None):
@@ -321,16 +348,17 @@ class MooMooAdapter:
                 # Sign short positions negative to match FIFO holdings / reconcile.
                 if str(row.get("position_side", "")).upper() == PositionSide.SHORT:
                     qty = -abs(qty)
-                symbol, opt = self._parse_code(row["code"])
+                legs = parse_option_legs(str(row["code"]))
                 market_price = (
                     None if _missing(row.get("nominal_price")) else dec(row["nominal_price"])
                 )
-                if opt is None:
+                if not legs:
+                    ticker = str(row["code"]).split(".")[-1].strip()
                     positions.append(
                         Position(
                             broker=Broker.MOOMOO,
                             asset_type=AssetType.STOCK,
-                            symbol=symbol,
+                            symbol=ticker,
                             qty=qty,
                             avg_cost=dec(row["cost_price"]),
                             currency=self._row_currency(row, ticker_market=market),
@@ -339,23 +367,23 @@ class MooMooAdapter:
                         )
                     )
                 else:
-                    otype, strike, expiry = opt
-                    positions.append(
-                        Position(
-                            broker=Broker.MOOMOO,
-                            asset_type=AssetType.OPTION,
-                            symbol=symbol,
-                            qty=qty,
-                            avg_cost=dec(row["cost_price"]),
-                            currency=self._row_currency(row, ticker_market=market),
-                            market_price=market_price,
-                            as_of=today,
-                            option_type=otype,
-                            strike=strike,
-                            expiry=expiry,
-                            multiplier=_OPTION_MULTIPLIER,
+                    for underlying, otype, strike, expiry in legs:
+                        positions.append(
+                            Position(
+                                broker=Broker.MOOMOO,
+                                asset_type=AssetType.OPTION,
+                                symbol=underlying,
+                                qty=qty,
+                                avg_cost=dec(row["cost_price"]),
+                                currency=self._row_currency(row, ticker_market=market),
+                                market_price=market_price,
+                                as_of=today,
+                                option_type=otype,
+                                strike=strike,
+                                expiry=expiry,
+                                multiplier=_OPTION_MULTIPLIER,
+                            )
                         )
-                    )
         return positions
 
     # -- cash movements ----------------------------------------------------- #
@@ -387,15 +415,12 @@ class MooMooAdapter:
     def _parse_code(code: str):
         """('US.AAPL' -> 'AAPL', None) for stocks;
         ('US.AAPL240119C00190000' -> 'AAPL', (OptionType, strike, expiry)) for options."""
-        body = str(code).split(".")[-1].strip()
-        m = _OPTION_RE.match(body)
-        if not m:
+        legs = parse_option_legs(str(code))
+        if not legs:
+            body = str(code).split(".")[-1].strip()
             return body, None
-        otype = OptionType.CALL if m.group("cp") == "C" else OptionType.PUT
-        strike = dec(int(m.group("s"))) / Decimal("1000")
-        d = m.group("d")
-        expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
-        return m.group("u"), (otype, strike, expiry)
+        underlying, otype, strike, expiry = legs[0]
+        return underlying, (otype, strike, expiry)
 
     @staticmethod
     def _row_currency(row: dict, *, ticker_market: str) -> str:
