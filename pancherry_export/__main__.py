@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -77,7 +78,19 @@ def run(client, repo: Path, *, today: date, dry_run: bool = False, notifier=noti
     return 0
 
 
+def _force_utf8() -> None:
+    """The summary + logs carry emoji, but the Windows console (and a redirected
+    task log) default to cp1252 and raise UnicodeEncodeError. Reconfigure both
+    streams to UTF-8 so output never crashes the run after the work is done."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None) -> int:
+    _force_utf8()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Refresh pancherry data files from the live Sheet.")
     parser.add_argument("--repo", default=get_pancherry_repo(), help="Path to the pancherry clone.")
