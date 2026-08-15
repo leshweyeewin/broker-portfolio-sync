@@ -10,10 +10,13 @@ adapter just needs the gateway's host/port and the account's security firm
 Conforms to :class:`~adapters.base.BrokerAdapter` and returns only the common
 schema. Field mapping was derived against the installed SDK surface:
 
-* Executions ← ``history_order_list_query`` filtered to filled orders (one row
-  per order, matching the Tiger/Longbridge shape and giving us ``currency`` and
-  ``dealt_avg_price``). Fees ← ``order_fee_query`` (fee is per *order*), joined
-  on ``order_id``.
+* Executions ← discovered by FILL time via ``history_deal_list_query`` (a deal
+  is created at fill time, so a resting order placed before the window but
+  filled inside it is captured — ``history_order_list_query`` filters by order
+  time and would miss it). Order detail (``currency``, ``dealt_avg_price``,
+  combo code) is joined in from ``history_order_list_query`` and dated by the
+  deal's fill time. Fees ← ``order_fee_query`` (fee is per *order*), joined on
+  ``order_id``.
 * Positions ← ``position_list_query`` (STK + OPT in one call; split by option
   code). Short positions are returned with ``position_side == SHORT`` and are
   **signed negative** so they line up with the FIFO engine's signed holdings and
@@ -40,7 +43,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Callable, Optional
 
@@ -316,22 +319,63 @@ class MooMooAdapter:
         return trades
 
     def _filled_orders_with_fees(self, market: str, since: date | None):
-        """Return (list-of-order-dicts, {order_id: fee}) for filled orders."""
+        """Return (list-of-order-dicts, {order_id: fee}) for orders FILLED in the
+        window.
+
+        Inclusion and dating come from history_deal_list_query — a *deal* is
+        created at fill time — so a resting order placed before ``since`` but
+        filled inside the window is captured. history_order_list_query filters by
+        order time and would silently miss it. Order *detail* (currency,
+        dealt_avg_price, combo code) is joined in from history_order_list_query,
+        with the deal's fill date overriding the order's row date.
+
+        ``since`` is intentionally widened to the API's 90-day maximum (both
+        endpoints hard-cap the lookback there); run.py drops the pre-cutoff
+        overshoot by our own fill date. An order filled in-window but *placed*
+        more than 90 days ago is beyond both endpoints' reach and is skipped with
+        a warning rather than silently dropped."""
         ctx = self._context(market)
-        start = since.isoformat() if since else ""
-        df = self._unwrap(
+        start = (datetime.now().date() - timedelta(days=89)).isoformat()
+
+        deals = self._unwrap(
+            ctx.history_deal_list_query(
+                start=start, end="", trd_env=self._trd_env, acc_id=self._acc_id
+            ),
+            "history_deal_list_query",
+        )
+        fill_date: dict[str, str] = {}  # order_id -> latest fill date (YYYY-MM-DD)
+        if deals is not None and not deals.empty:
+            for d in deals.to_dict("records"):
+                oid = str(d["order_id"])
+                ct = str(d.get("create_time", ""))[:10]
+                if ct and (oid not in fill_date or ct > fill_date[oid]):
+                    fill_date[oid] = ct
+        if not fill_date:
+            return [], {}
+
+        odf = self._unwrap(
             ctx.history_order_list_query(
-                status_filter_list=_FILLED_STATUSES,
-                start=start,
-                end="",
-                trd_env=self._trd_env,
-                acc_id=self._acc_id,
+                status_filter_list=_FILLED_STATUSES, start=start, end="",
+                trd_env=self._trd_env, acc_id=self._acc_id,
             ),
             "history_order_list_query",
         )
-        rows = df.to_dict("records") if df is not None and not df.empty else []
-        order_ids = [str(r["order_id"]) for r in rows]
-        return rows, self._fees_for(ctx, order_ids)
+        order_rows: dict[str, dict] = {}
+        if odf is not None and not odf.empty:
+            for r in odf.to_dict("records"):
+                order_rows[str(r["order_id"])] = r
+
+        rows: list[dict] = []
+        for oid, fdate in fill_date.items():
+            r = order_rows.get(oid)
+            if r is None:
+                print(f"Warning: MooMoo order {oid} filled in window but its "
+                      f"detail is unavailable (placed >90d ago); skipped")
+                continue
+            r = dict(r)
+            r["updated_time"] = fdate  # date by the deal's fill time
+            rows.append(r)
+        return rows, self._fees_for(ctx, list(fill_date.keys()))
 
     def _fees_for(self, ctx, order_ids: list[str]) -> dict[str, Decimal]:
         if not order_ids:

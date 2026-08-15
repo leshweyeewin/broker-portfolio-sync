@@ -39,6 +39,25 @@ class FakeCtx:
             return (-1, "boom")
         return (RET_OK, self._orders)
 
+    def history_deal_list_query(self, start, end, trd_env, acc_id):
+        """Fill-time discovery source. Synthesize one deal per order row, with the
+        deal's create_time (= fill time) taken from the order's updated_time, so
+        the adapter dates trades exactly as before."""
+        if self._fail == "history_deal_list_query":
+            return (-1, "boom")
+        deals = []
+        if not self._orders.empty:
+            for r in self._orders.to_dict("records"):
+                deals.append({
+                    "order_id": r["order_id"],
+                    "code": r.get("code", ""),
+                    "trd_side": r.get("trd_side", ""),
+                    "qty": r.get("dealt_qty", 0),
+                    "price": r.get("dealt_avg_price", 0),
+                    "create_time": r.get("updated_time", ""),
+                })
+        return (RET_OK, pd.DataFrame(deals))
+
     def order_fee_query(self, order_id_list, trd_env, acc_id):
         return (RET_OK, self._fees)
 
@@ -162,12 +181,21 @@ def test_cash_movements_always_empty():
 
 
 def test_non_ok_return_fails_loud():
-    ctx = FakeCtx(fail="history_order_list_query")
+    # An order must exist so a deal is discovered and the order-detail query is
+    # actually reached (that's the one set to fail).
+    order = {"order_id": "F1", "code": "US.AAPL", "trd_side": "BUY", "dealt_qty": 1,
+             "dealt_avg_price": 10.0, "currency": "USD", "updated_time": "2026-01-02 10:00:00"}
+    ctx = FakeCtx(orders=[order], fail="history_order_list_query")
     with pytest.raises(RuntimeError, match="history_order_list_query failed"):
         _adapter(ctx).fetch_stock_executions(since=None)
     ctx2 = FakeCtx(fail="position_list_query")
     with pytest.raises(RuntimeError, match="position_list_query failed"):
         _adapter(ctx2).fetch_positions()
+
+    # A failing deal query must also fail loud (fill-time discovery is required).
+    ctx3 = FakeCtx(orders=[order], fail="history_deal_list_query")
+    with pytest.raises(RuntimeError, match="history_deal_list_query failed"):
+        _adapter(ctx3).fetch_stock_executions(since=None)
 
 
 def test_multi_market_queries_each_context():
