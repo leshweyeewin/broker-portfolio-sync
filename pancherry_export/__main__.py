@@ -74,6 +74,12 @@ def run(client, repo: Path, *, today: date, dry_run: bool = False,
     drift = assess_journal_drift(entry, journal_path)
     if upsert_journal_entry(entry, journal_path):
         j_status = "new draft"
+    elif drift is not None and entry["trades"] < drift.prev_trades:
+        # Trades can only accumulate within a week — a drop means a stale/glitched
+        # read (e.g. dates came back unparseable). Never overwrite good stats with it.
+        j_status = f"refresh SKIPPED — {entry['trades']} trades < existing {drift.prev_trades} (stale read?)"
+        log.warning("Refusing to refresh %s: %d trades < existing %d.",
+                    entry["slug"], entry["trades"], drift.prev_trades)
     else:
         j_status = "stats refreshed" if refresh_journal_stats(entry, journal_path) else "already current"
 

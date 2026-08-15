@@ -156,21 +156,43 @@ class SheetClient:
     def get_values(self, range_: str, value_render_option: str = "FORMATTED_VALUE") -> list[list[Any]]:
         """Return 2-D list of cell values for ``range_`` (e.g. ``'Stocks!A:M'``).
 
-        ``value_render_option='UNFORMATTED_VALUE'`` returns raw values (dates as
-        Sheets serial numbers, numbers as numbers) — used when reading data back
-        for computation so locale date formatting can't corrupt parsing.
+        Uses ``spreadsheets().get()`` with ``userEnteredValue`` field mask to
+        read cell contents without triggering expensive server-side formula
+        recalculations that cause timeouts on large sheets.
         """
         result = (
             self._service.spreadsheets()
-            .values()
             .get(
                 spreadsheetId=self._spreadsheet_id,
-                range=range_,
-                valueRenderOption=value_render_option,
+                ranges=[range_],
+                fields="sheets.data.rowData.values.userEnteredValue",
             )
             .execute()
         )
-        return result.get("values", [])
+        rows: list[list[Any]] = []
+        for sheet in result.get("sheets", []):
+            for data in sheet.get("data", []):
+                for row in data.get("rowData", []):
+                    row_vals: list[Any] = []
+                    for cell in row.get("values", []):
+                        u = cell.get("userEnteredValue", {})
+                        if "stringValue" in u:
+                            row_vals.append(u["stringValue"])
+                        elif "numberValue" in u:
+                            n = u["numberValue"]
+                            row_vals.append(int(n) if isinstance(n, float) and n.is_integer() else n)
+                        elif "boolValue" in u:
+                            row_vals.append(u["boolValue"])
+                        elif "formulaValue" in u:
+                            row_vals.append(u["formulaValue"])
+                        else:
+                            row_vals.append("")
+                    while row_vals and row_vals[-1] == "":
+                        row_vals.pop()
+                    rows.append(row_vals)
+        while rows and not rows[-1]:
+            rows.pop()
+        return rows
 
     def get_sheet_metadata(self) -> dict:
         """Return the full spreadsheet metadata (sheet IDs, names, etc.)."""
@@ -965,6 +987,23 @@ def _parse_sheet_date(value: object) -> date:
         except ValueError:
             continue
     raise ValueError(f"cannot parse sheet date value {value!r}")
+
+
+def sheet_date_to_iso(value: object) -> str:
+    """Normalize a Date/Expiry cell read from the sheet to ISO ``yyyy-mm-dd``.
+
+    ``get_values`` reads ``userEnteredValue``, so a date cell arrives as its
+    serial ``numberValue`` (e.g. ``46251``), not a formatted string — parse that
+    to a real date. Blank -> ``''``. An unparseable value passes through as its
+    stripped string, so downstream 'no valid date' handling still applies instead
+    of crashing the whole read.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        return _parse_sheet_date(value).isoformat()
+    except (ValueError, TypeError):
+        return str(value).strip()
 
 
 def _col_letter(n: int) -> str:

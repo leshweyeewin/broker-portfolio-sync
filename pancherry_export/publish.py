@@ -177,10 +177,9 @@ def _open_or_update_pr(
             )
             return PRResult(url=pr.get("html_url", ""), created=False, committed=committed)
 
-    # No open PR. If this run also changed nothing, there's nothing to open.
-    if committed == 0:
-        return PRResult(url="", created=False, committed=0)
-
+    # No open PR. Try to open one regardless of this run's commit count — the
+    # branch may already be ahead of base from an earlier run whose PR step
+    # failed. GitHub tells us via 422 if there is genuinely no diff.
     payload = {"title": title, "head": branch, "base": base, "body": body, "draft": True}
     cstatus, cbody = transport(
         "POST", f"{_API}/repos/{repo}/pulls",
@@ -189,6 +188,8 @@ def _open_or_update_pr(
     )
     if cstatus in (200, 201):
         return PRResult(url=json.loads(cbody or b"{}").get("html_url", ""), created=True, committed=committed)
+    if cstatus == 422 and b"No commits between" in cbody:
+        return PRResult(url="", created=False, committed=committed)   # branch == base, nothing to do
     raise PancherryPublishError(f"GitHub create PR -> {cstatus}: {cbody[:300]!r}")
 
 

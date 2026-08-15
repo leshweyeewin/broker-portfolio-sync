@@ -20,11 +20,12 @@ _SETTINGS = {"token": "tok", "repo": "owner/repo", "branch": "pancherry-drafts",
 class FakeGitHub:
     """Minimal in-memory GitHub contents/refs/pulls API."""
 
-    def __init__(self, *, branch_exists=False, files=None, open_pr=False):
+    def __init__(self, *, branch_exists=False, files=None, open_pr=False, no_diff=False):
         self.calls: list[tuple[str, str]] = []
         self.branch_exists = branch_exists
         self.files: dict[str, bytes] = dict(files or {})   # path on the drafts branch
         self.open_pr = open_pr
+        self.no_diff = no_diff                              # PR create → 422 "No commits between"
         self.created_pr = False
         self.patched = False
 
@@ -58,6 +59,8 @@ class FakeGitHub:
                 ).encode()
             return 200, b"[]"
         if method == "POST" and url.endswith("/pulls"):
+            if self.no_diff:
+                return 422, b'{"message":"No commits between main and pancherry-drafts"}'
             self.created_pr = True
             return 201, json.dumps({"html_url": "https://github.com/owner/repo/pull/8"}).encode()
         if method == "PATCH" and "/pulls/" in url:
@@ -124,16 +127,30 @@ def test_commits_only_the_changed_file(tmp_path):
     assert sum(1 for m, _ in gh.calls if m == "PUT") == 1
 
 
-def test_no_pr_when_nothing_changed_and_none_open(tmp_path):
+def test_opens_pr_when_branch_ahead_but_no_open_pr(tmp_path):
+    # Files already committed on the branch (committed==0 this run) and no open
+    # PR — e.g. a prior run's PR step failed. We must still open the PR.
     files = _files(tmp_path, **{"openPositions.ts": "open-data"})
     gh = FakeGitHub(branch_exists=True, open_pr=False,
                     files={"src/data/openPositions.ts": b"open-data"})
 
     res = publish_draft_pr(files, settings=_SETTINGS, title="T", body="B", transport=gh)
 
+    assert res.committed == 0          # nothing new to commit
+    assert res.created is True          # ...but the PR still gets opened
+    assert res.url.endswith("/pull/8")
+
+
+def test_no_pr_when_branch_has_no_diff(tmp_path):
+    # Branch identical to base → GitHub 422 "No commits between" → nothing to do.
+    files = _files(tmp_path, **{"openPositions.ts": "open-data"})
+    gh = FakeGitHub(branch_exists=True, open_pr=False, no_diff=True,
+                    files={"src/data/openPositions.ts": b"open-data"})
+
+    res = publish_draft_pr(files, settings=_SETTINGS, title="T", body="B", transport=gh)
+
     assert res.url == ""
     assert res.created is False
-    assert gh.created_pr is False
 
 
 def test_raises_when_not_configured():

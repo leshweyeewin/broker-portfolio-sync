@@ -11,7 +11,8 @@ from decimal import Decimal
 
 import pytest
 
-from lemon8.reader import ClosedPosition
+from lemon8.reader import ClosedPosition, read_closed_positions
+from sheets.writer import sheet_date_to_iso
 from pancherry_export.exporter import (
     OpenPositionData,
     assess_journal_drift,
@@ -94,6 +95,41 @@ def test_skips_malformed_combo_underlying():
     )
     tickers = [p.ticker for p in read_open_positions(client)]
     assert tickers == ["SHOP"]
+
+
+# --------------------------------------------------------------------------- #
+# Sheets serial-date handling (get_values returns userEnteredValue serials)
+# --------------------------------------------------------------------------- #
+
+def test_sheet_date_to_iso_handles_serials_strings_and_junk():
+    assert sheet_date_to_iso(46243) == "2026-08-09"     # Sheets serial → ISO
+    assert sheet_date_to_iso("2026-08-10") == "2026-08-10"
+    assert sheet_date_to_iso("") == ""
+    assert sheet_date_to_iso("not-a-date") == "not-a-date"
+
+
+def test_closed_rows_with_serial_dates_are_still_windowed():
+    # Date cells can come back as serial numberValues; the reader must parse them
+    # or every row falls out of the window (the 0-trades bug).
+    row = [46243, "Tiger", "GOOG", "Sell", 10, 10.0, 110.0, 1.0, "USD",
+           "Closed", 10.0, "", "GOOG-x"]                 # Date = serial for 2026-08-09
+    client = _client(stocks=[row])
+
+    closed = read_closed_positions(client)
+    assert closed[0].close_date == "2026-08-09"
+
+    j = build_weekly_journal(closed, today=date(2026, 8, 12), window_days=7)
+    assert j["trades"] == 1
+
+
+def test_open_leg_expiry_serial_is_rendered_as_iso():
+    client = _client(options=[
+        # Expiry column (index 7) as a serial for 2026-08-15.
+        ["2026-08-11", "Tiger", "Sell Call", "AVGO", "Call", "$400.00", -2, 46249,
+         "Sell", 1.0, 100.0, 1.0, "USD", "Open", "", "", "AVGO-x"],
+    ])
+    legs = read_open_positions(client)[0].legs
+    assert legs[0].expiry == "2026-08-15"
 
 
 def test_ticker_with_only_options_still_appears():

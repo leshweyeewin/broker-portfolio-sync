@@ -24,6 +24,7 @@ from sheets.writer import (
     TAB_OPTIONS,
     DATA_HEADER_ROWS,
     _col_letter,
+    sheet_date_to_iso,
 )
 
 CLOSED_STATUS = "Closed"
@@ -139,7 +140,7 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         pl_sgd = _dec(_cell(row, idx["P/L (SGD)"]))
         option_type = str(_cell(row, idx["Type"]))
         strike = str(_cell(row, idx["Strike"]))
-        expiry = str(_cell(row, idx["Expiry"]))
+        expiry = sheet_date_to_iso(_cell(row, idx["Expiry"]))
         # Strategy is always in OPTIONS_HEADERS, but read defensively so a future
         # column drop degrades to an empty label rather than a KeyError.
         strategy = str(_cell(row, idx["Strategy"])) if "Strategy" in idx else ""
@@ -155,7 +156,7 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         broker=str(_cell(row, idx["Broker"])),
         symbol=symbol,
         asset=asset,
-        close_date=str(_cell(row, idx["Date"])),
+        close_date=sheet_date_to_iso(_cell(row, idx["Date"])),
         currency=str(_cell(row, idx["Currency"])),
         realized_pl=pl,
         realized_pl_sgd=pl_sgd,
@@ -165,6 +166,7 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         expiry=expiry,
         strategy=strategy,
     )
+
 
 
 def _return_pct(total: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:

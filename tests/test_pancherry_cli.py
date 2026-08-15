@@ -36,6 +36,19 @@ def _client():
     return c
 
 
+def _client_n(n):
+    """A client with ``n`` closed (winning) stock rows in the current week."""
+    c = FakeSheetClient([TAB_STOCKS, TAB_OPTIONS])
+    rows = [_stock_closed(f"T{i}", 110, 10) for i in range(n)]
+    c.batch_update_values([
+        {"range": f"{TAB_STOCKS}!A1",
+         "values": _SUMMARY + [[str(h) for h in STOCKS_HEADERS]] + rows},
+        {"range": f"{TAB_OPTIONS}!A1",
+         "values": _SUMMARY + [[str(h) for h in OPTIONS_HEADERS]]},
+    ])
+    return c
+
+
 def _repo(tmp_path):
     d = tmp_path / "src" / "data"
     d.mkdir(parents=True)
@@ -83,3 +96,18 @@ def test_rerun_emits_drift_warning_when_more_trades_close(tmp_path, monkeypatch)
 
     assert "may need a revise" in msgs[0]
     assert "was 2, now 4" in msgs[0]
+
+
+def test_refresh_skipped_when_trade_count_drops(tmp_path):
+    """A glitched/stale read that would lower an existing week's count must never
+    overwrite good stats (the serial-date 0-trades incident)."""
+    repo = _repo(tmp_path)
+    cli.run(_client_n(3), repo, today=_TODAY, notifier=lambda m: True)   # w33 = 3 trades
+
+    msgs = []
+    cli.run(_client_n(1), repo, today=_TODAY, notifier=lambda m: msgs.append(m) or True)
+
+    text = (repo / "src" / "data" / "weeklyJournals.ts").read_text(encoding="utf-8")
+    assert "trades: 3," in text          # kept — not clobbered to 1
+    assert "trades: 1," not in text
+    assert "SKIPPED" in msgs[0]

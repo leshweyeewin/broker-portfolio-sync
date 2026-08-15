@@ -37,6 +37,7 @@ from sheets.writer import (
     TAB_OPTIONS,
     DATA_HEADER_ROWS,
     _col_letter,
+    sheet_date_to_iso,
 )
 from lemon8.reader import ClosedPosition, read_closed_positions  # noqa: F401 (re-export convenience)
 from lemon8.weekly_job import select_recent_closes
@@ -116,7 +117,7 @@ def _net_legs(client) -> dict[str, list[OptionLegData]]:
         ticker = str(_cell(row, idx["Stock"])).strip()
         strike = _dec(_cell(row, idx["Strike"]))
         qty = _dec(_cell(row, idx["Qty"]))
-        expiry = str(_cell(row, idx["Expiry"])).strip()[:10]
+        expiry = sheet_date_to_iso(_cell(row, idx["Expiry"]))
         if not ticker or strike is None or qty is None or not expiry:
             continue
         if _is_malformed(ticker):
