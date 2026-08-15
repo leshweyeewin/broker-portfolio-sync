@@ -11,11 +11,15 @@ for the Singapore account. Register at developer.itigerup.com. The pipeline only
 
 Field mapping was derived against the installed ``tigeropen`` SDK surface:
 
-* Executions come from ``TradeClient.get_filled_orders`` — one ``Order`` per
-  filled execution. Order-level (rather than tick-level ``get_transactions``)
-  is deliberate: the fill-level endpoint carries no commission, and §8 requires
-  a real Fee per row. An order carries ``avg_fill_price``, ``filled``, and
-  ``commission`` together, which is exactly one execution row.
+* Executions are discovered by FILL time via ``TradeClient.get_transactions``
+  (fill-level, filtered by when a fill happened) and then enriched to full
+  ``Order`` detail + commission via ``get_order``. This deliberately does NOT
+  use ``get_filled_orders`` for discovery: that endpoint filters by when an
+  order was *placed*, so a resting order placed before the window but filled
+  inside it is silently missed. The fill records carry no fee (§8 needs a real
+  Fee per row), so we join each fill's ``order_id`` back to ``get_order`` —
+  which also yields ``avg_fill_price``, ``filled``, and ``contract_legs`` for
+  combos, giving exactly one execution row (or one per combo leg).
 * Positions come from ``get_positions`` (STK + OPT) for seeding (§5) and
   reconciliation (§9): ``quantity`` + ``average_cost``.
 * Cash movements come from ``get_fund_details``. Tiger's fund-detail schema
@@ -36,9 +40,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
@@ -293,8 +298,17 @@ class TigerAdapter:
     def fetch_option_executions(self, since: date | None) -> list[OptionTrade]:
         trades: list[OptionTrade] = []
 
-        # Single-leg option orders.
+        # Both single-leg option orders and multi-leg combos (verticals,
+        # calendars, diagonals, rolls) surface under sec_type OPT: each combo leg
+        # is a fill sharing the parent combo's order_id, so get_order returns the
+        # combo with its legs on ``order.contract_legs``. Branch per order: a
+        # combo (legs present) is decomposed into per-leg trades so spreads/rolls
+        # show individually and reconcile against positions; a single-leg order
+        # is one trade.
         for order in self._get_filled_orders(SecurityType.OPT, since):
+            if getattr(order, "contract_legs", None):
+                trades.extend(self._decompose_mleg(order))
+                continue
             qty = self._filled_qty(order)
             if qty == 0:
                 continue
@@ -317,14 +331,6 @@ class TigerAdapter:
                     timestamp=self._order_datetime(order),
                 )
             )
-
-        # Multi-leg combo orders (verticals, calendars, diagonals, rolls). Tiger
-        # returns these under sec_type MLEG with a single net contract; the actual
-        # legs (each with its own action/strike/expiry/price) live on
-        # ``order.contract_legs``. Decompose each into per-leg option trades so
-        # spreads/rolls show individually and reconcile against positions.
-        for order in self._get_filled_orders(SecurityType.MLEG, since):
-            trades.extend(self._decompose_mleg(order))
 
         return trades
 
@@ -370,42 +376,115 @@ class TigerAdapter:
         return out
 
     def _get_filled_orders(self, sec_type: SecurityType, since: date | None) -> list:
-        """Fetch filled orders of a security type since a date, chunking into <=89-day windows."""
-        from datetime import timedelta
+        """Return filled ``Order`` objects discovered by FILL time.
+
+        Discovery uses ``get_transactions`` (fill-level: filtered by *when a fill
+        happened*), not ``get_filled_orders`` (which filters by *when an order was
+        placed*). A resting order placed before ``since`` but filled inside the
+        window is therefore captured, not silently dropped. Fill records carry no
+        commission, so each unique ``order_id`` is joined back to ``get_order``
+        for full detail + fee. Combo legs share the parent order_id, so a combo is
+        fetched once and returned whole (the caller decomposes its legs)."""
         today = datetime.now(tz=self._tz).date()
-        start_date = since if since else date(today.year - 1, today.month, today.day)
+        start_ms = self._since_to_ms(since)
+        end_ms = int(
+            datetime(today.year, today.month, today.day, 23, 59, 59, tzinfo=self._tz).timestamp() * 1000
+        )
 
-        all_orders = []
+        orders: list = []
         for account in self._account_ids():
-            cur_start = start_date
-            while cur_start <= today:
-                cur_end = min(cur_start + timedelta(days=89), today)
-                start_ms = int(datetime(cur_start.year, cur_start.month, cur_start.day, tzinfo=self._tz).timestamp() * 1000)
-                end_ms = int(datetime(cur_end.year, cur_end.month, cur_end.day, 23, 59, 59, tzinfo=self._tz).timestamp() * 1000)
-
-                res = self._client.get_filled_orders(
-                    account=account,
-                    sec_type=sec_type,
-                    market=Market.ALL,
-                    start_time=start_ms,
-                    end_time=end_ms,
-                    limit=1000,
-                )
-                if res:
-                    all_orders.extend(list(res))
-                cur_start = cur_end + timedelta(days=1)
-
-        seen_ids = set()
-        unique_orders = []
-        for order in all_orders:
-            oid = self._order_id(order)
-            if oid:
-                if oid in seen_ids:
+            # 1) Completeness: which orders FILLED in the window (source of truth).
+            filled_ids: list = []
+            seen: set = set()
+            for txn in self._iter_transactions(account, sec_type, start_ms, end_ms):
+                oid = getattr(txn, "order_id", None)
+                if oid is None:
                     continue
-                seen_ids.add(oid)
-            unique_orders.append(order)
+                key = str(oid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                filled_ids.append(oid)
+            if not filled_ids:
+                continue
 
-        return unique_orders
+            # 2) Detail: bulk-load order detail cheaply. get_filled_orders returns
+            #    up to 1000 full orders (fee + combo legs) per call and is not
+            #    per-order rate-limited, so a wide placement scan is a handful of
+            #    calls. It only serves as a detail *cache* — inclusion is already
+            #    decided by fill time above — so per-order get_order (rate-limited
+            #    120/min) is needed only for the rare order placed before the scan.
+            detail = self._bulk_order_detail(account, sec_type, today)
+            for oid in filled_ids:
+                order = detail.get(str(oid)) or self._get_order_detail(account, oid)
+                if order is not None:
+                    orders.append(order)
+        return orders
+
+    def _bulk_order_detail(self, account, sec_type: SecurityType, today: date) -> dict:
+        """Map ``order_id`` -> full ``Order`` for a wide placement window, chunked
+        into <=89-day windows (get_filled_orders spans are bounded). For OPT we
+        also scan MLEG, because combos surface at order level under MLEG even
+        though their fills surface under OPT."""
+        sec_types = [sec_type]
+        if sec_type == SecurityType.OPT:
+            sec_types.append(SecurityType.MLEG)
+        start_date = today - timedelta(days=400)
+        detail: dict = {}
+        cur_start = start_date
+        while cur_start <= today:
+            cur_end = min(cur_start + timedelta(days=89), today)
+            s_ms = int(datetime(cur_start.year, cur_start.month, cur_start.day, tzinfo=self._tz).timestamp() * 1000)
+            e_ms = int(datetime(cur_end.year, cur_end.month, cur_end.day, 23, 59, 59, tzinfo=self._tz).timestamp() * 1000)
+            for stt in sec_types:
+                res = self._client.get_filled_orders(
+                    account=account, sec_type=stt, market=Market.ALL,
+                    start_time=s_ms, end_time=e_ms, limit=1000,
+                )
+                for o in (res or []):
+                    oid = self._order_id(o)
+                    if oid:
+                        detail[oid] = o
+            cur_start = cur_end + timedelta(days=1)
+        return detail
+
+    def _iter_transactions(self, account, sec_type: SecurityType, start_ms: int, end_ms: int):
+        """Yield fill records in ``[start_ms, end_ms]``, paginating past the
+        100-row server cap. Passing ``page_token`` (even '') makes the SDK return
+        a ``TransactionsResponse`` (``.result`` + ``.next_page_token``) rather than
+        a bare, capped list."""
+        token = ""
+        while True:
+            resp = self._client.get_transactions(
+                account=account,
+                sec_type=sec_type,
+                start_time=start_ms,
+                end_time=end_ms,
+                limit=100,
+                page_token=token,
+            )
+            if resp is None:
+                return
+            yield from (getattr(resp, "result", None) or [])
+            token = getattr(resp, "next_page_token", None)
+            if not token:
+                return
+
+    def _get_order_detail(self, account, order_id):
+        """Fetch a full ``Order`` (contract, legs, avg_fill_price, commission) by
+        id, retrying briefly so a transient rate-limit never silently drops a
+        fill — the whole point of the fill-time switch is to miss nothing."""
+        for attempt in range(3):
+            try:
+                return self._client.get_order(
+                    account=account, id=int(order_id), show_charges=True
+                )
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 2:
+                    log.warning("Tiger get_order failed for %s: %s", order_id, exc)
+                    return None
+                time.sleep(0.5 * (attempt + 1))
+        return None
 
     # -- positions (seeding + reconciliation, §5/§9) ------------------------ #
     def fetch_positions(self) -> list[Position]:

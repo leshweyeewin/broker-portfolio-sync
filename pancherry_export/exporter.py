@@ -408,6 +408,151 @@ def upsert_journal_entry(entry: dict, path: Path) -> bool:
     return True
 
 
+# Machine-owned fields — the ones the sheet is the source of truth for. Prose
+# (title/summary/body/highlights) and `published` are the human's and never
+# refreshed. Order doesn't matter; each is replaced independently.
+_STAT_FIELDS = ("weekOf", "startDate", "endDate", "trades", "wins", "losses", "winRatePct")
+
+
+def refresh_journal_stats(entry: dict, path: Path) -> bool:
+    """Update only the stat fields on an already-present week's entry in ``path``.
+
+    A mid-week re-run refreshes the tiles (trades/win-rate/dates) as more trades
+    close, while the reviewer's narrative and curated highlights survive. Returns
+    True if the file changed, False if the slug isn't present *or* the stats
+    already match (so a self-updating PR doesn't churn on a no-op run).
+
+    CAVEAT: only the structured fields refresh — numbers the writer hard-codes
+    into prose (e.g. "70 positions closed" in ``body``) are NOT rewritten. Keep
+    prose qualitative and let the stat tiles carry the exact figures.
+    """
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    span = _find_entry_block(text, entry["slug"])
+    if span is None:
+        return False
+
+    start, end = span
+    original = text[start:end]
+    updated = original
+    for field in _STAT_FIELDS:
+        updated = _replace_stat_field(updated, field, entry[field])
+    if updated == original:
+        return False
+
+    path.write_text(text[:start] + updated + text[end:], encoding="utf-8")
+    return True
+
+
+def _find_entry_block(text: str, slug: str) -> Optional[tuple[int, int]]:
+    """Char span ``[open_brace, close_brace+1)`` of the object literal that holds
+    ``slug: '<slug>'`` — brace-matched so nested ``highlights`` objects are
+    included. ``None`` if the slug isn't in the file."""
+    m = re.search(rf"slug:\s*['\"]{re.escape(slug)}['\"]", text)
+    if not m:
+        return None
+
+    # Walk back to the '{' that opens this entry (skip balanced inner braces).
+    depth, open_idx, j = 0, None, m.start()
+    while j >= 0:
+        c = text[j]
+        if c == "}":
+            depth += 1
+        elif c == "{":
+            if depth == 0:
+                open_idx = j
+                break
+            depth -= 1
+        j -= 1
+    if open_idx is None:
+        return None
+
+    # Walk forward to its matching close.
+    depth = 0
+    for k in range(open_idx, len(text)):
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return open_idx, k + 1
+    return None
+
+
+def _replace_stat_field(block: str, field: str, value) -> str:
+    """Replace ``field: <old>`` with ``field: <value>`` in one entry block,
+    preserving the existing quote style for string values."""
+    if isinstance(value, int):
+        return re.sub(
+            rf"({re.escape(field)}:\s*)-?\d+",
+            lambda m: f"{m.group(1)}{value}",
+            block, count=1,
+        )
+    return re.sub(
+        rf"({re.escape(field)}:\s*)(['\"]).*?\2",
+        lambda m: f"{m.group(1)}{m.group(2)}{value}{m.group(2)}",
+        block, count=1,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Drift check — did the story go stale since the draft was written?
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class JournalDrift:
+    """How far an existing week's entry has drifted from the live sheet.
+
+    Refresh-in-place fixes the stat tiles, but the prose + curated highlights are
+    a snapshot. When more trades close after the draft, the narrative may no
+    longer fit — this flags it so the reviewer revises before merging (we never
+    auto-overwrite curation)."""
+    prev_trades: int
+    new_trades: int
+    top_winner: str   # current standout from live data, "" if none
+    top_loser: str
+
+    @property
+    def grew(self) -> bool:
+        return self.new_trades > self.prev_trades
+
+    @property
+    def added(self) -> int:
+        return max(0, self.new_trades - self.prev_trades)
+
+
+def assess_journal_drift(entry: dict, path: Path) -> Optional[JournalDrift]:
+    """Compare the live entry against the one already in ``path`` (read BEFORE a
+    refresh writes). ``None`` when the slug isn't present yet (a fresh insert has
+    nothing to drift from)."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    span = _find_entry_block(path.read_text(encoding="utf-8"), entry["slug"])
+    if span is None:
+        return None
+    block = path.read_text(encoding="utf-8")[span[0]:span[1]]
+    m = re.search(r"\btrades:\s*(\d+)", block)
+    return JournalDrift(
+        prev_trades=int(m.group(1)) if m else 0,
+        new_trades=int(entry.get("trades", 0)),
+        top_winner=_top_highlight(entry, "win"),
+        top_loser=_top_highlight(entry, "loss"),
+    )
+
+
+def _top_highlight(entry: dict, direction: str) -> str:
+    """Best highlight of ``direction`` from the freshly-built entry, e.g.
+    ``SNDK $1,405 Call (+230.6%)`` — the standout the reviewer should check is
+    still represented in the prose."""
+    for h in entry.get("highlights", []):
+        if h.get("direction") == direction:
+            label = h["ticker"] + (f" {h['contract']}" if h.get("contract") else "")
+            pct = h.get("returnPct")
+            return f"{label} ({pct:+.1f}%)" if pct is not None else label
+    return ""
+
+
 # --------------------------------------------------------------------------- #
 # Formatting helpers
 # --------------------------------------------------------------------------- #

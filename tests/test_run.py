@@ -447,3 +447,17 @@ def test_dashboard_total_pl_is_value_minus_capital():
     assert pl[3] == ""
     # Total column excludes the un-computable MooMoo leg
     assert pl[4] == 60.0
+
+
+def test_dashboard_has_weekly_realized_row():
+    from run import _build_dashboard
+    dash = _build_dashboard(
+        "OK", [], {"Tiger": Decimal("500")}, "OK",
+        weekly_realized_sgd_by_broker={"Tiger": Decimal("120"), "Longbridge": Decimal("30")},
+    )
+    rows = {r[0]: r for r in dash}
+    wk = rows["This Week Realized (SGD)"]   # [Metric, Longbridge, Tiger, MooMoo, Total]
+    assert wk[1] == 30.0 and wk[2] == 120.0 and wk[3] == 0.0
+    assert wk[4] == 150.0                    # total = 150
+    # all-time realized row is still separate and unaffected
+    assert rows["Realized P/L (SGD)"][2] == 500.0

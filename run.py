@@ -74,6 +74,11 @@ BROKER_FETCH_TIMEOUT_S = float(os.environ.get("BROKER_FETCH_TIMEOUT_S", "180"))
 # timezone-shifted `since` filter can't drop a boundary fill that is actually
 # after the cutoff on our (SGT) calendar. The pre-cutoff overshoot is dropped
 # after fetch by our own trade dates. 4 days safely spans a weekend + TZ skew.
+#
+# NB: a broker whose `since` filters by *order-placement* time (Tiger) needs to
+# reach much further back to catch a resting order filled inside the window —
+# that lookback is handled inside the adapter, not by widening this buffer, which
+# would make other brokers (MooMoo) miss recent fills.
 _FETCH_BUFFER = timedelta(days=4)
 
 # A notifier takes a message and returns True if it was delivered. Injected so
@@ -248,6 +253,7 @@ def _build_dashboard(
     *,
     account_value_sgd: Optional[dict[str, Decimal]] = None,
     net_capital_in: Optional[dict[str, Decimal]] = None,
+    weekly_realized_sgd_by_broker: Optional[dict[str, Decimal]] = None,
 ) -> list[list[Any]]:
     """Machine-computed summary block for the Dashboard tab (§4).
 
@@ -299,6 +305,7 @@ def _build_dashboard(
     pl_row.append(float(pl_total))
 
     realized_row, _ = _row("Realized P/L (SGD)", realized_sgd_by_broker)
+    weekly_row, _ = _row("This Week Realized (SGD)", weekly_realized_sgd_by_broker or {})
 
     counts = Counter(h.broker.value for h in holdings)
     open_row: list[Any] = ["Open Positions"]
@@ -313,6 +320,7 @@ def _build_dashboard(
         value_row,
         pl_row,
         realized_row,
+        weekly_row,
         open_row,
         ["Status", status, "", "", ""],
         ["Reconciliation", reconciliation, "", "", ""],
@@ -516,6 +524,14 @@ def run_sync(
     for r in list(stock_result.realizations) + list(option_result.realizations):
         realized_sgd_by_broker[r.broker.value] += realized_sgd.get(r.key, ZERO)
 
+    # This-week realized P/L per broker (ISO week: Monday..today) — feeds the
+    # Dashboard's weekly line (and mirrors the Sunday P/L digest).
+    monday = today - timedelta(days=today.weekday())
+    weekly_realized_sgd_by_broker: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for r in list(stock_result.realizations) + list(option_result.realizations):
+        if monday <= r.date <= today:
+            weekly_realized_sgd_by_broker[r.broker.value] += realized_sgd.get(r.key, ZERO)
+
     # Current account value per broker in SGD (live rate — this is a snapshot, not
     # a historical row, so it uses the current FX, not a trade-date rate).
     account_value_sgd: dict[str, Decimal] = defaultdict(lambda: ZERO)
@@ -548,6 +564,7 @@ def run_sync(
             status, holdings, dict(realized_sgd_by_broker), reconciliation,
             account_value_sgd=dict(account_value_sgd),
             net_capital_in=net_capital_in,
+            weekly_realized_sgd_by_broker=dict(weekly_realized_sgd_by_broker),
         )
     )
 

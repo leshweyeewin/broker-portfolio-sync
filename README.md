@@ -111,6 +111,57 @@ flowchart TD
 
 ---
 
+## Content pipeline (Sheet → blog + social)
+
+Downstream of the sync, the **Sheet is the single source of truth** for two weekly
+deliverables. Generation lives entirely in this repo (it needs the sheet schema,
+the percentages-only privacy rule, and the service-account creds); the pancherry
+site is a pure **consumer** that just renders the generated data files.
+
+```mermaid
+flowchart TD
+    GS["Google Sheet<br/>closed trades · P/L · open book"]
+
+    subgraph PROD["broker-portfolio-sync (Python) — PRODUCER"]
+        PE["pancherry_export<br/>• openPositions.ts (full regen, keeps hidden:)<br/>• weeklyJournals.ts (insert draft, then refresh-in-place)"]
+        L8["lemon8/weekly_job<br/>caption + card.png + blog draft"]
+    end
+
+    PRB["pancherry-drafts branch<br/>→ Draft PR (auto)"]
+    L8B["lemon8-drafts branch<br/>(GitHub API)"]
+    UP["Manual upload<br/>Lemon8 / TikTok (no posting API)"]
+
+    subgraph CONS["pancherry repo (TS/React) — CONSUMER"]
+        TS["src/data/*.ts"]
+        SITE["/trading page"]
+    end
+
+    REVIEW{"Human: review PR<br/>polish prose · merge"}
+    CF["Cloudflare Pages<br/>pancherry.com/trading"]
+
+    GS --> PE
+    GS --> L8
+    PE -->|"commit .ts via API"| PRB --> REVIEW
+    REVIEW -->|merge| TS --> SITE --> CF
+    L8 -->|"blog draft"| L8B
+    L8 --> UP
+```
+
+**Weekly ritual:** run `python -m pancherry_export --pr` → review the Draft PR
+(edit prose if the highlights/narrative drifted — the run flags it) → merge.
+
+- **Stat tiles refresh, prose doesn't.** A re-run updates only the numeric
+  fields (`trades`/`wins`/`losses`/`winRatePct`/dates) on an existing week's
+  entry — your narrative and curated highlights survive. Numbers hard-coded into
+  prose sentences are **not** rewritten, so keep prose qualitative.
+- **Drift warning.** If more trades close after the draft, the re-run reports the
+  new count and whether the auto-picked highlight set changed, so you know to
+  revise the story before merging.
+- **Nothing goes live unattended** — drafts land on a `*-drafts` branch, never the
+  branch Cloudflare Pages builds; publishing is the merge you control.
+
+---
+
 ## The common schema (adapter ↔ pipeline contract)
 
 Every adapter implements one protocol and returns four normalized dataclasses.

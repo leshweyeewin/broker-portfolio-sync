@@ -17,7 +17,8 @@ from adapters.base import (
     OptionType,
     StockAction,
 )
-from adapters.moomoo import MooMooAdapter
+from adapters.moomoo import MooMooAdapter, _combo_leg_buy_flags
+from adapters.base import parse_option_legs
 
 
 class FakeCtx:
@@ -271,25 +272,28 @@ def test_moomoo_combo_spread_decomposed_into_legs():
     opt_trades = _adapter(ctx).fetch_option_executions(since=None)
     assert len(opt_trades) == 2
 
+    # Buying a put vertical is long the HIGHER strike (145), short the lower (130)
+    # — so it closes a held spread rather than doubling it. Premium/fee land on the
+    # long (order-side) leg so the net debit keeps its sign.
     leg0, leg1 = opt_trades
     assert leg0.underlying == "SHOP" and leg0.strike == Decimal("130")
     assert leg0.option_type is OptionType.PUT
     assert leg0.expiry == date(2026, 8, 21)
-    assert leg0.action is OptionAction.BUY
+    assert leg0.action is OptionAction.SELL   # lower strike = short leg
     assert leg0.qty == Decimal("1")
-    assert leg0.premium == Decimal("2.50")
-    assert leg0.fee == Decimal("1.50")
-    assert leg0.total == Decimal("-250.00")  # BUY outflow
+    assert leg0.premium == Decimal("0")
+    assert leg0.fee == Decimal("0")
+    assert leg0.total == Decimal("0")
     assert leg0.dedup_key == "MooMoo:O_SHOP_SPREAD:0"
 
     assert leg1.underlying == "SHOP" and leg1.strike == Decimal("145")
     assert leg1.option_type is OptionType.PUT
     assert leg1.expiry == date(2026, 8, 21)
-    assert leg1.action is OptionAction.SELL
+    assert leg1.action is OptionAction.BUY    # higher strike = long leg
     assert leg1.qty == Decimal("1")
-    assert leg1.premium == Decimal("0")
-    assert leg1.fee == Decimal("0")
-    assert leg1.total == Decimal("0")
+    assert leg1.premium == Decimal("2.50")
+    assert leg1.fee == Decimal("1.50")
+    assert leg1.total == Decimal("-250.00")   # BUY outflow (net debit)
     assert leg1.dedup_key == "MooMoo:O_SHOP_SPREAD:1"
 
 
@@ -312,18 +316,20 @@ def test_moomoo_combo_spread_with_full_zeros_strike():
     opt_trades = _adapter(ctx).fetch_option_executions(since=None)
     assert len(opt_trades) == 2
 
+    # Selling the put vertical flips both legs: short the higher strike (145),
+    # long the lower (130). Premium/fee land on the order-side (145 sell) leg.
     leg0, leg1 = opt_trades
-    assert leg0.strike == Decimal("130") and leg0.action is OptionAction.SELL
+    assert leg0.strike == Decimal("130") and leg0.action is OptionAction.BUY
     assert leg0.qty == Decimal("2")
-    assert leg0.premium == Decimal("3.00")
-    assert leg0.fee == Decimal("2.00")
-    assert leg0.total == Decimal("600.00")  # SELL inflow (3 * 2 * 100)
+    assert leg0.premium == Decimal("0")
+    assert leg0.fee == Decimal("0")
+    assert leg0.total == Decimal("0")
 
-    assert leg1.strike == Decimal("145") and leg1.action is OptionAction.BUY
+    assert leg1.strike == Decimal("145") and leg1.action is OptionAction.SELL
     assert leg1.qty == Decimal("2")
-    assert leg1.premium == Decimal("0")
-    assert leg1.fee == Decimal("0")
-    assert leg1.total == Decimal("0")
+    assert leg1.premium == Decimal("3.00")
+    assert leg1.fee == Decimal("2.00")
+    assert leg1.total == Decimal("600.00")  # SELL inflow (3 * 2 * 100)
 
 
 def test_moomoo_fractional_and_slashed_positions():
@@ -347,3 +353,28 @@ def test_moomoo_fractional_and_slashed_positions():
     assert shop1.symbol == "SHOP" and shop1.strike == Decimal("130")
     assert shop2.symbol == "SHOP" and shop2.strike == Decimal("145")
 
+
+
+# --------------------------------------------------------------------------- #
+# Combo-vertical leg direction (_combo_leg_buy_flags) — reconciliation fix
+# --------------------------------------------------------------------------- #
+
+def test_buy_put_vertical_is_long_higher_strike():
+    # Buying SHOP P130/145: long the higher strike (145), short the lower (130) —
+    # so it CLOSES a held put spread instead of doubling it.
+    legs = parse_option_legs("SHOP260821P130/145")
+    assert [leg[2] for leg in legs] == [Decimal(130), Decimal(145)]
+    assert _combo_leg_buy_flags(legs, is_buy=True) == [False, True]   # 130 Sell, 145 Buy
+    assert _combo_leg_buy_flags(legs, is_buy=False) == [True, False]  # selling flips both
+
+
+def test_buy_call_vertical_is_long_lower_strike():
+    legs = parse_option_legs("SHOP260821C145/160")
+    assert _combo_leg_buy_flags(legs, is_buy=True) == [True, False]   # 145 Buy, 160 Sell
+
+
+def test_non_vertical_combo_uses_leg0_fallback():
+    # Mixed types (put + call) → not a vertical → leg 0 takes the order side.
+    legs = [("SHOP", OptionType.PUT, Decimal(130), date(2026, 8, 21)),
+            ("SHOP", OptionType.CALL, Decimal(145), date(2026, 8, 21))]
+    assert _combo_leg_buy_flags(legs, is_buy=True) == [True, False]

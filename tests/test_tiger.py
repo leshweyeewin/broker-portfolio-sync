@@ -70,6 +70,9 @@ class FakeClient:
         self._fund_df = fund_df
         self._funding_df = funding_df
 
+    def get_managed_accounts(self):
+        return []  # adapter falls back to [None] (the default account)
+
     def get_filled_orders(self, sec_type=None, **kw):
         st = str(sec_type)
         if st.endswith("STK"):
@@ -77,6 +80,35 @@ class FakeClient:
         if st.endswith("MLEG"):
             return self._mleg_orders
         return self._option_orders
+
+    def _all_orders(self):
+        return self._stock_orders + self._option_orders + self._mleg_orders
+
+    @staticmethod
+    def _oid(o):
+        return getattr(o, "id", None) or getattr(o, "order_id", None)
+
+    def get_transactions(self, account=None, sec_type=None, start_time=None,
+                         end_time=None, limit=100, page_token=None, **kw):
+        """Fill-time discovery: one fill stub per order carrying its order_id.
+        Combos surface under OPT (as at the real endpoint), so OPT discovery
+        includes the multi-leg orders too."""
+        st = str(sec_type)
+        if st.endswith("STK"):
+            src = self._stock_orders
+        elif st.endswith("OPT"):
+            src = self._option_orders + self._mleg_orders
+        else:
+            src = []
+        result = [SimpleNamespace(order_id=self._oid(o)) for o in src]
+        # page_token passed -> return the response object (adapter reads .result).
+        return SimpleNamespace(result=result, next_page_token=None)
+
+    def get_order(self, account=None, id=None, show_charges=None, **kw):
+        for o in self._all_orders():
+            if self._oid(o) == id:
+                return o
+        return None
 
     def get_positions(self, sec_type=None, **kw):
         key = "OPT" if str(sec_type).endswith("OPT") else "STK"
@@ -119,6 +151,25 @@ def test_stock_sell_and_zero_fill_skipped():
     assert len(trades) == 1
     assert trades[0].action is StockAction.SELL
     assert trades[0].total == Decimal("1000.0")  # sell -> inflow
+
+
+def test_resting_order_missed_by_bulk_is_recovered_by_fill_discovery():
+    """The resting-order bug: an order placed before the placement-scan window but
+    FILLED inside the window. Bulk get_filled_orders (placement-time) misses it;
+    fill-time get_transactions discovers it and get_order recovers its detail."""
+    resting = _order(id=7777, action="SELL", filled=28, avg_fill_price=54.0,
+                     contract=_contract(symbol="SNDK"))
+
+    class BulkMissesResting(FakeClient):
+        def get_filled_orders(self, sec_type=None, **kw):
+            return []  # placement scan doesn't reach the old resting order
+
+    a = _adapter(BulkMissesResting(stock_orders=[resting]))
+    (t,) = a.fetch_stock_executions(since=None)
+    assert t.ticker == "SNDK"
+    assert t.qty == Decimal("28")
+    assert t.action is StockAction.SELL
+    assert t.dedup_key == "Tiger:7777"
 
 
 # --- option executions ----------------------------------------------------- #

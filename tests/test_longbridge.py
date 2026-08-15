@@ -23,8 +23,17 @@ from adapters.base import (
 
 # --- SDK Fakes ---
 
-class FakeOrder:
-    def __init__(self, order_id, symbol, side, executed_price, executed_quantity, updated_at, currency="USD"):
+class FakeExecution:
+    """Fill-level record from history_executions (the discovery source)."""
+    def __init__(self, order_id, trade_done_at):
+        self.order_id = order_id
+        self.trade_done_at = trade_done_at
+
+
+class FakeOrderDetail:
+    """order_detail return: full order fields + charge_detail (fee)."""
+    def __init__(self, order_id, symbol, side, executed_price, executed_quantity,
+                 updated_at, total_amount, currency="USD", price=None):
         self.order_id = order_id
         self.symbol = symbol
         self.side = side
@@ -32,11 +41,7 @@ class FakeOrder:
         self.executed_quantity = executed_quantity
         self.updated_at = updated_at
         self.currency = currency
-        self.status = OrderStatus.Filled
-
-
-class FakeOrderDetail:
-    def __init__(self, total_amount):
+        self.price = price
         self.charge_detail = MagicMock()
         self.charge_detail.total_amount = total_amount
 
@@ -78,16 +83,16 @@ class TestLongbridgeAdapter(unittest.TestCase):
 
     def test_fetch_stock_executions(self):
         dt = datetime(2025, 3, 15, 10, 0, tzinfo=timezone.utc)
-        self.mock_client.history_orders.return_value = [
-            FakeOrder("o1", "AAPL.US", OrderSide.Buy, "150.00", "10", dt),
-            FakeOrder("o2", "TSLA.US", OrderSide.Sell, "200.00", "5", dt),
+        self.mock_client.history_executions.return_value = [
+            FakeExecution("o1", dt),
+            FakeExecution("o2", dt),
         ]
-        
+
         def mock_order_detail(order_id):
             if order_id == "o1":
-                return FakeOrderDetail("1.50")
-            return FakeOrderDetail("2.00")
-            
+                return FakeOrderDetail("o1", "AAPL.US", OrderSide.Buy, "150.00", "10", dt, "1.50")
+            return FakeOrderDetail("o2", "TSLA.US", OrderSide.Sell, "200.00", "5", dt, "2.00")
+
         self.mock_client.order_detail.side_effect = mock_order_detail
 
         trades = self.adapter.fetch_stock_executions(date(2025, 3, 1))
@@ -110,14 +115,20 @@ class TestLongbridgeAdapter(unittest.TestCase):
         self.assertEqual(t2.ticker, "TSLA")
 
     def test_option_orders_route_to_options_not_stocks(self):
-        # Option executions arrive via history_orders with an OCC-style symbol.
+        # Option executions arrive via history_executions with an OCC-style symbol.
         # fetch_stock_executions must skip them; fetch_option_executions claims them.
         dt = datetime(2026, 8, 12, 14, 0, tzinfo=timezone.utc)
-        self.mock_client.history_orders.return_value = [
-            FakeOrder("s1", "AAPL.US", OrderSide.Buy, "150.00", "10", dt),
-            FakeOrder("o1", "PYPL260828C60000.US", OrderSide.Buy, "0.98", "1", dt),
+        self.mock_client.history_executions.return_value = [
+            FakeExecution("s1", dt),
+            FakeExecution("o1", dt),
         ]
-        self.mock_client.order_detail.return_value = FakeOrderDetail("0.10")
+
+        def mock_order_detail(order_id):
+            if order_id == "s1":
+                return FakeOrderDetail("s1", "AAPL.US", OrderSide.Buy, "150.00", "10", dt, "0.10")
+            return FakeOrderDetail("o1", "PYPL260828C60000.US", OrderSide.Buy, "0.98", "1", dt, "0.10")
+
+        self.mock_client.order_detail.side_effect = mock_order_detail
 
         stocks = self.adapter.fetch_stock_executions(date(2026, 8, 10))
         self.assertEqual([t.ticker for t in stocks], ["AAPL"])  # option excluded

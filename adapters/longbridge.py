@@ -4,9 +4,13 @@ Conforms to the :class:~adapters.base.BrokerAdapter protocol.
 
 Auth: App Key + App Secret + Access Token (OpenAPI).
 Field mapping:
-- Executions: history_orders filtered for Filled/PartialFilled. We use orders
-  instead of history_executions because we need the fee, which is retrieved
-  via order_detail(order.order_id).charge_detail.total_amount.
+- Executions: discovered by FILL time via history_executions (so a resting
+  order placed before the window but filled inside it is captured, not dropped
+  as history_orders — which filters by order time — would). Each fill's
+  order_id is joined to order_detail(order_id) for the full order (side,
+  symbol, currency, executed qty/price) AND the fee
+  (charge_detail.total_amount) in a single call. Trades are dated by the fill's
+  trade_done_at, not the order's updated_at.
 - Positions: stock_positions for STK, no options API available.
 - Cash: cash_flow.
 """
@@ -24,7 +28,6 @@ from longport.openapi import (
     Config,
     TradeContext,
     OrderSide,
-    OrderStatus,
     CashFlowDirection,
 )
 
@@ -112,26 +115,31 @@ class LongbridgeAdapter:
         return datetime.fromtimestamp(ts, tz=self._tz).date()
 
     # -- executions --------------------------------------------------------- #
-    def _order_fee(self, order) -> Decimal:
-        """Fetch an order's total charge from order_detail, with a rate-limit retry."""
+    def _order_detail(self, order_id: str):
+        """Fetch an order's full detail (fields + charge_detail), with a
+        rate-limit retry. Returns None if it can't be read."""
         import time
         for attempt in range(3):
             try:
-                detail = self._client.order_detail(order.order_id)
-                if detail and detail.charge_detail:
-                    return dec(detail.charge_detail.total_amount or "0")
-                return Decimal("0")
+                return self._client.order_detail(order_id)
             except Exception as e:  # noqa: BLE001
                 if "429" in str(e) and attempt < 2:
-                    time.sleep(2)  # Wait for rate limit to reset
+                    time.sleep(2)  # wait for rate limit to reset
                 else:
-                    print(f"Warning: Could not fetch fee for {order.symbol} (ID: {order.order_id}): {e}")
-                    return Decimal("0")
+                    print(f"Warning: Could not fetch order_detail for {order_id}: {e}")
+                    return None
+        return None
+
+    @staticmethod
+    def _fee(detail) -> Decimal:
+        cd = getattr(detail, "charge_detail", None)
+        if cd is not None:
+            return dec(getattr(cd, "total_amount", None) or "0")
         return Decimal("0")
 
     def fetch_stock_executions(self, since: date | None) -> list[StockTrade]:
         trades: list[StockTrade] = []
-        for order in self._get_filled_orders(since):
+        for order, fill_dt in self._get_filled_orders(since):
             qty = dec(order.executed_quantity)
             if qty == 0:
                 continue
@@ -141,26 +149,26 @@ class LongbridgeAdapter:
 
             trades.append(
                 StockTrade(
-                    date=self._timestamp_to_date(order.updated_at.timestamp()),
+                    date=self._timestamp_to_date(fill_dt.timestamp()),
                     broker=Broker.LONGBRIDGE,
                     ticker=code,
                     action=StockAction.BUY if order.side == OrderSide.Buy else StockAction.SELL,
                     qty=qty,
                     price=dec(order.executed_price or order.price or "0"),
-                    fee=self._order_fee(order),
+                    fee=self._fee(order),
                     currency=str(order.currency),
                     fill_id=str(order.order_id),
-                    timestamp=getattr(order, "updated_at", None),
+                    timestamp=fill_dt,
                 )
             )
         return trades
 
     def fetch_option_executions(self, since: date | None) -> list[OptionTrade]:
-        """Option executions also arrive via ``history_orders`` — the order symbol
-        is an OCC-style code (e.g. ``PYPL260828C60000.US``). Route those here so
-        they land in the Options tab, not Stocks."""
+        """Option executions carry an OCC-style symbol (e.g.
+        ``PYPL260828C60000.US``). Route those here so they land in the Options
+        tab, not Stocks."""
         trades: list[OptionTrade] = []
-        for order in self._get_filled_orders(since):
+        for order, fill_dt in self._get_filled_orders(since):
             qty = dec(order.executed_quantity)
             if qty == 0:
                 continue
@@ -172,7 +180,7 @@ class LongbridgeAdapter:
 
             trades.append(
                 OptionTrade(
-                    date=self._timestamp_to_date(order.updated_at.timestamp()),
+                    date=self._timestamp_to_date(fill_dt.timestamp()),
                     broker=Broker.LONGBRIDGE,
                     underlying=underlying,
                     option_type=otype,
@@ -181,26 +189,41 @@ class LongbridgeAdapter:
                     expiry=expiry,
                     action=OptionAction.BUY if order.side == OrderSide.Buy else OptionAction.SELL,
                     premium=dec(order.executed_price or order.price or "0"),
-                    fee=self._order_fee(order),
+                    fee=self._fee(order),
                     currency=str(order.currency),
                     fill_id=str(order.order_id),
-                    timestamp=getattr(order, "updated_at", None),
+                    timestamp=fill_dt,
                 )
             )
         return trades
 
     def _get_filled_orders(self, since: date | None) -> list:
+        """Discover filled orders by FILL time via history_executions, then join
+        each unique order_id to order_detail for full detail + fee. Returns
+        ``(OrderDetail, fill_datetime)`` tuples, dated by the fill's
+        trade_done_at (the latest fill for a partially-filled order)."""
         start_at = self._since_to_datetime(since)
-        # Fetch all orders (history_orders) and filter
-        orders = self._client.history_orders(start_at=start_at)
-        if not orders:
-            return []
-            
-        filled_orders = []
-        for order in orders:
-            if order.status in (OrderStatus.Filled, OrderStatus.PartialFilled):
-                filled_orders.append(order)
-        return filled_orders
+        executions = self._client.history_executions(start_at=start_at) or []
+
+        # Unique order_ids, remembering each order's latest fill time.
+        order_ids: list = []
+        fill_dt: dict = {}
+        for ex in executions:
+            oid = ex.order_id
+            done_at = ex.trade_done_at
+            if oid not in fill_dt:
+                order_ids.append(oid)
+                fill_dt[oid] = done_at
+            elif done_at > fill_dt[oid]:
+                fill_dt[oid] = done_at
+
+        out: list = []
+        for oid in order_ids:
+            detail = self._order_detail(oid)
+            if detail is None:
+                continue
+            out.append((detail, fill_dt[oid]))
+        return out
 
     # -- positions (seeding + reconciliation, §5/§9) ------------------------ #
     def fetch_positions(self) -> list[Position]:

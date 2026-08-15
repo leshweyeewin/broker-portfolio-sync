@@ -80,6 +80,28 @@ _MARKET_CCY = {"US": "USD", "HK": "HKD", "SG": "SGD", "CN": "CNH"}
 _OPTION_MULTIPLIER = Decimal("100")  # §14 assumption
 
 
+def _combo_leg_buy_flags(legs, is_buy: bool) -> list[bool]:
+    """Per-leg BUY(True)/SELL(False) for a decomposed combo order.
+
+    MooMoo returns one row for the whole combo — the strikes, but not per-leg
+    direction — so an assumption is unavoidable. A 2-leg vertical (both legs the
+    same type) follows the standard debit-spread convention: *buying* the spread
+    is long the leg you pay up for — the LOWER strike for calls, the HIGHER
+    strike for puts — and short the other; *selling* flips both. This is the
+    reading that nets against the broker's reported position (a bought put
+    vertical closes a held one, rather than doubling it). Anything that isn't a
+    2-leg vertical keeps the old fallback: leg 0 takes the order side, the rest
+    oppose it.
+    """
+    if len(legs) == 2 and legs[0][1] == legs[1][1]:
+        otype = legs[0][1]
+        strikes = [leg[2] for leg in legs]
+        long_strike = min(strikes) if otype == OptionType.CALL else max(strikes)
+        long_idx = strikes.index(long_strike)
+        return [is_buy if i == long_idx else not is_buy for i in range(2)]
+    return [is_buy if i == 0 else not is_buy for i in range(len(legs))]
+
+
 def _missing(value) -> bool:
     """True for values that mean 'no data': None, NaN, blank, or 'N/A'.
 
@@ -265,12 +287,15 @@ class MooMooAdapter:
                         )
                     )
                 else:
-                    # Multi-leg combo spread (e.g. SHOP260821P130/145).
-                    # Decompose into per-leg option trades matching broker position convention:
-                    # Leg 0 is primary action (BUY if order is buy), Leg 1 is opposite (SELL).
-                    # Whole order fee & premium land on Leg 0 so totals are preserved.
+                    # Multi-leg combo spread (e.g. SHOP260821P130/145). MooMoo gives
+                    # one row for the whole combo, so per-leg direction is inferred
+                    # (see _combo_leg_buy_flags). Whole-order fee & premium land on
+                    # the leg that matches the order's own side, so the combo's net
+                    # debit/credit keeps the right sign.
+                    buy_flags = _combo_leg_buy_flags(legs, is_buy)
+                    primary_idx = next(i for i, f in enumerate(buy_flags) if f == is_buy)
                     for i, (underlying, otype, strike, expiry) in enumerate(legs):
-                        leg_action = OptionAction.BUY if (is_buy if i == 0 else not is_buy) else OptionAction.SELL
+                        leg_action = OptionAction.BUY if buy_flags[i] else OptionAction.SELL
                         trades.append(
                             OptionTrade(
                                 date=order_date,
@@ -281,8 +306,8 @@ class MooMooAdapter:
                                 qty=qty,
                                 expiry=expiry,
                                 action=leg_action,
-                                premium=dec(row["dealt_avg_price"]) if i == 0 else Decimal("0"),
-                                fee=order_fee if i == 0 else Decimal("0"),
+                                premium=dec(row["dealt_avg_price"]) if i == primary_idx else Decimal("0"),
+                                fee=order_fee if i == primary_idx else Decimal("0"),
                                 currency=ccy,
                                 multiplier=_OPTION_MULTIPLIER,
                                 fill_id=f"{oid}:{i}",

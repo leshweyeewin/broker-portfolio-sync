@@ -160,6 +160,25 @@ def get_pancherry_repo() -> str:
     return _optional("PANCHERRY_REPO", r"D:\Learn\Google\pancherry")
 
 
+def get_pancherry_gh_settings() -> dict:
+    """GitHub target for the auto-PR of the pancherry data files (Phase 3).
+
+    Reuses ``GITHUB_TOKEN`` (needs ``repo`` scope). If token or repo slug is
+    unset, ``--pr`` fails loud with a clear message — a normal (local-only) run
+    is unaffected.
+
+    * PANCHERRY_REPO_SLUG   — "owner/name" of the pancherry repo.
+    * PANCHERRY_DRAFTS_BRANCH — draft target branch (default "pancherry-drafts").
+    * PANCHERRY_BASE_BRANCH — PR base, the branch Pages builds (default "main").
+    """
+    return {
+        "token": _optional("GITHUB_TOKEN"),
+        "repo": _optional("PANCHERRY_REPO_SLUG"),
+        "branch": _optional("PANCHERRY_DRAFTS_BRANCH", "pancherry-drafts"),
+        "base": _optional("PANCHERRY_BASE_BRANCH", "main"),
+    }
+
+
 def get_moomoo_settings() -> dict:
     """Return MooMoo OpenD-gateway connection settings from env vars.
 

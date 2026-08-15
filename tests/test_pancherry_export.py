@@ -14,8 +14,10 @@ import pytest
 from lemon8.reader import ClosedPosition
 from pancherry_export.exporter import (
     OpenPositionData,
+    assess_journal_drift,
     build_weekly_journal,
     read_open_positions,
+    refresh_journal_stats,
     render_journal_entry,
     render_open_positions_ts,
     upsert_journal_entry,
@@ -225,3 +227,126 @@ def test_upsert_is_idempotent_on_duplicate_slug(tmp_path):
 
     assert upsert_journal_entry(entry, path) is False
     assert path.read_text(encoding="utf-8").count("2026-w33") == 1
+
+
+# --------------------------------------------------------------------------- #
+# refresh_journal_stats — in-place stat refresh on an existing (edited) entry
+# --------------------------------------------------------------------------- #
+
+# A hand-edited entry: single-quote style, real prose, curated highlights, and a
+# number hard-coded into the prose (which must be left as-is — documented caveat).
+_HANDWRITTEN = """export const weeklyJournals: WeeklyJournal[] = [
+  {
+    slug: '2026-w33',
+    title: 'Storage Cycle Runs',
+    weekOf: 'Aug 10–14, 2026',
+    startDate: '2026-08-10',
+    endDate: '2026-08-14',
+    summary:
+      'A hand-written summary that must survive the refresh.',
+    trades: 56,
+    wins: 34,
+    losses: 22,
+    winRatePct: 61,
+    body: [
+      'This was a busy week — 56 positions closed, landing at a 61% hit rate.',
+    ],
+    highlights: [
+      { ticker: 'SNDK', asset: 'option', strategy: 'Long Call', contract: '$1,405 Call', direction: 'win', returnPct: 230.6, note: 'kept.' },
+    ],
+    published: true,
+  },
+];
+"""
+
+
+def _fresh_stats(**over):
+    entry = {
+        "slug": "2026-w33", "weekOf": "Aug 10–15, 2026",
+        "startDate": "2026-08-10", "endDate": "2026-08-15",
+        "trades": 70, "wins": 45, "losses": 25, "winRatePct": 64,
+        # prose fields present but refresh must ignore them
+        "title": "NOPE", "summary": "NOPE", "body": ["NOPE"],
+        "highlights": [], "published": False,
+    }
+    entry.update(over)
+    return entry
+
+
+def test_refresh_updates_stat_tiles_but_keeps_prose(tmp_path):
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text(_HANDWRITTEN, encoding="utf-8")
+
+    assert refresh_journal_stats(_fresh_stats(), path) is True
+    text = path.read_text(encoding="utf-8")
+
+    # Stat tiles + dates refreshed from the sheet.
+    for token in ("trades: 70,", "wins: 45,", "losses: 25,", "winRatePct: 64,",
+                  "weekOf: 'Aug 10–15, 2026',", "endDate: '2026-08-15',"):
+        assert token in text
+
+    # Prose, curated highlight, title, and published flag survive untouched.
+    assert "A hand-written summary that must survive the refresh." in text
+    assert "returnPct: 230.6" in text
+    assert "title: 'Storage Cycle Runs'," in text
+    assert "published: true," in text
+    assert "NOPE" not in text
+    # Documented caveat: a number baked into prose is NOT rewritten.
+    assert "56 positions closed, landing at a 61% hit rate." in text
+
+
+def test_refresh_noops_when_slug_absent(tmp_path):
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text(_HANDWRITTEN, encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    assert refresh_journal_stats(_fresh_stats(slug="2026-w99"), path) is False
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_refresh_noops_when_stats_already_current(tmp_path):
+    """No change → returns False so the self-updating PR doesn't churn."""
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text(_HANDWRITTEN, encoding="utf-8")
+
+    already = _fresh_stats(
+        weekOf="Aug 10–14, 2026", endDate="2026-08-14",
+        trades=56, wins=34, losses=22, winRatePct=61,
+    )
+    assert refresh_journal_stats(already, path) is False
+
+
+# --------------------------------------------------------------------------- #
+# assess_journal_drift — "the story may be stale" signal
+# --------------------------------------------------------------------------- #
+
+def test_drift_reports_growth_and_current_standouts(tmp_path):
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text(_HANDWRITTEN, encoding="utf-8")   # stored trades: 56
+
+    entry = _fresh_stats(highlights=[
+        {"ticker": "SNDK", "contract": "$1,405 Call", "direction": "win", "returnPct": 230.6},
+        {"ticker": "BE", "contract": "$240 Call", "direction": "loss", "returnPct": -38.3},
+    ])
+    drift = assess_journal_drift(entry, path)
+
+    assert drift.prev_trades == 56
+    assert drift.new_trades == 70
+    assert drift.grew is True
+    assert drift.added == 14
+    assert drift.top_winner == "SNDK $1,405 Call (+230.6%)"
+    assert drift.top_loser == "BE $240 Call (-38.3%)"
+
+
+def test_drift_is_none_when_slug_absent(tmp_path):
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text(_HANDWRITTEN, encoding="utf-8")
+    assert assess_journal_drift(_fresh_stats(slug="2026-w99"), path) is None
+
+
+def test_drift_not_grown_when_counts_equal(tmp_path):
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text(_HANDWRITTEN, encoding="utf-8")
+    drift = assess_journal_drift(_fresh_stats(trades=56, highlights=[]), path)
+    assert drift.grew is False
+    assert drift.added == 0
