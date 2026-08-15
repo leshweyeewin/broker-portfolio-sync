@@ -15,8 +15,8 @@ from pathlib import Path
 def _load_dotenv_if_exists() -> None:
     env_file = Path(".env")
     if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.replace("\x00", "").strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
