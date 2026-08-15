@@ -62,10 +62,14 @@ def _order(**kw):
 
 class FakeClient:
     def __init__(self, stock_orders=None, option_orders=None, positions=None,
-                 fund_df=None, funding_df=None, mleg_orders=None):
+                 fund_df=None, funding_df=None, mleg_orders=None,
+                 asset_task_orders=None):
         self._stock_orders = stock_orders or []
         self._option_orders = option_orders or []
         self._mleg_orders = mleg_orders or []
+        # Corporate-action settlements: returned by get_filled_orders but NOT by
+        # get_transactions (they have no transaction). Routed by sec_type below.
+        self._asset_task = asset_task_orders or []
         self._positions = positions or {}
         self._fund_df = fund_df
         self._funding_df = funding_df
@@ -73,16 +77,20 @@ class FakeClient:
     def get_managed_accounts(self):
         return []  # adapter falls back to [None] (the default account)
 
+    @staticmethod
+    def _is_option(o):
+        return getattr(getattr(o, "contract", None), "put_call", None) is not None
+
     def get_filled_orders(self, sec_type=None, **kw):
         st = str(sec_type)
         if st.endswith("STK"):
-            return self._stock_orders
+            return self._stock_orders + [o for o in self._asset_task if not self._is_option(o)]
         if st.endswith("MLEG"):
             return self._mleg_orders
-        return self._option_orders
+        return self._option_orders + [o for o in self._asset_task if self._is_option(o)]
 
     def _all_orders(self):
-        return self._stock_orders + self._option_orders + self._mleg_orders
+        return self._stock_orders + self._option_orders + self._mleg_orders + self._asset_task
 
     @staticmethod
     def _oid(o):
@@ -170,6 +178,27 @@ def test_resting_order_missed_by_bulk_is_recovered_by_fill_discovery():
     assert t.qty == Decimal("28")
     assert t.action is StockAction.SELL
     assert t.dedup_key == "Tiger:7777"
+
+
+def test_asset_task_settlement_included_without_transaction():
+    """Option exercise/assignment (and share call-away): Tiger books a filled
+    order tagged source='asset-task' but produces NO transaction, so fill-time
+    discovery misses it. It must still be captured, else an expired ITM option
+    never closes and reconciles as 'missing from broker' forever."""
+    settle = _order(
+        id=8801, action="BUY", filled=2, avg_fill_price=0.0, source="asset-task",
+        contract=_contract(symbol="SNDK", put_call="CALL", strike=1400.0,
+                           expiry="20260814", multiplier=100),
+    )
+    a = _adapter(FakeClient(asset_task_orders=[settle]))
+    (t,) = a.fetch_option_executions(since=None)
+    assert t.underlying == "SNDK"
+    assert t.strike == Decimal("1400")
+    assert t.option_type is OptionType.CALL
+    assert t.action is OptionAction.BUY
+    assert t.qty == Decimal("2")
+    assert t.premium == Decimal("0")
+    assert t.dedup_key == "Tiger:8801"
 
 
 # --- option executions ----------------------------------------------------- #

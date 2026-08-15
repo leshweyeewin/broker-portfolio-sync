@@ -113,6 +113,61 @@ def _instrument_key(
     return f"{symbol}:{option_type.value}:{_norm_strike(strike)}:{expiry.isoformat()}"
 
 
+def expire_worthless_options(
+    holdings: Sequence[Holding],
+    positions: Sequence[Position],
+    today: date,
+) -> list[OptionTrade]:
+    """Synthesize worthless-expiry closing trades for expired option holdings the
+    broker no longer reports.
+
+    When an option expires out-of-the-money the broker just drops it — no
+    exercise/assignment fill is booked — so the FIFO engine would keep it open
+    forever and reconciliation would flag it as "missing from broker". We close
+    it at premium 0 (its worthless value), which realizes the full net premium as
+    P/L and flattens the position. In-the-money expiries are closed by their real
+    assignment/exercise fills upstream, so they're already flat and never reach
+    here. An option that is missing from the broker but has **not** yet expired is
+    left alone (a genuine gap to flag, not an expiry).
+
+    The synthetic close carries a stable ``fill_id`` so re-runs upsert it rather
+    than duplicate, and is dated on the expiry date (when the P/L is realized).
+    """
+    broker_open: set[tuple[str, str]] = set()
+    for p in positions:
+        if p.asset_type == AssetType.OPTION and p.qty != 0:
+            key = _instrument_key(p.symbol, p.option_type, p.strike, p.expiry)
+            broker_open.add((p.broker.value, key))
+
+    closes: list[OptionTrade] = []
+    for h in holdings:
+        if h.option_type is None or h.expiry is None or h.qty == 0:
+            continue
+        if h.expiry >= today:
+            continue  # not yet expired — leave any discrepancy to reconcile()
+        key = _instrument_key(h.symbol, h.option_type, h.strike, h.expiry)
+        if (h.broker.value, key) in broker_open:
+            continue  # broker still holds it — not expired away
+        closes.append(
+            OptionTrade(
+                date=h.expiry,
+                broker=h.broker,
+                underlying=h.symbol,
+                option_type=h.option_type,
+                strike=h.strike,
+                qty=abs(h.qty),
+                expiry=h.expiry,
+                action=OptionAction.SELL if h.qty > 0 else OptionAction.BUY,
+                premium=Decimal("0"),
+                fee=Decimal("0"),
+                currency=h.currency,
+                multiplier=h.multiplier,
+                fill_id=f"expiry:{key}",  # dedup_key prepends the broker
+            )
+        )
+    return closes
+
+
 def reconcile(
     holdings: Sequence[Holding], positions: Sequence[Position]
 ) -> list[str]:

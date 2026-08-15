@@ -10,7 +10,7 @@ from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.reconcile import seed_positions, reconcile
+from core.reconcile import seed_positions, reconcile, expire_worthless_options
 from core.fifo_pl import Holding
 from adapters.base import (
     AssetType,
@@ -281,6 +281,56 @@ class TestReconcile(unittest.TestCase):
 
         self.assertEqual(len(option_fixups), 1)
         self.assertTrue(option_fixups[0]["is_expired"])
+
+    # --- worthless-expiry close-out --------------------------------------- #
+    def _opt_holding(self, **kw):
+        base = dict(
+            broker=Broker.TIGER, instrument="x", symbol="AAPL",
+            qty=Decimal("-2"), avg_price=Decimal("1.50"), open_fees=Decimal("0"),
+            currency="USD", multiplier=Decimal("100"),
+            option_type=OptionType.CALL, strike=Decimal("200"),
+            expiry=date(2026, 8, 14),
+        )
+        base.update(kw)
+        return Holding(**base)
+
+    def test_expire_worthless_closes_expired_missing_option(self):
+        # Short 2x call, expired yesterday, broker no longer reports it -> close
+        # at premium 0 (worthless), flattening the short and realizing the credit.
+        h = self._opt_holding()
+        closes = expire_worthless_options([h], positions=[], today=date(2026, 8, 15))
+        self.assertEqual(len(closes), 1)
+        c = closes[0]
+        self.assertEqual(c.underlying, "AAPL")
+        self.assertEqual(c.action, OptionAction.BUY)  # flatten the short
+        self.assertEqual(c.qty, Decimal("2"))
+        self.assertEqual(c.premium, Decimal("0"))
+        self.assertEqual(c.date, date(2026, 8, 14))   # realized on expiry
+        self.assertEqual(c.expiry, date(2026, 8, 14))
+        self.assertEqual(c.dedup_key, "Tiger:expiry:AAPL:Call:200:2026-08-14")
+
+    def test_expire_worthless_long_option_sells_to_close(self):
+        h = self._opt_holding(qty=Decimal("3"))  # long
+        (c,) = expire_worthless_options([h], positions=[], today=date(2026, 8, 15))
+        self.assertEqual(c.action, OptionAction.SELL)  # flatten the long
+        self.assertEqual(c.qty, Decimal("3"))
+        self.assertEqual(c.premium, Decimal("0"))
+
+    def test_expire_worthless_skips_not_yet_expired(self):
+        h = self._opt_holding(expiry=date(2026, 9, 18))  # future
+        self.assertEqual(expire_worthless_options([h], [], date(2026, 8, 15)), [])
+
+    def test_expire_worthless_skips_when_broker_still_holds(self):
+        # Expired on the calendar but the broker still reports it -> not expired
+        # away yet; leave it (don't fabricate a close).
+        h = self._opt_holding()
+        pos = [Position(
+            broker=Broker.TIGER, asset_type=AssetType.OPTION, symbol="AAPL",
+            qty=Decimal("-2"), avg_cost=Decimal("1.50"), currency="USD",
+            option_type=OptionType.CALL, strike=Decimal("200"),
+            expiry=date(2026, 8, 14), multiplier=Decimal("100"),
+        )]
+        self.assertEqual(expire_worthless_options([h], pos, date(2026, 8, 15)), [])
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ from adapters.base import (
 )
 from core.fifo_pl import FifoResult, compute_option_pl, compute_stock_pl
 from core.fx import FxRates
-from core.reconcile import reconcile, seed_positions
+from core.reconcile import reconcile, seed_positions, expire_worthless_options
 from sheets.writer import (
     DASHBOARD_HEADERS,
     build_option_row,
@@ -496,6 +496,15 @@ def run_sync(
     # 3. FIFO realized P/L + remaining holdings.
     stock_result = compute_stock_pl(stocks)
     option_result = compute_option_pl(options)
+
+    # Close options that expired out-of-the-money: the broker drops them with no
+    # settlement fill, so realize them at premium 0 and re-run FIFO so the P/L and
+    # flattened holdings are correct. (ITM expiries close via real
+    # assignment/exercise fills upstream and are already flat here.)
+    expiry_closes = expire_worthless_options(option_result.holdings, positions, today)
+    if expiry_closes:
+        options = options + expiry_closes
+        option_result = compute_option_pl(options)
 
     # 4. Build rows (FX-converted, realized P/L joined onto closing rows).
     realized_sgd = {**_realized_sgd_by_key(stock_result, fx), **_realized_sgd_by_key(option_result, fx)}

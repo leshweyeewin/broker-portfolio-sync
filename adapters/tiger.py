@@ -378,13 +378,21 @@ class TigerAdapter:
     def _get_filled_orders(self, sec_type: SecurityType, since: date | None) -> list:
         """Return filled ``Order`` objects discovered by FILL time.
 
-        Discovery uses ``get_transactions`` (fill-level: filtered by *when a fill
-        happened*), not ``get_filled_orders`` (which filters by *when an order was
-        placed*). A resting order placed before ``since`` but filled inside the
-        window is therefore captured, not silently dropped. Fill records carry no
-        commission, so each unique ``order_id`` is joined back to ``get_order``
-        for full detail + fee. Combo legs share the parent order_id, so a combo is
-        fetched once and returned whole (the caller decomposes its legs)."""
+        Discovery has two sources:
+
+        1. ``get_transactions`` (fill-level: filtered by *when a fill happened*),
+           not ``get_filled_orders`` (which filters by *when an order was
+           placed*). A resting order placed before ``since`` but filled inside
+           the window is therefore captured, not silently dropped.
+        2. Corporate-action settlements — option exercise/assignment and share
+           call-away — which Tiger books as filled orders tagged
+           ``source == 'asset-task'`` but produces **no transaction** for, so
+           step 1 never sees them. Without these an expired ITM option would
+           never close and would reconcile as "missing from broker" forever.
+
+        Detail (fee, combo legs) is joined from the bulk ``get_filled_orders``
+        cache, falling back to per-order ``get_order`` for anything the cache
+        missed. run.py drops anything dated on/before the cutoff by its own date."""
         today = datetime.now(tz=self._tz).date()
         start_ms = self._since_to_ms(since)
         end_ms = int(
@@ -393,30 +401,36 @@ class TigerAdapter:
 
         orders: list = []
         for account in self._account_ids():
-            # 1) Completeness: which orders FILLED in the window (source of truth).
-            filled_ids: list = []
+            # Detail cache: get_filled_orders returns up to 1000 full orders
+            # (fee + combo legs) per call and is not per-order rate-limited, so a
+            # wide placement scan is a handful of calls. It also carries the
+            # asset-task settlements used below.
+            detail = self._bulk_order_detail(account, sec_type, today)
+
+            include: list = []  # order_ids to build, in discovery order
             seen: set = set()
+
+            # 1) Market fills, by FILL time (the completeness source of truth).
             for txn in self._iter_transactions(account, sec_type, start_ms, end_ms):
                 oid = getattr(txn, "order_id", None)
                 if oid is None:
                     continue
                 key = str(oid)
+                if key not in seen:
+                    seen.add(key)
+                    include.append(key)
+
+            # 2) Corporate-action settlements (exercise/assignment/call-away):
+            #    filled orders with no transaction, so add them from the cache.
+            for key, o in detail.items():
                 if key in seen:
                     continue
-                seen.add(key)
-                filled_ids.append(oid)
-            if not filled_ids:
-                continue
+                if str(getattr(o, "source", "")).lower() == "asset-task":
+                    seen.add(key)
+                    include.append(key)
 
-            # 2) Detail: bulk-load order detail cheaply. get_filled_orders returns
-            #    up to 1000 full orders (fee + combo legs) per call and is not
-            #    per-order rate-limited, so a wide placement scan is a handful of
-            #    calls. It only serves as a detail *cache* — inclusion is already
-            #    decided by fill time above — so per-order get_order (rate-limited
-            #    120/min) is needed only for the rare order placed before the scan.
-            detail = self._bulk_order_detail(account, sec_type, today)
-            for oid in filled_ids:
-                order = detail.get(str(oid)) or self._get_order_detail(account, oid)
+            for key in include:
+                order = detail.get(key) or self._get_order_detail(account, int(key))
                 if order is not None:
                     orders.append(order)
         return orders
