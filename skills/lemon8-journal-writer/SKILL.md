@@ -17,11 +17,16 @@ This skill reads closed stock and option positions from the portfolio sync Googl
    - Do NOT show portfolio size, net worth, or absolute P/L amounts in generated copy unless the user explicitly requests it via `show_dollar_amounts=True`.
    - Never default `show_dollar_amounts` to `True`.
 
-3. **Generate Packages**:
-   Call `lemon8.journal.generate_journal_package(pos, reasoning, show_dollar_amounts=...)` to create:
-   - **Lemon8/TikTok Caption**: Emojis, ticker, % return, trade reasoning, CTA.
-   - **Blog Post Draft**: Markdown article template for retrospective review.
-   - **Card Summary & SVG**: Text and graphic card formats for image attachment.
+3. **Generate the Week's Journal (ONE post, not one per trade)**:
+   Call `lemon8.journal.generate_weekly_journal(positions, week_ending, show_dollar_amounts=...)`
+   to create a single `WeeklyJournal`:
+   - **One Lemon8/TikTok Caption** (`.caption`): lists every closed trade with its % return + CTA.
+   - **One Blog Post Draft** (`.blog_draft`): a single Markdown retrospective with a section per trade.
+   - **Screenshot Cards** (`.cards`): one privacy-safe SVG card per trade — the image carousel the post carries. Options cards also show strategy + expiry.
+
+   The weekly job (`lemon8.weekly_job.run_weekly_journal`) writes these to
+   `lemon8_out/<week>/` as `blog.md`, `caption.txt`, and `cards/<slug>.svg|png`,
+   and commits the single weekly blog draft to the drafts branch.
 
 4. **Output Format**:
-   Present the generated package to the user in a clean, copy-paste ready Markdown format.
+   Present the caption + blog draft in clean, copy-paste ready Markdown, with the card images attached.

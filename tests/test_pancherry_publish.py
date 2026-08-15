@@ -28,6 +28,7 @@ class FakeGitHub:
         self.no_diff = no_diff                              # PR create → 422 "No commits between"
         self.created_pr = False
         self.patched = False
+        self.branch_reset = False                           # PATCH refs/heads/<branch> (force)
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url))
@@ -39,6 +40,9 @@ class FakeGitHub:
         if method == "POST" and url.endswith("/git/refs"):
             self.branch_exists = True
             return 201, b"{}"
+        if method == "PATCH" and "/git/refs/heads/pancherry-drafts" in url:
+            self.branch_reset = True
+            return 200, b'{"object":{"sha":"basesha"}}'
 
         if method == "GET" and "/contents/" in url:
             path = url.split("/contents/")[1].split("?")[0]
@@ -90,7 +94,24 @@ def test_creates_branch_commits_both_files_and_opens_draft_pr(tmp_path):
     assert res.url.endswith("/pull/8")
     assert gh.branch_exists is True
     assert any(m == "POST" and u.endswith("/git/refs") for m, u in gh.calls)   # branch created
+    assert gh.branch_reset is False                                            # ...not reset (it was new)
     assert sum(1 for m, u in gh.calls if m == "PUT") == 2                       # both files committed
+
+
+def test_existing_branch_is_force_reset_to_base_before_committing(tmp_path):
+    # The recurring-conflict guard: a persistent branch is re-pinned to base HEAD
+    # each run so the PR is always a clean diff.
+    files = _files(tmp_path, **{"openPositions.ts": "NEW"})
+    gh = FakeGitHub(branch_exists=True, open_pr=True,
+                    files={"src/data/openPositions.ts": b"OLD"})
+
+    publish_draft_pr(files, settings=_SETTINGS, title="T", body="B", transport=gh)
+
+    assert gh.branch_reset is True
+    # reset happens before the file commit
+    reset_i = next(i for i, (m, u) in enumerate(gh.calls) if m == "PATCH" and "/git/refs/heads/" in u)
+    put_i = next(i for i, (m, _) in enumerate(gh.calls) if m == "PUT")
+    assert reset_i < put_i
 
 
 def test_updates_existing_pr_and_skips_unchanged_files(tmp_path):

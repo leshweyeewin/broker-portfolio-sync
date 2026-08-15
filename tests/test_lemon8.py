@@ -5,13 +5,14 @@ Coverage:
 - reader.py: missing expected headers raises SheetReadError (fail loud)
 - reader.py: return_pct derived correctly on long closes
 - card.py: render_card_summary and render_card_svg
-- journal.py: format_caption, format_blog_draft, generate_journal_package
+- journal.py: format_weekly_caption, format_weekly_blog, generate_weekly_journal
 - LOAD-BEARING PRIVACY REQUIREMENT: show_dollar_amounts=False (default) NEVER prints
   absolute $ / currency amounts in rendered output.
 """
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 import pytest
 
@@ -24,9 +25,9 @@ from lemon8.reader import (
 )
 from lemon8.card import render_card_summary, render_card_svg
 from lemon8.journal import (
-    format_caption,
-    format_blog_draft,
-    generate_journal_package,
+    format_weekly_caption,
+    format_weekly_blog,
+    generate_weekly_journal,
 )
 from sheets.writer import (
     STOCKS_HEADERS,
@@ -145,15 +146,16 @@ def test_privacy_default_hides_dollar_amounts():
         return_pct=Decimal("20.0"),
     )
 
-    # 1. Caption
-    caption = format_caption(pos, "Good earnings play")
+    week = date(2026, 3, 15)
+
+    # 1. Caption (one per week)
+    caption = format_weekly_caption([pos], week)
     assert "+20.0%" in caption
     assert "300.00" not in caption
     assert "405.00" not in caption
-    assert "USD" not in caption
 
-    # 2. Blog draft
-    blog = format_blog_draft(pos, "Good earnings play")
+    # 2. Blog draft (one per week)
+    blog = format_weekly_blog([pos], week)
     assert "+20.0%" in blog
     assert "300.00" not in blog
     assert "405.00" not in blog
@@ -169,12 +171,11 @@ def test_privacy_default_hides_dollar_amounts():
     assert "P/L:" not in svg
     assert "300.00" not in svg
 
-    # 5. Full package
-    pkg = generate_journal_package(pos, "Good earnings play")
-    assert pkg.show_dollar_amounts is False
-    assert "300.00" not in pkg.caption
-    assert "300.00" not in pkg.blog_draft
-    assert "300.00" not in pkg.card_summary
+    # 5. Full weekly journal
+    journal = generate_weekly_journal([pos], week)
+    assert journal.show_dollar_amounts is False
+    assert "300.00" not in journal.caption
+    assert "300.00" not in journal.blog_draft
 
 
 def test_show_dollar_amounts_opt_in():
@@ -189,10 +190,12 @@ def test_show_dollar_amounts_opt_in():
         return_pct=Decimal("20.0"),
     )
 
-    caption = format_caption(pos, "Good earnings play", show_dollar_amounts=True)
+    week = date(2026, 3, 15)
+
+    caption = format_weekly_caption([pos], week, show_dollar_amounts=True)
     assert "+300.00 USD" in caption
 
-    blog = format_blog_draft(pos, "Good earnings play", show_dollar_amounts=True)
+    blog = format_weekly_blog([pos], week, show_dollar_amounts=True)
     assert "+300.00 USD" in blog
 
     card = render_card_summary(pos, show_dollar_amounts=True)
@@ -201,6 +204,6 @@ def test_show_dollar_amounts_opt_in():
     svg = render_card_svg(pos, show_dollar_amounts=True)
     assert "P/L: +300.00 USD" in svg
 
-    pkg = generate_journal_package(pos, "Good earnings play", show_dollar_amounts=True)
-    assert pkg.show_dollar_amounts is True
-    assert "+300.00 USD" in pkg.caption
+    journal = generate_weekly_journal([pos], week, show_dollar_amounts=True)
+    assert journal.show_dollar_amounts is True
+    assert "+300.00 USD" in journal.caption

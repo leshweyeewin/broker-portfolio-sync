@@ -1,154 +1,194 @@
-"""Lemon8 journal post generator (step 10 — BUILD_SPEC.md §11b).
+"""Lemon8 weekly journal generator (step 10 — BUILD_SPEC.md §11b).
 
-Generates copy-paste teaser packages for social media (Lemon8, TikTok) and blog
-drafts from closed trade positions read from Google Sheets.
+Turns the week's closed positions into ONE social post: a single caption + a
+single long-form blog draft, plus one screenshot card per trade (the carousel
+of images that post carries). This is deliberately *not* one post/blog per
+transaction — a week's trades are a single journal entry.
 
 LOAD-BEARING PRIVACY PRINCIPLE:
 - Default ``show_dollar_amounts=False`` renders ONLY return % and trade thesis/reasoning.
 - Absolute dollar amounts ($ / SGD / P/L) and portfolio size are NEVER shown by default.
-- Showing dollars requires explicit opt-in per post (``show_dollar_amounts=True``).
+- Showing dollars requires explicit opt-in (``show_dollar_amounts=True``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from datetime import date
 
 from lemon8.reader import ClosedPosition
-from lemon8.card import render_card_summary, render_card_svg
+from lemon8.card import render_card_svg
 
 
 @dataclass(frozen=True)
-class JournalPackage:
-    """Complete ready-to-use journal output package."""
+class WeeklyJournal:
+    """One week's journal deliverable: a single caption + blog + N card images."""
 
-    position: ClosedPosition
-    reasoning: str
+    week_ending: date
+    positions: list[ClosedPosition]
     show_dollar_amounts: bool
     caption: str
     blog_draft: str
-    card_summary: str
-    card_svg: str
+    cards: list[tuple[ClosedPosition, str]]  # (position, card_svg) — one screenshot each
 
 
-def format_caption(
-    pos: ClosedPosition,
-    reasoning: str = "",
+# --------------------------------------------------------------------------- #
+# Small shared formatters
+# --------------------------------------------------------------------------- #
+
+def _return_str(pos: ClosedPosition, *, dash: str = "Closed") -> str:
+    return f"{pos.return_pct:+.1f}%" if pos.return_pct is not None else dash
+
+
+def _win_emoji(pos: ClosedPosition) -> str:
+    return "🚀" if (pos.is_win is True) else ("📉" if (pos.is_win is False) else "📊")
+
+
+def _unique_symbols(positions: list[ClosedPosition]) -> list[str]:
+    seen: dict[str, None] = {}
+    for p in positions:
+        seen.setdefault(p.symbol, None)
+    return list(seen)
+
+
+# --------------------------------------------------------------------------- #
+# One caption for the whole post
+# --------------------------------------------------------------------------- #
+
+def format_weekly_caption(
+    positions: list[ClosedPosition],
+    week_ending: date,
     *,
     show_dollar_amounts: bool = False,
     blog_url: str = "",
 ) -> str:
-    """Format a Lemon8 / TikTok caption teaser.
+    """Format the single Lemon8 / TikTok caption for the week's post.
 
-    Defaults to percentage-only view. No absolute dollar amounts are included
-    unless ``show_dollar_amounts=True``.
+    Lists every closed trade with its return; the image carousel carries the
+    per-trade cards. Percentage-only unless ``show_dollar_amounts=True``.
     """
-    win_emoji = "🚀" if (pos.is_win is True) else ("📉" if (pos.is_win is False) else "📊")
-    return_str = (
-        f"{pos.return_pct:+.1f}%"
-        if pos.return_pct is not None
-        else "Closed"
-    )
+    if not positions:
+        return (
+            f"📊 Weekly Trade Journal — week ending {week_ending:%d %b %Y}\n\n"
+            "No trades closed this week. Staying patient. 🧘"
+        )
 
     lines = [
-        f"{win_emoji} Trade Journal: {pos.label} ({return_str})",
+        f"📊 Weekly Trade Journal — week ending {week_ending:%d %b %Y}",
         "",
-        f"Asset: {pos.asset.capitalize()}",
-        f"Closed Date: {pos.close_date}",
-        f"Result: {return_str}",
+        f"{len(positions)} trade(s) closed this week:",
     ]
+    for pos in positions:
+        line = f"{_win_emoji(pos)} {pos.label}: {_return_str(pos)}"
+        if show_dollar_amounts and pos.realized_pl is not None:
+            line += f" ({pos.realized_pl:+.2f} {pos.currency})"
+        lines.append(line)
 
-    if show_dollar_amounts and pos.realized_pl is not None:
-        lines.append(f"Realized P/L: {pos.realized_pl:+.2f} {pos.currency}")
-
-    if reasoning.strip():
-        lines.extend([
-            "",
-            "💡 Trade Thesis & Key Takeaways:",
-            reasoning.strip(),
-        ])
-
+    tags = " ".join(f"#{s}" for s in _unique_symbols(positions))
     lines.extend([
         "",
         "👇 Full breakdown & reasoning on the blog:",
         blog_url if blog_url else "[Link in bio / Blog Draft]",
         "",
-        f"#TradingJournal #{pos.symbol} #Investing #OptionsTrading #StockMarket",
+        f"#TradingJournal #Investing #OptionsTrading #StockMarket {tags}".rstrip(),
     ])
-
     return "\n".join(lines)
 
 
-def format_blog_draft(
-    pos: ClosedPosition,
-    reasoning: str = "",
+# --------------------------------------------------------------------------- #
+# One blog post for the whole week
+# --------------------------------------------------------------------------- #
+
+def format_weekly_blog(
+    positions: list[ClosedPosition],
+    week_ending: date,
     *,
     show_dollar_amounts: bool = False,
 ) -> str:
-    """Format a canonical Markdown blog post draft.
+    """Format the single Markdown blog draft covering all of the week's trades.
 
-    Blog drafts present percentages and reasoning by default.
+    One section per trade (percentage + context); rationale is left as a TODO
+    for the user to fill before publishing — the numbers are automatic, the
+    story is not.
     """
-    return_str = (
-        f"{pos.return_pct:+.1f}%"
-        if pos.return_pct is not None
-        else "N/A"
-    )
+    wins = sum(1 for p in positions if p.is_win is True)
+    losses = sum(1 for p in positions if p.is_win is False)
 
     lines = [
-        f"# Trade Retrospective: {pos.label}",
+        f"# Weekly Trading Journal — week ending {week_ending.isoformat()}",
         "",
-        f"**Date:** {pos.close_date}  ",
-        f"**Asset Class:** {pos.asset.capitalize()}  ",
-        f"**Return:** `{return_str}`  ",
     ]
+    if positions:
+        lines.append(
+            f"**{len(positions)} position(s) closed** this week — "
+            f"{wins} win(s), {losses} loss(es)."
+        )
+    else:
+        lines.append("**No positions closed** this week.")
+    lines.append("")
 
-    if show_dollar_amounts and pos.realized_pl is not None:
-        lines.append(f"**Realized P/L:** `{pos.realized_pl:+.2f} {pos.currency}`  ")
+    for pos in positions:
+        lines.extend(_blog_section(pos, show_dollar_amounts))
 
     lines.extend([
-        "",
-        "## 1. Trade Rationale & Strategy",
-        reasoning.strip() if reasoning.strip() else "_No notes recorded for this execution._",
-        "",
-        "## 2. Lessons & Retrospective",
-        "- How did execution align with the original plan?",
-        "- Were risk parameters respected?",
-        "",
         "---",
         "_Generated automatically from portfolio sync logs._",
     ])
-
     return "\n".join(lines)
 
 
-def generate_journal_package(
-    pos: ClosedPosition,
-    reasoning: str = "",
+def _blog_section(pos: ClosedPosition, show_dollar_amounts: bool) -> list[str]:
+    out = [
+        f"## {_win_emoji(pos)} {pos.label} — `{_return_str(pos, dash='N/A')}`",
+        "",
+        f"- **Asset:** {pos.asset.capitalize()}",
+        f"- **Closed:** {pos.close_date}",
+    ]
+    if pos.asset == "option":
+        if pos.strategy:
+            out.append(f"- **Strategy:** {pos.strategy}")
+        if pos.strike:
+            out.append(f"- **Strike:** {pos.strike}")
+        if pos.expiry:
+            out.append(f"- **Expiry:** {pos.expiry}")
+    if show_dollar_amounts and pos.realized_pl is not None:
+        out.append(f"- **Realized P/L:** `{pos.realized_pl:+.2f} {pos.currency}`")
+
+    out.extend([
+        "",
+        "_Rationale & lessons: TODO — add your notes before publishing._",
+        "",
+    ])
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Assemble the week's package
+# --------------------------------------------------------------------------- #
+
+def generate_weekly_journal(
+    positions: list[ClosedPosition],
+    week_ending: date,
     *,
     show_dollar_amounts: bool = False,
     blog_url: str = "",
-) -> JournalPackage:
-    """Generate a complete journal package for a closed position."""
-    caption = format_caption(
-        pos, reasoning, show_dollar_amounts=show_dollar_amounts, blog_url=blog_url
+) -> WeeklyJournal:
+    """Build the single caption + single blog draft + one card per trade."""
+    caption = format_weekly_caption(
+        positions, week_ending, show_dollar_amounts=show_dollar_amounts, blog_url=blog_url
     )
-    blog_draft = format_blog_draft(
-        pos, reasoning, show_dollar_amounts=show_dollar_amounts
+    blog_draft = format_weekly_blog(
+        positions, week_ending, show_dollar_amounts=show_dollar_amounts
     )
-    card_summary = render_card_summary(
-        pos, show_dollar_amounts=show_dollar_amounts
-    )
-    card_svg = render_card_svg(
-        pos, show_dollar_amounts=show_dollar_amounts
-    )
-
-    return JournalPackage(
-        position=pos,
-        reasoning=reasoning,
+    cards = [
+        (pos, render_card_svg(pos, show_dollar_amounts=show_dollar_amounts))
+        for pos in positions
+    ]
+    return WeeklyJournal(
+        week_ending=week_ending,
+        positions=positions,
         show_dollar_amounts=show_dollar_amounts,
         caption=caption,
         blog_draft=blog_draft,
-        card_summary=card_summary,
-        card_svg=card_svg,
+        cards=cards,
     )

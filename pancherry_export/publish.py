@@ -94,13 +94,16 @@ def publish_draft_pr(
 # --------------------------------------------------------------------------- #
 
 def _ensure_branch(repo: str, base: str, branch: str, *, headers: dict, transport: Transport) -> None:
-    """Create ``branch`` off ``base``'s HEAD if it doesn't already exist."""
-    status, _ = transport("GET", f"{_API}/repos/{repo}/git/ref/heads/{branch}", headers, None)
-    if status == 200:
-        return
-    if status != 404:
-        raise PancherryPublishError(f"GitHub GET ref {branch} -> {status}")
+    """Point ``branch`` at ``base``'s current HEAD — create it if missing, or
+    **force-reset** it if it already exists.
 
+    Keeping the drafts branch pinned to base each run is what prevents the
+    recurring merge conflict: a persistent branch drifts as base moves, but a
+    branch re-based to HEAD then re-committed from the local files is always a
+    clean diff. Safe because the branch is machine-managed — its content is
+    rewritten from the local ``.ts`` files immediately after — so nothing that
+    lives only on the branch is lost (the reviewer edits locally, not here).
+    """
     bstatus, bbody = transport("GET", f"{_API}/repos/{repo}/git/ref/heads/{base}", headers, None)
     if bstatus != 200:
         raise PancherryPublishError(f"GitHub GET base ref {base} -> {bstatus}: {bbody[:200]!r}")
@@ -108,11 +111,23 @@ def _ensure_branch(repo: str, base: str, branch: str, *, headers: dict, transpor
     if not sha:
         raise PancherryPublishError(f"No commit sha for base branch {base!r}")
 
-    payload = {"ref": f"refs/heads/{branch}", "sha": sha}
+    status, _ = transport("GET", f"{_API}/repos/{repo}/git/ref/heads/{branch}", headers, None)
+    if status == 200:
+        rstatus, rbody = transport(
+            "PATCH", f"{_API}/repos/{repo}/git/refs/heads/{branch}",
+            {**headers, "Content-Type": "application/json"},
+            json.dumps({"sha": sha, "force": True}).encode("utf-8"),
+        )
+        if rstatus not in (200, 201):
+            raise PancherryPublishError(f"GitHub reset branch {branch} -> {rstatus}: {rbody[:200]!r}")
+        return
+    if status != 404:
+        raise PancherryPublishError(f"GitHub GET ref {branch} -> {status}")
+
     cstatus, cbody = transport(
         "POST", f"{_API}/repos/{repo}/git/refs",
         {**headers, "Content-Type": "application/json"},
-        json.dumps(payload).encode("utf-8"),
+        json.dumps({"ref": f"refs/heads/{branch}", "sha": sha}).encode("utf-8"),
     )
     if cstatus not in (200, 201):
         raise PancherryPublishError(f"GitHub create branch {branch} -> {cstatus}: {cbody[:200]!r}")

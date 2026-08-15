@@ -14,13 +14,13 @@ import pytest
 from lemon8.weekly_job import (
     select_recent_closes,
     run_weekly_journal,
-    _blog_file,
+    _weekly_blog_file,
     _slug,
 )
 from lemon8.blog import commit_blog_drafts, CommittedDraft, BlogCommitError
 from lemon8.render import svg_to_png
 from lemon8.reader import ClosedPosition
-from lemon8.journal import generate_journal_package
+from lemon8.journal import generate_weekly_journal
 from sheets.writer import STOCKS_HEADERS, OPTIONS_HEADERS, TAB_STOCKS, TAB_OPTIONS
 from tests.test_writer import FakeSheetClient
 
@@ -81,13 +81,17 @@ def test_run_writes_files_and_notifies(tmp_path):
 
     assert result.count == 2 and result.committed == 0 and result.delivered is True
     week_dir = tmp_path / "2026-08-14"
+    # ONE consolidated post per week — a single blog + single caption...
     assert (week_dir / "index.md").exists()
+    assert (week_dir / "blog.md").exists()
+    assert (week_dir / "caption.txt").exists()
+    # ...plus one screenshot card per trade under cards/.
     for slug in ("AAPL", "TSLA-200-Put"):
-        d = week_dir / slug
-        assert (d / "caption.txt").exists()
-        assert (d / "blog.md").exists()
-        assert (d / "card.svg").exists()
-    assert "2 trade journal" in sent[0]
+        assert (week_dir / "cards" / f"{slug}.svg").exists()
+    # the single blog covers both trades
+    blog = (week_dir / "blog.md").read_text(encoding="utf-8")
+    assert "AAPL" in blog and "TSLA 200 Put" in blog
+    assert "2 trade(s)" in sent[0]
 
 
 def test_run_with_no_recent_closes_still_notifies(tmp_path):
@@ -122,19 +126,28 @@ def test_run_commits_blog_when_configured(tmp_path):
         blog_committer=fake_committer,
         render_png=False,
     )
-    assert result.committed == 2
-    # frontmatter marks every draft unpublished
-    assert all("draft: true" in md for _fn, md in calls["items"])
+    # ONE weekly blog draft is committed, not one per trade
+    assert result.committed == 1
+    assert len(calls["items"]) == 1
+    (filename, md) = calls["items"][0]
+    assert filename == "2026-08-14-weekly-journal.md"
+    assert "draft: true" in md
+    # the single draft covers both of the week's trades
+    assert "AAPL" in md and "TSLA 200 Put" in md
     assert calls["settings"]["repo"] == "me/blog"
 
 
-def test_blog_file_has_frontmatter_and_slug():
-    pos = ClosedPosition("Tiger", "TSLA", "option", "2026-08-10", "USD", None, None, None,
-                         option_type="Put", strike="200")
-    pkg = generate_journal_package(pos)
-    filename, content = _blog_file(pkg, _TODAY)
-    assert filename == "2026-08-14-TSLA-200-Put.md"
+def test_weekly_blog_file_has_frontmatter_and_covers_all_trades():
+    positions = [
+        ClosedPosition("Tiger", "AAPL", "stock", "2026-08-12", "USD", None, None, None),
+        ClosedPosition("Tiger", "TSLA", "option", "2026-08-10", "USD", None, None, None,
+                       option_type="Put", strike="200"),
+    ]
+    journal = generate_weekly_journal(positions, _TODAY)
+    filename, content = _weekly_blog_file(journal)
+    assert filename == "2026-08-14-weekly-journal.md"
     assert content.startswith("---\n") and "draft: true" in content
+    assert "AAPL" in content and "TSLA 200 Put" in content
 
 
 def test_slug_sanitizes_labels():
@@ -205,6 +218,7 @@ def test_commit_raises_on_put_error():
 
 def test_svg_to_png_produces_png_bytes():
     from decimal import Decimal
+    from lemon8.card import render_card_svg
     pos = ClosedPosition("Tiger", "NVDA", "stock", "2026-08-12", "USD", Decimal("300"), Decimal("405"), Decimal("12.5"))
-    png = svg_to_png(generate_journal_package(pos).card_svg)
+    png = svg_to_png(render_card_svg(pos))
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 500
