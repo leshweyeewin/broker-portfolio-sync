@@ -248,12 +248,13 @@ def _transaction_rows(cash: Sequence[CashMovement], fx: FxRates) -> list[list[An
 def _build_dashboard(
     status: str,
     holdings: Sequence,
-    realized_sgd_by_broker: dict[str, Decimal],
     reconciliation: str,
     *,
     account_value_sgd: Optional[dict[str, Decimal]] = None,
     net_capital_in: Optional[dict[str, Decimal]] = None,
     weekly_realized_sgd_by_broker: Optional[dict[str, Decimal]] = None,
+    monthly_realized_sgd_by_broker: Optional[dict[str, Decimal]] = None,
+    ytd_realized_sgd_by_broker: Optional[dict[str, Decimal]] = None,
 ) -> list[list[Any]]:
     """Machine-computed summary block for the Dashboard tab (§4).
 
@@ -261,7 +262,8 @@ def _build_dashboard(
       * Net Capital In (SGD)   = Σ deposits − Σ withdrawals (from Transactions)
       * Account Value (SGD)    = live net-liquidation value
       * Total P/L (SGD)        = Account Value − Net Capital In
-      * Realized P/L (SGD), Open Positions, and run health.
+      * Realized P/L over three rolling windows (Week / Month / Year),
+        Open Positions, and run health.
 
     Total P/L is the all-in gain (realized + unrealized + dividends − fees) vs the
     money actually put in. A broker whose deposits can't be pulled (MooMoo) shows
@@ -304,8 +306,9 @@ def _build_dashboard(
         pl_total += pl
     pl_row.append(float(pl_total))
 
-    realized_row, _ = _row("Realized P/L (SGD)", realized_sgd_by_broker)
-    weekly_row, _ = _row("This Week Realized (SGD)", weekly_realized_sgd_by_broker or {})
+    week_row, _ = _row("This Week Realized (SGD)", weekly_realized_sgd_by_broker or {})
+    month_row, _ = _row("This Month Realized (SGD)", monthly_realized_sgd_by_broker or {})
+    ytd_row, _ = _row("This Year Realized (SGD)", ytd_realized_sgd_by_broker or {})
 
     counts = Counter(h.broker.value for h in holdings)
     open_row: list[Any] = ["Open Positions"]
@@ -319,8 +322,9 @@ def _build_dashboard(
         capital_row,
         value_row,
         pl_row,
-        realized_row,
-        weekly_row,
+        week_row,
+        month_row,
+        ytd_row,
         open_row,
         ["Status", status, "", "", ""],
         ["Reconciliation", reconciliation, "", "", ""],
@@ -529,17 +533,23 @@ def run_sync(
     recon_warnings = reconcile(holdings, positions)
 
     # 7. Dashboard summary: realized P/L, net capital in, current value, total P/L.
-    realized_sgd_by_broker: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    for r in list(stock_result.realizations) + list(option_result.realizations):
-        realized_sgd_by_broker[r.broker.value] += realized_sgd.get(r.key, ZERO)
-
-    # This-week realized P/L per broker (ISO week: Monday..today) — feeds the
-    # Dashboard's weekly line (and mirrors the Sunday P/L digest).
+    # Realized P/L per broker (SGD) over three rolling windows, all on the SGT
+    # calendar: this week (ISO Monday..today), this month (1st..today) and this
+    # year (Jan 1..today). The weekly line mirrors the Sunday P/L digest.
     monday = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    year_start = today.replace(month=1, day=1)
     weekly_realized_sgd_by_broker: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    monthly_realized_sgd_by_broker: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    ytd_realized_sgd_by_broker: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for r in list(stock_result.realizations) + list(option_result.realizations):
-        if monday <= r.date <= today:
-            weekly_realized_sgd_by_broker[r.broker.value] += realized_sgd.get(r.key, ZERO)
+        amt = realized_sgd.get(r.key, ZERO)
+        if r.date >= year_start:
+            ytd_realized_sgd_by_broker[r.broker.value] += amt
+        if r.date >= month_start:
+            monthly_realized_sgd_by_broker[r.broker.value] += amt
+        if r.date >= monday:
+            weekly_realized_sgd_by_broker[r.broker.value] += amt
 
     # Current account value per broker in SGD (live rate — this is a snapshot, not
     # a historical row, so it uses the current FX, not a trade-date rate).
@@ -570,10 +580,12 @@ def run_sync(
 
     writer.overwrite_dashboard(
         _build_dashboard(
-            status, holdings, dict(realized_sgd_by_broker), reconciliation,
+            status, holdings, reconciliation,
             account_value_sgd=dict(account_value_sgd),
             net_capital_in=net_capital_in,
             weekly_realized_sgd_by_broker=dict(weekly_realized_sgd_by_broker),
+            monthly_realized_sgd_by_broker=dict(monthly_realized_sgd_by_broker),
+            ytd_realized_sgd_by_broker=dict(ytd_realized_sgd_by_broker),
         )
     )
 

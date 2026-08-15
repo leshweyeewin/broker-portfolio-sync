@@ -429,10 +429,10 @@ class PortfolioWriter:
             self._sheet_ids = {s["properties"]["title"]: s["properties"]["sheetId"]
                                for s in meta["sheets"]}
             sheet_id = self._sheet_ids.get(TAB_DASHBOARD)
-        # Money rows only (Net Capital In, Account Value, Total P/L, Realized P/L,
-        # This Week Realized) — rows 2..6. Excludes the integer Open-Positions
-        # counts and text rows.
-        money_end = min(6, len(blocks))
+        # Money rows only (Net Capital In, Account Value, Total P/L, and the three
+        # realized windows: This Week / This Month / This Year) — rows 2..7.
+        # Excludes the integer Open-Positions counts and text rows.
+        money_end = min(7, len(blocks))
         if sheet_id is not None and money_end > 1:
             self._client.batch_update([{"repeatCell": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": money_end,

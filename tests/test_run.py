@@ -429,7 +429,7 @@ def test_backout_openings_reconciles_including_closed_instrument():
 def test_dashboard_total_pl_is_value_minus_capital():
     from run import _build_dashboard
     dash = _build_dashboard(
-        "OK", [], {}, "OK",
+        "OK", [], "OK",
         account_value_sgd={"Tiger": Decimal("150"), "Longbridge": Decimal("60"),
                            "MooMoo": Decimal("80")},
         net_capital_in={"Tiger": Decimal("100"), "Longbridge": Decimal("50")},
@@ -449,15 +449,21 @@ def test_dashboard_total_pl_is_value_minus_capital():
     assert pl[4] == 60.0
 
 
-def test_dashboard_has_weekly_realized_row():
+def test_dashboard_has_rolling_realized_rows():
     from run import _build_dashboard
     dash = _build_dashboard(
-        "OK", [], {"Tiger": Decimal("500")}, "OK",
+        "OK", [], "OK",
         weekly_realized_sgd_by_broker={"Tiger": Decimal("120"), "Longbridge": Decimal("30")},
+        monthly_realized_sgd_by_broker={"Tiger": Decimal("300"), "Longbridge": Decimal("30")},
+        ytd_realized_sgd_by_broker={"Tiger": Decimal("500"), "Longbridge": Decimal("30")},
     )
     rows = {r[0]: r for r in dash}
-    wk = rows["This Week Realized (SGD)"]   # [Metric, Longbridge, Tiger, MooMoo, Total]
+    wk = rows["This Week Realized (SGD)"]    # [Metric, Longbridge, Tiger, MooMoo, Total]
     assert wk[1] == 30.0 and wk[2] == 120.0 and wk[3] == 0.0
-    assert wk[4] == 150.0                    # total = 150
-    # all-time realized row is still separate and unaffected
-    assert rows["Realized P/L (SGD)"][2] == 500.0
+    assert wk[4] == 150.0                     # total = 150
+    mo = rows["This Month Realized (SGD)"]
+    assert mo[2] == 300.0 and mo[4] == 330.0
+    yr = rows["This Year Realized (SGD)"]
+    assert yr[2] == 500.0 and yr[4] == 530.0
+    # the all-time realized row is gone — only the three rolling windows remain
+    assert "Realized P/L (SGD)" not in rows
