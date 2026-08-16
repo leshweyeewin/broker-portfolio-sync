@@ -220,6 +220,52 @@ def test_caption_bolds_body_but_keeps_hashtags_plain():
     assert "#TradingJournal" in caption and "#AAPL" in caption
 
 
+def test_reader_reads_kind_and_reason():
+    """Strategy/Action and the manual Reason column flow into ClosedPosition."""
+    client = FakeSheetClient([TAB_STOCKS, TAB_OPTIONS])
+    stocks = _SUMMARY_BLOCK + [
+        [str(h) for h in STOCKS_HEADERS],
+        # ...Realized P/L (SGD), _dedup_key, Reason  (Reason trails the key)
+        ["2026-08-15", "Tiger", "AAPL", "SELL", 10, 180.0, 1800.0, 1.5, "USD",
+         "Closed", 300.0, 405.0, "k1", "Trimmed into strength"],
+    ]
+    client.batch_update_values([{"range": f"{TAB_STOCKS}!A1", "values": stocks}])
+    options = _SUMMARY_BLOCK + [
+        [str(h) for h in OPTIONS_HEADERS],
+        ["2026-08-15", "Tiger", "Cash Secured Put", "TSLA", "PUT", 200.0, 1,
+         "2026-09-19", "SELL", 5.0, 500.0, 1.0, "USD", "Closed", 400.0, 540.0,
+         "k2", "Willing to own at 200"],
+    ]
+    client.batch_update_values([{"range": f"{TAB_OPTIONS}!A1", "values": options}])
+
+    closed = read_closed_positions(client)
+    stock = next(p for p in closed if p.asset == "stock")
+    opt = next(p for p in closed if p.asset == "option")
+
+    assert stock.kind == "SELL" and stock.reason == "Trimmed into strength"
+    assert opt.kind == "Cash Secured Put" and opt.reason == "Willing to own at 200"
+
+    # Blog table carries a "Why" column with the reason; caption top-mover shows both.
+    blog = format_weekly_blog(closed, date(2026, 8, 16))
+    assert "Strategy / Action" in blog and "| Why |" in blog
+    assert "Willing to own at 200" in blog and "Cash Secured Put" in blog
+
+    caption = format_weekly_caption(closed, date(2026, 8, 16))
+    assert _bold("Cash Secured Put") in caption or "Cash Secured Put" in caption
+    assert "Willing to own at 200" in caption  # per-trade why on the top mover
+
+
+def test_md_cell_escapes_pipes_in_reason():
+    """A Reason containing a pipe must not break the Markdown table."""
+    pos = ClosedPosition(
+        broker="Tiger", symbol="AAPL", asset="stock", close_date="2026-08-15",
+        currency="USD", realized_pl=Decimal("10"), realized_pl_sgd=Decimal("13"),
+        return_pct=Decimal("5"), action="SELL", reason="scalp | quick flip",
+    )
+    blog = format_weekly_blog([pos], date(2026, 8, 16))
+    assert "scalp \\| quick flip" in blog
+
+
 def test_show_dollar_amounts_opt_in():
     pos = ClosedPosition(
         broker="Tiger",

@@ -57,6 +57,8 @@ class ClosedPosition:
     strike: str = ""
     expiry: str = ""
     strategy: str = ""                    # option Strategy cell; "Stock" for stocks
+    action: str = ""                      # Buy / Sell (the closing execution's action)
+    reason: str = ""                      # manual free-text thesis from the sheet's Reason cell
 
     @property
     def is_win(self) -> Optional[bool]:
@@ -71,6 +73,16 @@ class ClosedPosition:
             parts = [self.symbol, self.strike, self.option_type]
             return " ".join(p for p in parts if p)
         return self.symbol
+
+    @property
+    def kind(self) -> str:
+        """Short 'what kind of trade' label — the closest thing to a *why* the
+        sheet carries: an option's Strategy (e.g. ``Cash Secured Put``), falling
+        back to Call/Put; a stock's closing Action (Buy/Sell). ``""`` if neither
+        is recorded."""
+        if self.asset == "option":
+            return (self.strategy or self.option_type).strip()
+        return self.action.strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -151,6 +163,10 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         option_type = strike = expiry = ""
         strategy = "Stock"
 
+    # The closing execution's Buy/Sell (read defensively — not in the required set).
+    action = str(_cell(row, idx["Action"])) if "Action" in idx else ""
+    # Manual thesis, if the user filled the Reason cell (optional column).
+    reason = str(_cell(row, idx["Reason"])).strip() if "Reason" in idx else ""
     total = _dec(_cell(row, idx["Total"]))
     return ClosedPosition(
         broker=str(_cell(row, idx["Broker"])),
@@ -165,6 +181,8 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         strike=strike,
         expiry=expiry,
         strategy=strategy,
+        action=action,
+        reason=reason,
     )
 
 

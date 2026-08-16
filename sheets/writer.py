@@ -61,20 +61,27 @@ TAB_OPTIONS      = "Options"
 TAB_DASHBOARD    = "Dashboard"
 TAB_RUN_LOG      = "Run Log"
 
-# Column headers for each data tab. _dedup_key is always last (will be hidden).
+# Column headers for each data tab. _dedup_key is a hidden internal key; on the
+# Stocks/Options tabs a manual "Reason" column trails it (see note below).
 TRANSACTIONS_HEADERS = [
     "Date", "Broker", "Type", "Amount", "Currency",
     "Amount (SGD)", "Note", "_dedup_key",
 ]
+# "Reason" is a manual free-text column (the trade thesis / "why"): the sync
+# writes it blank and _upsert_tab preserves anything you type there, so the daily
+# run never clobbers it. It is the LAST column — deliberately after the hidden
+# _dedup_key — so adding it never shifts any existing data (every other column
+# keeps its letter, the summary SUM() formulas keep working, and existing sheets
+# gain it as a fresh trailing column with no migration or duplicate rows).
 STOCKS_HEADERS = [
     "Date", "Broker", "Ticker", "Action", "Qty", "Price", "Total",
     "Fee", "Currency", "Status", "Realized P/L", "Realized P/L (SGD)",
-    "_dedup_key",
+    "_dedup_key", "Reason",
 ]
 OPTIONS_HEADERS = [
     "Date", "Broker", "Strategy", "Stock", "Type", "Strike",
     "Qty", "Expiry", "Action", "Premium", "Total", "Fee", "Currency",
-    "Status", "P/L", "P/L (SGD)", "_dedup_key",
+    "Status", "P/L", "P/L (SGD)", "_dedup_key", "Reason",
 ]
 RUN_LOG_HEADERS = [
     "Timestamp", "Status", "Stocks Added", "Stocks Updated",
@@ -637,6 +644,7 @@ class PortfolioWriter:
             return result
 
         dedup_col = _dedup_col_index(headers)
+        reason_col = headers.index("Reason") if "Reason" in headers else None
         n_cols = len(headers)
         col_letter = _col_letter(n_cols)  # e.g. "M" for 13 columns
         range_ = f"{tab}!A:{col_letter}"
@@ -675,7 +683,14 @@ class PortfolioWriter:
                 # Preserve manual Strategy overrides on Options tab
                 if tab == TAB_OPTIONS and len(old_formatted) > 2 and old_formatted[2]:
                     new_formatted[2] = old_formatted[2]
-                
+
+                # Preserve a manually-typed Reason (the trade thesis). The sync
+                # always writes this blank, so whatever the user typed must carry
+                # forward or the next run would erase it.
+                if (reason_col is not None and len(old_formatted) > reason_col
+                        and old_formatted[reason_col]):
+                    new_formatted[reason_col] = old_formatted[reason_col]
+
                 if new_formatted != old_formatted:
                     updates.append({
                         "range": f"{tab}!A{sheet_row}:{col_letter}{sheet_row}",
@@ -734,7 +749,7 @@ class PortfolioWriter:
                 else:
                     # Options cols: A=Date B=Broker C=Strategy D=Stock E=Type
                     # F=Strike G=Qty H=Expiry I=Action J=Premium K=Total L=Fee
-                    # M=Currency N=Status O=P/L P=P/L(SGD) Q=_dedup_key.
+                    # M=Currency N=Status O=P/L P=P/L(SGD) Q=_dedup_key R=Reason.
                     write_data.append({
                         "range": f"{tab}!A1:B2",
                         "values": [
@@ -1064,6 +1079,7 @@ def build_stock_row(
         _fmt(realized_pl) if realized_pl is not None else "",
         _fmt(realized_pl_sgd) if realized_pl_sgd is not None else "",
         trade.dedup_key,
+        "",  # Reason — manual free-text; sync leaves blank, upsert preserves it
     ]
 
 
@@ -1092,6 +1108,7 @@ def build_option_row(
         _fmt(realized_pl) if realized_pl is not None else "",
         _fmt(realized_pl_sgd) if realized_pl_sgd is not None else "",
         trade.dedup_key,
+        "",  # Reason — manual free-text; sync leaves blank, upsert preserves it
     ]
 
 

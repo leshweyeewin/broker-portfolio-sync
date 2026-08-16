@@ -68,6 +68,12 @@ def _return_str(pos: ClosedPosition, *, dash: str = "Closed") -> str:
     return f"{pos.return_pct:+.1f}%" if pos.return_pct is not None else dash
 
 
+def _md_cell(s: str) -> str:
+    """Make free text safe inside a Markdown table cell: escape pipes and flatten
+    newlines so a hand-typed Reason can't break the table layout."""
+    return " ".join((s or "").split()).replace("|", "\\|").strip()
+
+
 def _win_emoji(pos: ClosedPosition) -> str:
     return "🚀" if (pos.is_win is True) else ("📉" if (pos.is_win is False) else "📊")
 
@@ -117,9 +123,13 @@ def format_weekly_caption(
         lines.append("")
         lines.append("Top movers:")
         for pos in top:
-            line = f"{_win_emoji(pos)} {_bold(f'{pos.label}: {_return_str(pos)}')}"
+            head = f"{pos.label} ({pos.kind})" if pos.kind else pos.label
+            line = f"{_win_emoji(pos)} {_bold(f'{head}: {_return_str(pos)}')}"
             if show_dollar_amounts and pos.realized_pl is not None:
                 line += f" ({pos.realized_pl:+.2f} {pos.currency})"
+            why = " ".join((pos.reason or "").split())
+            if why:
+                line += f" — {why[:60]}"
             lines.append(line)
 
     tags = " ".join(f"#{s}" for s in _unique_symbols(positions)[:12])
@@ -196,10 +206,15 @@ def format_weekly_blog(
 
 
 def _blog_trade_table(positions: list[ClosedPosition], show_dollar_amounts: bool) -> list[str]:
-    """A Markdown table of every closed trade, most-recent first."""
+    """A Markdown table of every closed trade, most-recent first.
+
+    The ``Strategy / Action`` column carries the closest thing to a *why* the
+    sheet records (option strategy or the stock's Buy/Sell). The free-text trade
+    thesis lives in the ``Why`` column when the sheet's Reason cell is filled.
+    """
     dollars = show_dollar_amounts
-    header = "| Date | Instrument | Asset | Result | Return % |"
-    rule = "|------|------------|-------|--------|----------|"
+    header = "| Date | Instrument | Strategy / Action | Why | Result | Return % |"
+    rule = "|------|------------|-------------------|-----|--------|----------|"
     if dollars:
         header = header[:-1] + " P/L |"
         rule = rule[:-1] + "------|"
@@ -208,7 +223,9 @@ def _blog_trade_table(positions: list[ClosedPosition], show_dollar_amounts: bool
     for p in sorted(positions, key=lambda p: (p.close_date, p.label), reverse=True):
         result = "Win" if p.is_win is True else ("Loss" if p.is_win is False else "—")
         pct = _return_str(p, dash="—")
-        row = f"| {p.close_date} | {p.label} | {p.asset.capitalize()} | {result} | {pct} |"
+        why = _md_cell(p.reason) or "—"
+        row = (f"| {p.close_date} | {p.label} | {p.kind or '—'} | {why} "
+               f"| {result} | {pct} |")
         if dollars:
             pl = f"{p.realized_pl:+.2f} {p.currency}" if p.realized_pl is not None else "—"
             row = row[:-1] + f" {pl} |"

@@ -235,8 +235,8 @@ def test_col_letter_double():
 
 def test_col_letter_matches_header_widths():
     assert _col_letter(len(TRANSACTIONS_HEADERS)) == "H"
-    assert _col_letter(len(STOCKS_HEADERS)) == "M"
-    assert _col_letter(len(OPTIONS_HEADERS)) == "Q"  # Direction column removed
+    assert _col_letter(len(STOCKS_HEADERS)) == "N"   # trailing Reason column
+    assert _col_letter(len(OPTIONS_HEADERS)) == "R"  # trailing Reason column
 
 
 # --------------------------------------------------------------------------- #
@@ -436,6 +436,55 @@ def test_upsert_stocks_realized_pl_written():
     assert float(data[0][pl_sgd_idx]) == pytest.approx(337.5)
 
 
+def test_upsert_stocks_preserves_manual_reason_on_update():
+    """A Reason typed by hand must survive the next sync that updates the row."""
+    client = FakeSheetClient()
+    writer = PortfolioWriter(client)
+    writer.ensure_tabs()
+
+    trade = _stock_trade(action=StockAction.SELL, fill_id="r001")
+    writer.upsert_stocks([build_stock_row(trade, status="Open")])
+
+    # User types a thesis into the Reason cell (col N, first data row = row 4).
+    reason_col = _col_letter(STOCKS_HEADERS.index("Reason") + 1)
+    client.batch_update_values([
+        {"range": f"{TAB_STOCKS}!{reason_col}4", "values": [["Sold into strength"]]}
+    ])
+
+    # A later run closes the position (status + P/L change -> a real update).
+    writer.upsert_stocks([build_stock_row(
+        trade, status="Closed",
+        realized_pl=Decimal("250.00"), realized_pl_sgd=Decimal("337.50"))])
+
+    data = client.data_rows(TAB_STOCKS, header_rows=3)
+    assert len(data) == 1  # updated in place, not duplicated
+    ridx = STOCKS_HEADERS.index("Reason")
+    assert data[0][ridx] == "Sold into strength"  # thesis preserved
+    assert data[0][STOCKS_HEADERS.index("Status")] == "Closed"  # update applied
+
+
+def test_upsert_options_preserves_manual_reason_on_update():
+    client = FakeSheetClient()
+    writer = PortfolioWriter(client)
+    writer.ensure_tabs()
+
+    opt = _option_trade()
+    writer.upsert_options([build_option_row(opt, status="Open")])
+
+    reason_col = _col_letter(OPTIONS_HEADERS.index("Reason") + 1)
+    client.batch_update_values([
+        {"range": f"{TAB_OPTIONS}!{reason_col}4", "values": [["Earnings IV crush play"]]}
+    ])
+
+    writer.upsert_options([build_option_row(
+        opt, status="Closed",
+        realized_pl=Decimal("120.00"), realized_pl_sgd=Decimal("162.00"))])
+
+    data = client.data_rows(TAB_OPTIONS, header_rows=3)
+    assert len(data) == 1
+    assert data[0][OPTIONS_HEADERS.index("Reason")] == "Earnings IV crush play"
+
+
 def test_upsert_stocks_multiple_tickers_no_cross_contamination():
     client = FakeSheetClient()
     writer = PortfolioWriter(client)
@@ -561,18 +610,25 @@ def test_build_transaction_row_length_and_dedup_key():
     assert row[-1] == cm.dedup_key  # _dedup_key is last
 
 
+def _dedup_idx(headers) -> int:
+    return headers.index("_dedup_key")
+
+
 def test_build_stock_row_length_and_dedup_key():
     trade = _stock_trade()
     row = build_stock_row(trade)
     assert len(row) == len(STOCKS_HEADERS)
-    assert row[-1] == trade.dedup_key
+    # _dedup_key is second-to-last; a blank manual Reason trails it.
+    assert row[_dedup_idx(STOCKS_HEADERS)] == trade.dedup_key
+    assert row[-1] == ""  # Reason left blank by the sync
 
 
 def test_build_option_row_length_and_dedup_key():
     trade = _option_trade()
     row = build_option_row(trade)
     assert len(row) == len(OPTIONS_HEADERS)
-    assert row[-1] == trade.dedup_key
+    assert row[_dedup_idx(OPTIONS_HEADERS)] == trade.dedup_key
+    assert row[-1] == ""  # Reason left blank by the sync
 
 
 def test_build_stock_row_buy_sign():

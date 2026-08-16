@@ -32,6 +32,7 @@ TABLE_ROWS_PER_PAGE = 25   # what fits comfortably at phone-readable size
 
 _COL_DATE_X = 56
 _COL_LABEL_X = 190
+_COL_KIND_X = 470       # strategy / action column
 _COL_DOT_CX = 812
 _COL_PCT_X = 860        # left edge of the (right-ish) % column
 _ROW_TOP = 300          # y of the first data row baseline
@@ -104,6 +105,8 @@ def _render_table_page(
         f'fill="#9CA3AF">DATE</text>',
         f'<text x="{_COL_LABEL_X}" y="238" font-family="sans-serif" font-size="24" '
         f'fill="#9CA3AF">INSTRUMENT</text>',
+        f'<text x="{_COL_KIND_X}" y="238" font-family="sans-serif" font-size="24" '
+        f'fill="#9CA3AF">STRATEGY</text>',
         f'<text x="{_COL_PCT_X}" y="238" font-family="sans-serif" font-size="24" '
         f'fill="#9CA3AF">RETURN</text>',
         f'<line x1="{_COL_DATE_X}" y1="256" x2="{TABLE_W - _COL_DATE_X}" y2="256" '
@@ -118,13 +121,16 @@ def _render_table_page(
                 f'height="{_ROW_H}" rx="6" fill="#FFFFFF" fill-opacity="0.03"/>'
             )
         date_txt = _xml_escape(pos.close_date[5:] if len(pos.close_date) >= 10 else pos.close_date)
-        label_txt = _xml_escape(_trunc(pos.label, 34))
+        label_txt = _xml_escape(_trunc(pos.label, 20))
+        kind_txt = _xml_escape(_trunc(pos.kind, 20))
         pct_txt, pct_color = _pct_cell(pos)
         parts.extend([
             f'<text x="{_COL_DATE_X}" y="{y}" font-family="sans-serif" font-size="28" '
             f'fill="#9CA3AF">{date_txt}</text>',
             f'<text x="{_COL_LABEL_X}" y="{y}" font-family="sans-serif" font-size="28" '
             f'fill="#F3F4F6">{label_txt}</text>',
+            f'<text x="{_COL_KIND_X}" y="{y}" font-family="sans-serif" font-size="24" '
+            f'fill="#9CA3AF">{kind_txt}</text>',
             f'<circle cx="{_COL_DOT_CX}" cy="{y - 9}" r="9" fill="{_result_color(pos)}"/>',
             f'<text x="{_COL_PCT_X}" y="{y}" font-family="sans-serif" font-weight="bold" '
             f'font-size="28" fill="{pct_color}">{_xml_escape(pct_txt)}</text>',
