@@ -16,6 +16,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
+from analytics.market_scan import (
+    TickerMover,
+    UpcomingEarnings,
+    get_daily_movers,
+    get_upcoming_earnings,
+    scan_short_option_picks,
+)
+from analytics.screener import ScreenerResult
 from analytics.diagnostics import (
     IVCrushResult,
     FeeDragResult,
@@ -41,13 +49,17 @@ ZERO = Decimal("0")
 
 @dataclass
 class AnalyticsReport:
-    """Full analytics report — all diagnostic results in one place."""
+    """Full analytics report — diagnostics, market scans, and risk alerts."""
     iv_crush: IVCrushResult = field(default_factory=IVCrushResult)
     fee_drag: FeeDragResult = field(default_factory=FeeDragResult)
     medium_term: MediumTermResult = field(default_factory=MediumTermResult)
     risk_alerts: list[RiskAlert] = field(default_factory=list)
     stock_tag_counts: dict[str, int] = field(default_factory=dict)
     option_tag_counts: dict[str, int] = field(default_factory=dict)
+    bullish_movers: list[TickerMover] = field(default_factory=list)
+    bearish_movers: list[TickerMover] = field(default_factory=list)
+    upcoming_earnings: list[UpcomingEarnings] = field(default_factory=list)
+    screener_picks: list[ScreenerResult] = field(default_factory=list)
 
 
 def run_analytics(
@@ -55,6 +67,7 @@ def run_analytics(
     *,
     today: date | None = None,
     total_capital_sgd: Decimal | None = None,
+    scan_market: bool = True,
 ) -> AnalyticsReport:
     """Run the full analytics pipeline against the Google Sheet.
 
@@ -89,10 +102,43 @@ def run_analytics(
     report.fee_drag = intraday_fee_drag(all_tagged)
     report.medium_term = medium_term_performance(all_tagged, total_capital_sgd)
 
-    # 5. Generate risk alerts
+    # 5. Generate risk alerts for expiring options (1–14 DTE)
     report.risk_alerts = generate_risk_alerts(
         option_trades, option_tags, today=today
     )
+
+    # 6. Market scanning (daily movers, upcoming earnings, short put/call picks)
+    if scan_market:
+        # Collect universe of actively traded tickers
+        tickers = set()
+        for td in stock_trades:
+            tickers.add(td["trade"].ticker)
+        for td in option_trades:
+            tickers.add(td["trade"].underlying)
+        ticker_list = sorted(t for t in tickers if t and len(t) <= 6)
+
+        # Combine sheet tickers + all monitored watchlist tickers from earnings cache
+        from analytics.earnings import _load_static_cache
+        watchlist_tickers = list(_load_static_cache().keys())
+        full_universe = sorted(set(ticker_list + watchlist_tickers))
+
+        if ticker_list:
+            try:
+                bullish, bearish = get_daily_movers(ticker_list)
+                report.bullish_movers = bullish
+                report.bearish_movers = bearish
+            except Exception as exc:
+                log.debug("Daily movers scan error: %s", exc)
+
+            try:
+                report.upcoming_earnings = get_upcoming_earnings(full_universe, today=today, days_ahead=7)
+            except Exception as exc:
+                log.debug("Earnings calendar scan error: %s", exc)
+
+            try:
+                report.screener_picks = scan_short_option_picks(ticker_list, today=today)
+            except Exception as exc:
+                log.debug("Option screener scan error: %s", exc)
 
     return report
 
@@ -103,63 +149,77 @@ def format_telegram_report(report: AnalyticsReport, *, today: date | None = None
     sections: list[str] = []
 
     # Header
-    sections.append(f"📊 Analytics Report — {today:%d %b %Y}")
+    sections.append(f"📊 Daily Market & Portfolio Report — {today:%d %b %Y}")
     sections.append("")
 
-    # Tag summary
-    all_tags = {}
-    for label, count in {**report.stock_tag_counts, **report.option_tag_counts}.items():
-        all_tags[label] = all_tags.get(label, 0) + count
-    if all_tags:
-        sections.append("🏷️ Strategy Tags:")
-        for label, count in sorted(all_tags.items()):
-            sections.append(f"   • {label}: {count}")
+    # 1. Daily Bullish / Bearish Movers
+    if report.bullish_movers or report.bearish_movers:
+        sections.append("🚀 Daily Ticker Movers:")
+        if report.bullish_movers:
+            top_bulls = ", ".join(f"🟢 {m.ticker} +{m.change_pct:.1f}% (${m.price})" for m in report.bullish_movers[:4])
+            sections.append(f"   Bullish: {top_bulls}")
+        if report.bearish_movers:
+            top_bears = ", ".join(f"🔴 {m.ticker} {m.change_pct:.1f}% (${m.price})" for m in report.bearish_movers[:4])
+            sections.append(f"   Bearish: {top_bears}")
         sections.append("")
 
-    # IV Crush analysis
-    ic = report.iv_crush
-    if ic.win_count + ic.loss_count > 0:
-        sections.append("📈 Earnings IV Crush Performance:")
-        sections.append(
-            f"   Wins: {ic.win_count} (avg ${ic.avg_win:.2f}) · "
-            f"Losses: {ic.loss_count} (avg ${ic.avg_loss:.2f})"
-        )
-        sections.append(f"   Net P/L: ${ic.total_pl:.2f}")
-        if ic.risk_warning:
-            sections.append(f"   {ic.warning_message}")
+    # 2. Upcoming Earnings (Next 1–2 Days)
+    if report.upcoming_earnings:
+        sections.append("📅 Upcoming Earnings (Prepare IV Crush Plays):")
+        for e in report.upcoming_earnings:
+            sections.append(f"   ⚡ {e.ticker} · {e.note} ({e.earnings_date:%a %d %b})")
         sections.append("")
 
-    # Fee drag
-    fd = report.fee_drag
-    if fd.trade_count > 0:
-        sections.append(f"💸 Day Trade Fee Drag ({fd.trade_count} trades):")
-        sections.append(
-            f"   Fees: ${fd.total_fees:.2f} · Gross Profit: ${fd.gross_profit:.2f} · "
-            f"Drag: {fd.fee_drag_pct:.1%}"
-        )
-        if fd.alert:
-            sections.append(f"   {fd.alert_message}")
+    # 3. High-Probability Short Put / Short Call Picks (Systematic Screener)
+    if report.screener_picks:
+        puts = [p for p in report.screener_picks if p.option_type == "Put"]
+        calls = [p for p in report.screener_picks if p.option_type == "Call"]
+
+        sections.append("🔎 Systematic Short Option Picks (Δ 0.10–0.15, OI>500):")
+        if puts:
+            sections.append("   🟢 Bullish Income (Short Put):")
+            for p in puts[:3]:
+                sections.append(
+                    f"      • {p.symbol} ${p.strike} Put exp {p.expiry} · "
+                    f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}"
+                )
+        if calls:
+            sections.append("   🔴 Bearish Income (Short Call):")
+            for p in calls[:3]:
+                sections.append(
+                    f"      • {p.symbol} ${p.strike} Call exp {p.expiry} · "
+                    f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}"
+                )
         sections.append("")
 
-    # Medium-term
-    mt = report.medium_term
-    if mt.trade_count > 0:
-        sections.append(f"📊 Medium-Term Trades ({mt.trade_count} closed):")
-        sections.append(f"   Total P/L (SGD): ${mt.total_pl_sgd:.2f}")
-        if mt.total_return_pct:
-            sections.append(f"   Return: {mt.total_return_pct:.2f}%")
-        sections.append("")
-
-    # Risk alerts
+    # 4. Risk Alerts (Expiring Options)
     if report.risk_alerts:
         sections.append(format_risk_alert_message(report.risk_alerts, today=today))
+        sections.append("")
 
-    return "\n".join(sections) if sections else "📊 No analytics data available."
+    # 5. Diagnostic Summary (Fee drag & IV Crush)
+    fd = report.fee_drag
+    if fd.alert:
+        sections.append(f"💸 {fd.alert_message}")
+        sections.append("")
+    ic = report.iv_crush
+    if ic.risk_warning:
+        sections.append(f"📈 {ic.warning_message}")
+        sections.append("")
+
+    return "\n".join(sections).strip() if sections else "📊 No analytics data available."
+
 
 
 def main(argv=None) -> int:
     """CLI entry point for running analytics standalone."""
     import argparse
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

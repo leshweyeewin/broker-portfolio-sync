@@ -117,18 +117,92 @@ weekly job downstream of it. Each has its own entrypoint and PowerShell task
 
 | Cadence | Job | Entrypoint | Reads / Writes |
 |---------|-----|-----------|----------------|
-| Daily 06:00 | Portfolio sync | `python run.py` | fetch brokers → **writes** the sheet |
+| Daily 06:00 | Portfolio sync + Market Analytics | `python run.py --analytics` | fetch brokers → **writes** sheet + strategy tags, daily movers, earnings alerts & short option picks → Telegram |
 | Weekly (Sun) | Expiry watch | `python -m alerting.expiry` | reads Options → Telegram: contracts expiring ≤ 7 days |
 | Weekly (Sun) | Realized-P/L digest | `python -m alerting.weekly_pl_alert` | reads closed trades → Telegram: week's realized P/L by broker |
 | Weekly (Sun) | Lemon8 journal | `python -m lemon8.weekly_job` | reads closed trades → caption + card + blog draft, commits blog draft |
 | Weekly (Sun) | pancherry export | `python -m core.ticker_names` then `python -m pancherry_export --pr` | refreshes ticker names, regenerates `.ts`, opens/updates a Draft PR |
+| On-demand | Standalone Market Analytics | `python -m analytics.report --notify` | runs strategy tagging, diagnostics, movers, earnings & option screener |
 
 All weekly jobs are **fail-soft and read-only against the sheet** — a broker or
 GitHub being down degrades that leg without touching the sync or the others.
 
 ---
 
-## Content pipeline (Sheet → blog + social)
+## Analytics & Diagnostic Module (`analytics/`)
+
+A diagnostic and risk management layer that processes the Google Sheet data maintained by the sync.
+
+```mermaid
+flowchart TD
+    GS["Google Sheet (Stocks & Options)"] --> READ["PortfolioWriter.read_all_*_trades()"]
+    READ --> TAG["Strategy Tagger (tagger.py)<br/>• Earnings IV Crush (±1d of earnings)<br/>• Day Trades (same-day open & close)<br/>• Medium-Term (held ≥2 days)"]
+    TAG --> DIAG["Diagnostic Calculators (diagnostics.py)<br/>1. IV Crush: win/loss asymmetry (loss > 2× win)<br/>2. Fee Drag: day trade fees > 15% of gross profit<br/>3. Medium-Term: total realized P/L"]
+    TAG --> RISK["Expiry Risk Engine (risk_engine.py)<br/>Open options expiring in 1–14 days:<br/>• CLOSE POSITION (earnings IV capture)<br/>• ROLL SPREAD (overnight gap adjustment)<br/>• CUT TRADE (thesis invalidated)<br/>• ROLL TIMELINE (macro intact, roll monthly)<br/>• NEEDS REVIEW (technical check)"]
+    CHAIN["Tiger QuoteClient<br/>(Live option chains)"] --> SCR["Option Screener (screener.py)<br/>• IVP ≥ 70%<br/>• Delta 0.10–0.15<br/>• OI > 500<br/>• Spread ≤ $0.10"]
+    DIAG --> REP["Report & Alerts (report.py)"]
+    RISK --> REP
+    SCR --> REP
+    REP --> TG["Telegram Alert / CLI Output"]
+```
+
+### How to Check & Run Analysis
+
+You can run the analytics anytime in your terminal:
+
+```bash
+# 1. Run analysis and print report to terminal (read-only against your sheet)
+./.venv/Scripts/python.exe -m analytics.report
+
+# 2. Run analysis and send Telegram alert
+./.venv/Scripts/python.exe -m analytics.report --notify
+
+# 3. Run full sync and immediately output analytics
+./.venv/Scripts/python.exe run.py --analytics
+```
+
+---
+
+## Repository layout
+
+```
+broker-portfolio-sync/
+├─ adapters/              # broker adapters + common schema
+│  ├─ base.py             # ✅ Protocol + dataclasses (the contract)
+│  ├─ tiger.py            # ✅ Tiger (tigeropen)
+│  ├─ longbridge.py       # ✅ Longbridge (longport)
+│  └─ moomoo.py           # ✅ MooMoo (futu-api, via OpenD)
+├─ core/                  # pure pipeline logic
+│  ├─ fifo_pl.py          # ✅ FIFO realized/unrealized P/L + option expiry
+│  ├─ fx.py               # ✅ trade-date vs current, cached (Frankfurter)
+│  ├─ reconcile.py        # ✅ seeding + post-write qty check
+│  └─ ticker_names.py     # ✅ broker → {ticker: company name} cache (blog)
+├─ analytics/             # ✅ Portfolio analytics & option screener
+│  ├─ tagger.py           #    Strategy tagging (IV Crush, Day Trade, Medium-Term)
+│  ├─ earnings.py         #    Earnings date lookup (yfinance API + JSON cache)
+│  ├─ earnings_dates.json #    Local cache of quarterly earnings dates
+│  ├─ diagnostics.py      #    3 diagnostic calculators (IV crush, fee drag, alpha)
+│  ├─ risk_engine.py      #    1–14 DTE expiry risk engine + playbook signals
+│  ├─ screener.py         #    Live option screener via Tiger QuoteClient
+│  └─ report.py           #    Analytics orchestrator & Telegram report formatter
+├─ sheets/writer.py       # ✅ service-account auth, idempotent upsert, Tag & Reason
+├─ alerting/              # ✅ Telegram (stdlib urllib, best-effort)
+│  ├─ notify.py           #    core send
+│  ├─ expiry.py           # ✅ weekly expiry watch (≤ 7 days)
+│  └─ weekly_pl_alert.py  # ✅ weekly realized-P/L digest
+├─ lemon8/                # ✅ weekly journal (read-only): reader, journal,
+│                         #    card (SVG→PNG), blog commit, weekly_job
+├─ pancherry_export/      # ✅ .ts generation (exporter) + auto Draft PR (publish)
+├─ skills/                # ✅ lemon8-journal-writer skill
+├─ scripts/               # ✅ Windows Task Scheduler entrypoints (daily + weekly)
+├─ config/settings.py     # secrets from env / Secret Manager
+├─ run.py                 # ✅ entrypoint: fetch→[seed]→FIFO→FX→write→reconcile→log→alert
+├─ Dockerfile             # ✅ job container (+ .dockerignore)
+├─ DEPLOY.md              # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
+├─ opend/                 # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
+├─ tests/                 # ✅ test suite (260 passing tests)
+└─ requirements.txt
+```
 
 Downstream of the sync, the **Sheet is the single source of truth** for two weekly
 deliverables. Generation lives entirely in this repo (it needs the sheet schema,

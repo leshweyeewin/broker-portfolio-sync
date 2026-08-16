@@ -6,6 +6,7 @@ moomoo-api     # MooMoo SG via OpenD gateway (step 8 — implemented; import nam
 # Google Sheets writer (step 5) — service-account auth + Sheets v4 client
 google-api-python-client
 google-auth
+yfinance
 
 # Alerting (step 9) and FX use stdlib urllib only — no extra deps.
 

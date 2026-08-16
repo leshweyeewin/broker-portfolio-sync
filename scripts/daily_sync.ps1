@@ -31,7 +31,7 @@ if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out
 
 $log = Join-Path $logDir ("sync_" + (Get-Date).ToString("yyyyMMdd_HHmmss") + ".log")
 
-& "$repo\.venv\Scripts\python.exe" run.py *> $log
+& "$repo\.venv\Scripts\python.exe" run.py --analytics *> $log
 $exit = $LASTEXITCODE
 
 # Keep the log directory tidy — drop runs older than 30 days.

@@ -47,8 +47,11 @@ def _save_static_cache(data: dict[str, list[str]]) -> None:
 
 def _fetch_from_yfinance(ticker: str) -> Optional[list[date]]:
     """Try to pull historical earnings dates from yfinance. Returns None on failure."""
+    if not ticker.isalpha() or len(ticker) > 5:
+        return None
     try:
         import yfinance as yf  # type: ignore
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
     except ImportError:
         log.debug("yfinance not installed — skipping API earnings lookup")
         return None
@@ -69,8 +72,8 @@ def _fetch_from_yfinance(ticker: str) -> Optional[list[date]]:
 def get_earnings_dates(ticker: str) -> list[date]:
     """Return known earnings dates for ``ticker``, newest first.
 
-    Tries yfinance API first; on failure, falls back to the static JSON cache.
-    Results are cached in memory and persisted to disk for future offline use.
+    Tries static JSON cache first; on miss, tries yfinance API and caches.
+    Results are cached in memory for fast repeat lookups.
     """
     ticker = ticker.upper().strip()
 
@@ -78,22 +81,20 @@ def get_earnings_dates(ticker: str) -> list[date]:
     if ticker in _mem_cache:
         return _mem_cache[ticker]
 
-    # 2. Try API
-    api_dates = _fetch_from_yfinance(ticker)
-    if api_dates:
-        _mem_cache[ticker] = api_dates
-        # Persist to disk
-        disk = _load_static_cache()
-        disk[ticker] = [d.isoformat() for d in api_dates]
-        _save_static_cache(disk)
-        return api_dates
-
-    # 3. Fall back to static JSON
+    # 2. Check static JSON cache first
     disk = _load_static_cache()
-    if ticker in disk:
+    if ticker in disk and disk[ticker]:
         dates = sorted(date.fromisoformat(d) for d in disk[ticker])
         _mem_cache[ticker] = dates
         return dates
+
+    # 3. Try API if not in disk cache
+    api_dates = _fetch_from_yfinance(ticker)
+    if api_dates:
+        _mem_cache[ticker] = api_dates
+        disk[ticker] = [d.isoformat() for d in api_dates]
+        _save_static_cache(disk)
+        return api_dates
 
     # No data at all — safe default
     _mem_cache[ticker] = []
