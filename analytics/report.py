@@ -24,6 +24,7 @@ from analytics.market_scan import (
     scan_short_option_picks,
 )
 from analytics.screener import ScreenerResult
+from analytics.swing import SwingSetup, scan_swing_setups, format_swing_message
 from analytics.diagnostics import (
     IVCrushResult,
     FeeDragResult,
@@ -60,6 +61,7 @@ class AnalyticsReport:
     bearish_movers: list[TickerMover] = field(default_factory=list)
     upcoming_earnings: list[UpcomingEarnings] = field(default_factory=list)
     screener_picks: list[ScreenerResult] = field(default_factory=list)
+    swing_setups: list[SwingSetup] = field(default_factory=list)
 
 
 def run_analytics(
@@ -140,6 +142,11 @@ def run_analytics(
             except Exception as exc:
                 log.debug("Option screener scan error: %s", exc)
 
+            try:
+                report.swing_setups = scan_swing_setups(full_universe, today=today)
+            except Exception as exc:
+                log.debug("Swing setup scan error: %s", exc)
+
     return report
 
 
@@ -190,6 +197,12 @@ def format_telegram_report(report: AnalyticsReport, *, today: date | None = None
                     f"      • {p.symbol} ${p.strike} Call exp {p.expiry} · "
                     f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}"
                 )
+        sections.append("")
+
+    # 3b. Swing Setups (technical entries — Breakout / Pullback-buy)
+    swing_msg = format_swing_message(report.swing_setups)
+    if swing_msg:
+        sections.append(swing_msg)
         sections.append("")
 
     # 4. Risk Alerts (Expiring Options)
