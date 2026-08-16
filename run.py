@@ -195,43 +195,59 @@ def _realized_sgd_by_key(result: FifoResult, fx: FxRates) -> dict[str, Decimal]:
     }
 
 
-def _stock_rows(stocks: list[StockTrade], result: FifoResult, get_sgd: Callable[[str], Optional[Decimal]]) -> list[list[Any]]:
+def _stock_rows(
+    stocks: list[StockTrade],
+    result: FifoResult,
+    get_sgd: Callable[[str], Optional[Decimal]],
+    tags: dict[str, str] | None = None,
+) -> list[list[Any]]:
     by_key = result.realized_by_key
+    tags = tags or {}
     rows = []
     for t in stocks:
         r = by_key.get(t.dedup_key)
         is_closed = (t.dedup_key in result.fully_closed_keys) or (r is not None)
         status_str = "Closed" if is_closed else "Open"
+        tag = tags.get(t.dedup_key, "")
         if r is not None:
             rows.append(
                 build_stock_row(
                     t, status=status_str,
                     realized_pl=r.realized_pl,
                     realized_pl_sgd=get_sgd(t.dedup_key),
+                    tag=tag,
                 )
             )
         else:
-            rows.append(build_stock_row(t, status=status_str))
+            rows.append(build_stock_row(t, status=status_str, tag=tag))
     return rows
 
 
-def _option_rows(options: list[OptionTrade], result: FifoResult, get_sgd: Callable[[str], Optional[Decimal]]) -> list[list[Any]]:
+def _option_rows(
+    options: list[OptionTrade],
+    result: FifoResult,
+    get_sgd: Callable[[str], Optional[Decimal]],
+    tags: dict[str, str] | None = None,
+) -> list[list[Any]]:
     by_key = result.realized_by_key
+    tags = tags or {}
     rows = []
     for t in options:
         r = by_key.get(t.dedup_key)
         is_closed = (t.dedup_key in result.fully_closed_keys) or (r is not None)
         status_str = "Closed" if is_closed else "Open"
+        tag = tags.get(t.dedup_key, "")
         if r is not None:
             rows.append(
                 build_option_row(
                     t, status=status_str,
                     realized_pl=r.realized_pl,
                     realized_pl_sgd=get_sgd(t.dedup_key),
+                    tag=tag,
                 )
             )
         else:
-            rows.append(build_option_row(t, status=status_str))
+            rows.append(build_option_row(t, status=status_str, tag=tag))
     return rows
 
 
@@ -510,10 +526,13 @@ def run_sync(
         options = options + expiry_closes
         option_result = compute_option_pl(options)
 
-    # 4. Build rows (FX-converted, realized P/L joined onto closing rows).
+    # 4. Tag trades for the analytics Tag column.
+    stock_tags, option_tags = _compute_tags(stocks, options, stock_result, option_result)
+
+    # 5. Build rows (FX-converted, realized P/L joined onto closing rows, tagged).
     realized_sgd = {**_realized_sgd_by_key(stock_result, fx), **_realized_sgd_by_key(option_result, fx)}
-    stock_rows = _stock_rows(stocks, stock_result, realized_sgd.get)
-    option_rows = _option_rows(options, option_result, realized_sgd.get)
+    stock_rows = _stock_rows(stocks, stock_result, realized_sgd.get, stock_tags)
+    option_rows = _option_rows(options, option_result, realized_sgd.get, option_tags)
     txn_rows = _transaction_rows(cash, fx)
 
     # 5. Write idempotently.
@@ -682,6 +701,48 @@ def _build_adapters() -> list[BrokerAdapter]:
     return adapters
 
 
+def _compute_tags(
+    stocks: list[StockTrade],
+    options: list[OptionTrade],
+    stock_result: FifoResult,
+    option_result: FifoResult,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Compute strategy tags for all trades.
+
+    Best-effort: if the analytics module isn't available (e.g. yfinance not
+    installed), tags are empty strings and the Tag column stays blank.
+    """
+    try:
+        from analytics.tagger import tag_stock_trades, tag_option_trades
+    except ImportError:
+        return {}, {}
+
+    # Build the trade-dict format that the tagger expects
+    stock_dicts = []
+    for t in stocks:
+        is_closed = (t.dedup_key in stock_result.fully_closed_keys) or (
+            t.dedup_key in stock_result.realized_by_key
+        )
+        stock_dicts.append({
+            "trade": t,
+            "status": "Closed" if is_closed else "Open",
+            "raw": [],
+        })
+
+    option_dicts = []
+    for t in options:
+        is_closed = (t.dedup_key in option_result.fully_closed_keys) or (
+            t.dedup_key in option_result.realized_by_key
+        )
+        option_dicts.append({
+            "trade": t,
+            "status": "Closed" if is_closed else "Open",
+            "raw": [],
+        })
+
+    return tag_stock_trades(stock_dicts), tag_option_trades(option_dicts)
+
+
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sync broker portfolios into Google Sheets.")
     p.add_argument(
@@ -694,6 +755,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=lambda s: date.fromisoformat(s),
         default=None,
         help="Only fetch executions on/after this ISO date (default: full history).",
+    )
+    p.add_argument(
+        "--analytics",
+        action="store_true",
+        help="Run analytics report after sync (or standalone if no brokers are configured).",
     )
     return p.parse_args(argv)
 
@@ -709,28 +775,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from sheets.writer import PortfolioWriter, SheetClient
     from alerting.notify import notify_safe
 
-    adapters = _build_adapters()
-    if not adapters:
-        log.error("No brokers configured — nothing to sync. Set broker credentials.")
-        return 1
-
-    fx = FxRates()
     client = SheetClient(get_service_account_info(), get_spreadsheet_id())
     writer = PortfolioWriter(client)
 
-    result = run_sync(
-        adapters, writer, fx,
-        since=args.since, seed=args.seed, notifier=notify_safe,
-    )
+    # Run sync if brokers are configured
+    adapters = _build_adapters()
+    sync_exit = 0
+    if adapters:
+        fx = FxRates()
+        result = run_sync(
+            adapters, writer, fx,
+            since=args.since, seed=args.seed, notifier=notify_safe,
+        )
+        log.info(
+            "Run %s — stocks +%d/~%d, options +%d/~%d, txns +%d, reconciliation: %s",
+            result.status,
+            result.stocks_added, result.stocks_updated,
+            result.options_added, result.options_updated,
+            result.transactions_added, result.reconciliation,
+        )
+        sync_exit = 1 if result.status == "FAILED" else 0
+    elif not args.analytics:
+        log.error("No brokers configured — nothing to sync. Set broker credentials.")
+        return 1
 
-    log.info(
-        "Run %s — stocks +%d/~%d, options +%d/~%d, txns +%d, reconciliation: %s",
-        result.status,
-        result.stocks_added, result.stocks_updated,
-        result.options_added, result.options_updated,
-        result.transactions_added, result.reconciliation,
-    )
-    return 1 if result.status == "FAILED" else 0
+    # Run analytics if requested
+    if args.analytics:
+        try:
+            from analytics.report import run_analytics, format_telegram_report
+            report = run_analytics(writer)
+            message = format_telegram_report(report)
+            print(message)
+            notify_safe(message)
+            log.info("Analytics report sent.")
+        except Exception as exc:
+            log.error("Analytics failed: %s", exc, exc_info=True)
+            return 1
+
+    return sync_exit
 
 
 if __name__ == "__main__":

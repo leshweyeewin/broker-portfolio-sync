@@ -76,12 +76,12 @@ TRANSACTIONS_HEADERS = [
 STOCKS_HEADERS = [
     "Date", "Broker", "Ticker", "Action", "Qty", "Price", "Total",
     "Fee", "Currency", "Status", "Realized P/L", "Realized P/L (SGD)",
-    "_dedup_key", "Reason",
+    "_dedup_key", "Reason", "Tag",
 ]
 OPTIONS_HEADERS = [
     "Date", "Broker", "Strategy", "Stock", "Type", "Strike",
     "Qty", "Expiry", "Action", "Premium", "Total", "Fee", "Currency",
-    "Status", "P/L", "P/L (SGD)", "_dedup_key", "Reason",
+    "Status", "P/L", "P/L (SGD)", "_dedup_key", "Reason", "Tag",
 ]
 RUN_LOG_HEADERS = [
     "Timestamp", "Status", "Stocks Added", "Stocks Updated",
@@ -1059,11 +1059,13 @@ def build_stock_row(
     status: str = "Open",
     realized_pl: Optional[Decimal] = None,
     realized_pl_sgd: Optional[Decimal] = None,
+    tag: str = "",
 ) -> list[Any]:
     """Convert a StockTrade to a Stocks tab row.
 
     ``realized_pl`` and ``realized_pl_sgd`` are filled in for Sell rows by
     joining FifoResult.realized_by_key onto the trade's dedup_key.
+    ``tag`` is the strategy classification from the analytics tagger.
     """
     return [
         trade.date.isoformat(),
@@ -1080,6 +1082,7 @@ def build_stock_row(
         _fmt(realized_pl_sgd) if realized_pl_sgd is not None else "",
         trade.dedup_key,
         "",  # Reason — manual free-text; sync leaves blank, upsert preserves it
+        tag,
     ]
 
 
@@ -1088,6 +1091,7 @@ def build_option_row(
     status: str = "Open",
     realized_pl: Optional[Decimal] = None,
     realized_pl_sgd: Optional[Decimal] = None,
+    tag: str = "",
 ) -> list[Any]:
     """Convert an OptionTrade to an Options tab row."""
     return [
@@ -1109,6 +1113,7 @@ def build_option_row(
         _fmt(realized_pl_sgd) if realized_pl_sgd is not None else "",
         trade.dedup_key,
         "",  # Reason — manual free-text; sync leaves blank, upsert preserves it
+        tag,
     ]
 
 

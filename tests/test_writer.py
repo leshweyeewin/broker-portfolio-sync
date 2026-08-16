@@ -235,8 +235,8 @@ def test_col_letter_double():
 
 def test_col_letter_matches_header_widths():
     assert _col_letter(len(TRANSACTIONS_HEADERS)) == "H"
-    assert _col_letter(len(STOCKS_HEADERS)) == "N"   # trailing Reason column
-    assert _col_letter(len(OPTIONS_HEADERS)) == "R"  # trailing Reason column
+    assert _col_letter(len(STOCKS_HEADERS)) == "O"   # trailing Reason and Tag columns
+    assert _col_letter(len(OPTIONS_HEADERS)) == "S"  # trailing Reason and Tag columns
 
 
 # --------------------------------------------------------------------------- #
