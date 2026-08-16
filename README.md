@@ -5,16 +5,25 @@ accounts — **Longbridge**, **Tiger Brokers**, **MooMoo** — into a single,
 automation-native **Google Sheet**, updated daily and unattended. It replaces a
 manual copy-paste workflow into a legacy Excel workbook.
 
+Downstream, the same sheet feeds a **weekly content pipeline**: this repo also
+generates the [pancherry](https://pancherry.com) site's trading-journal data
+files and the Lemon8/TikTok post drafts (caption + transactions card + blog),
+opening them as review-only Draft PRs. The sheet is the single source of truth;
+the site is a pure consumer.
+
 > **Design source of truth:** [`BUILD_SPEC.md`](https://claude.ai/public/artifacts/b935403a-b127-4964-ade7-545da2383c71) (external artifact).
 > **Continuing the build?** Start with [`HANDOFF.md`](HANDOFF.md) — it records
 > what's built, the decisions new code must respect, and step-by-step next actions.
 
 **Non-goals:** no trading/order placement, no investment advice, no migration of
-legacy history (fresh start with cost-basis seeding).
+legacy history (fresh start with cost-basis seeding). No auto-publishing — social
+posts are uploaded by hand; site PRs are merged by hand.
 
 ---
 
 ## Build status
+
+**Core sync (daily):**
 
 | # | Step | Module | Status |
 |---|------|--------|--------|
@@ -27,9 +36,20 @@ legacy history (fresh start with cost-basis seeding).
 | 7 | Seeding + reconciliation | `core/reconcile.py` | ✅ done |
 | 8 | MooMoo adapter + OpenD sidecar | `adapters/moomoo.py`, `opend/` | ✅ done |
 | 9 | Alerting + Run Log + entrypoint + deploy | `alerting/`, `run.py`, `Dockerfile`, `DEPLOY.md` | ✅ done |
-| 10 | Lemon8 journal module | `lemon8/`, `skills/` | ⬜ next |
+| 10 | Option expiry lifecycle (ITM assignment / OTM worthless) | `core/fifo_pl.py`, `run.py` | ✅ done |
+| 11 | Dashboard rolling realized P/L (Week / Month / Year) | `sheets/writer.py` | ✅ done |
 
-**115 tests passing.**
+**Weekly jobs + content pipeline:**
+
+| # | Step | Module | Status |
+|---|------|--------|--------|
+| 12 | Expiry watch + realized-P/L digest (Telegram) | `alerting/expiry.py`, `alerting/weekly_pl_alert.py` | ✅ done |
+| 13 | Lemon8 weekly journal (caption + card + blog draft) | `lemon8/`, `skills/` | ✅ done |
+| 14 | pancherry export → `.ts` data files + auto Draft PR | `pancherry_export/` | ✅ done |
+| 15 | Broker ticker-name cache (blog company names) | `core/ticker_names.py` | ✅ done |
+| 16 | Per-trade *which/why* (Strategy/Action + manual `Reason`) | `lemon8/`, `sheets/writer.py` | ✅ done |
+
+**232 tests passing.**
 
 ---
 
@@ -62,6 +82,13 @@ flowchart LR
     GS["Google Sheet<br/>(Sheets API, service account)"]
     ALERT["Alert (Telegram/email)"]
 
+    subgraph Weekly["Weekly jobs (read the sheet)"]
+        WX["expiry watch"]
+        WPL["realized-P/L digest"]
+        WL8["lemon8 journal<br/>caption · card · blog"]
+        WPE["pancherry export<br/>.ts + Draft PR"]
+    end
+
     LB --> AD
     TG --> AD
     OPEND --> AD
@@ -71,12 +98,20 @@ flowchart LR
     REC -->|mismatch| ALERT
     Job -->|failure| ALERT
 
-    CS["Cloud Scheduler (daily)"] -.triggers.-> Job
+    GS --> Weekly
+    WX --> ALERT
+    WPL --> ALERT
+    WL8 -->|"blog draft · Telegram"| ALERT
+    WPE -->|"Draft PR · Telegram"| ALERT
+
+    CSD["Cloud Scheduler (daily 06:00)"] -.triggers.-> Job
+    CSW["Cloud Scheduler (weekly, Sun)"] -.triggers.-> Weekly
 ```
 
 **Runner:** Cloud Run job triggered by Cloud Scheduler. MooMoo's OpenD gateway
 runs as a sidecar (Cloud Run multi-container). Bootstrap alternative: GitHub
-Actions cron for the Longbridge + Tiger legs (no gateway needed).
+Actions cron for the Longbridge + Tiger legs (no gateway needed). Locally on
+Windows, the daily and weekly jobs run via Task Scheduler (`scripts/*.ps1`).
 
 **Secrets:** Google Secret Manager (or GitHub secrets). Never in code, repo, or
 the sheet.
@@ -111,6 +146,25 @@ flowchart TD
 
 ---
 
+## Scheduled jobs
+
+One daily writer keeps the sheet current; everything else is a **read-only**
+weekly job downstream of it. Each has its own entrypoint and PowerShell task
+(`scripts/register_*_task.ps1` to install; `scripts/*.ps1` to run).
+
+| Cadence | Job | Entrypoint | Reads / Writes |
+|---------|-----|-----------|----------------|
+| Daily 06:00 | Portfolio sync | `python run.py` | fetch brokers → **writes** the sheet |
+| Weekly (Sun) | Expiry watch | `python -m alerting.expiry` | reads Options → Telegram: contracts expiring ≤ 7 days |
+| Weekly (Sun) | Realized-P/L digest | `python -m alerting.weekly_pl_alert` | reads closed trades → Telegram: week's realized P/L by broker |
+| Weekly (Sun) | Lemon8 journal | `python -m lemon8.weekly_job` | reads closed trades → caption + card + blog draft, commits blog draft |
+| Weekly (Sun) | pancherry export | `python -m core.ticker_names` then `python -m pancherry_export --pr` | refreshes ticker names, regenerates `.ts`, opens/updates a Draft PR |
+
+All weekly jobs are **fail-soft and read-only against the sheet** — a broker or
+GitHub being down degrades that leg without touching the sync or the others.
+
+---
+
 ## Content pipeline (Sheet → blog + social)
 
 Downstream of the sync, the **Sheet is the single source of truth** for two weekly
@@ -122,9 +176,12 @@ site is a pure **consumer** that just renders the generated data files.
 flowchart TD
     GS["Google Sheet<br/>closed trades · P/L · open book"]
 
+    BRK["Broker APIs"]
+    TN["core/ticker_names<br/>company-name cache<br/>(ticker_names.json)"]
+
     subgraph PROD["broker-portfolio-sync (Python) — PRODUCER"]
         PE["pancherry_export<br/>• openPositions.ts (full regen, keeps hidden:)<br/>• weeklyJournals.ts (insert draft, then refresh-in-place)"]
-        L8["lemon8/weekly_job<br/>caption + card.png + blog draft"]
+        L8["lemon8/weekly_job<br/>caption + card.png + blog draft<br/>(kind + Reason per trade)"]
     end
 
     PRB["pancherry-drafts branch<br/>→ Draft PR (auto)"]
@@ -139,6 +196,7 @@ flowchart TD
     REVIEW{"Human: review PR<br/>polish prose · merge"}
     CF["Cloudflare Pages<br/>pancherry.com/trading"]
 
+    BRK -->|"names (all 3 brokers)"| TN --> PE
     GS --> PE
     GS --> L8
     PE -->|"commit .ts via API"| PRB --> REVIEW
@@ -146,6 +204,11 @@ flowchart TD
     L8 -->|"blog draft"| L8B
     L8 --> UP
 ```
+
+**Names are decoupled from the daily sync** — `python -m core.ticker_names`
+connects to all three brokers on its own (Tiger/Longbridge direct, MooMoo via
+OpenD), fail-soft per broker, and caches `ticker → company name` for the open
+-positions grid. The weekly export runs it first, then regenerates the `.ts`.
 
 **Weekly ritual:** run `python -m pancherry_export --pr` → review the Draft PR
 (edit prose if the highlights/narrative drifted — the run flags it) → merge.
@@ -209,7 +272,8 @@ classDiagram
     class Position {
         broker, asset_type, symbol
         qty, avg_cost:Decimal
-        currency, market_price
+        currency, name, market_price
+        option_type, strike, expiry
     }
     BrokerAdapter --> CashMovement
     BrokerAdapter --> StockTrade
@@ -255,7 +319,7 @@ Machine-owned tabs — written by the pipeline, never hand-edited:
 | **Transactions** | External cash flow only (Deposit/Withdrawal), per broker, native + SGD |
 | **Stocks** | One row per buy/sell execution + computed holdings summary (qty, avg cost, market value, unrealized P/L) |
 | **Options** | One row per option execution + summary (mirrors the user's existing options tracking) |
-| **Dashboard** | Per-broker rollup: deposits, net capital in, account value, fees, realized/unrealized P/L, ROI — per currency and SGD |
+| **Dashboard** | Per-broker rollup: deposits, net capital in, account value, fees, unrealized P/L, ROI, plus **rolling realized P/L** for This Week / This Month / This Year — per currency and SGD |
 | **Run Log** | One row per run: status, rows added/updated, FX rates used, reconciliation result, warnings/errors |
 
 A hidden `_dedup_key` column on each data tab drives idempotent upserts. The
@@ -269,30 +333,35 @@ preserves it on every run (see the content pipeline above).
 
 ```
 broker-portfolio-sync/
-├─ adapters/          # broker adapters + common schema
-│  ├─ base.py         # ✅ Protocol + dataclasses (the contract)
-│  ├─ tiger.py        # ✅ Tiger (tigeropen)
-│  ├─ longbridge.py   # ✅ Longbridge (longport)
-│  └─ moomoo.py       # ✅ MooMoo (moomoo-api, via OpenD)
-├─ core/              # pure pipeline logic
-│  ├─ fifo_pl.py      # ✅ FIFO realized/unrealized P/L
-│  ├─ fx.py           # ✅ trade-date vs current, cached (Frankfurter)
-│  ├─ normalize.py    # ⬜ centralize §8 rules
-│  ├─ dedup.py        # (dedup helpers currently in base.py)
-│  └─ reconcile.py    # ✅ seeding + post-write qty check
-├─ sheets/writer.py   # ✅ service-account auth, idempotent upsert
-├─ alerting/notify.py # ✅ step 9 — Telegram (stdlib urllib, best-effort)
-├─ lemon8/            # ⬜ step 10 — weekly journal module (read-only)
-├─ skills/            # ⬜ step 10 — lemon8-journal-writer skill
-├─ config/settings.py # secrets from env / Secret Manager
-├─ run.py             # ✅ entrypoint: fetch→[seed]→FIFO→FX→write→reconcile→log→alert
-├─ Dockerfile         # ✅ job container (+ .dockerignore)
-├─ DEPLOY.md          # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
-├─ opend/             # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
-├─ tests/             # ✅ FIFO, schema, adapter, dedup, run, notify (115)
+├─ adapters/              # broker adapters + common schema
+│  ├─ base.py             # ✅ Protocol + dataclasses (the contract)
+│  ├─ tiger.py            # ✅ Tiger (tigeropen)
+│  ├─ longbridge.py       # ✅ Longbridge (longport)
+│  └─ moomoo.py           # ✅ MooMoo (futu-api, via OpenD)
+├─ core/                  # pure pipeline logic
+│  ├─ fifo_pl.py          # ✅ FIFO realized/unrealized P/L + option expiry
+│  ├─ fx.py               # ✅ trade-date vs current, cached (Frankfurter)
+│  ├─ reconcile.py        # ✅ seeding + post-write qty check
+│  └─ ticker_names.py     # ✅ broker → {ticker: company name} cache (blog)
+├─ sheets/writer.py       # ✅ service-account auth, idempotent upsert, Reason-preserve
+├─ alerting/              # ✅ Telegram (stdlib urllib, best-effort)
+│  ├─ notify.py           #    core send
+│  ├─ expiry.py           # ✅ weekly expiry watch (≤ 7 days)
+│  └─ weekly_pl_alert.py  # ✅ weekly realized-P/L digest
+├─ lemon8/                # ✅ weekly journal (read-only): reader, journal,
+│                         #    card (SVG→PNG), blog commit, weekly_job
+├─ pancherry_export/      # ✅ .ts generation (exporter) + auto Draft PR (publish)
+├─ skills/                # ✅ lemon8-journal-writer skill
+├─ scripts/               # ✅ Windows Task Scheduler entrypoints (daily + weekly)
+├─ config/settings.py     # secrets from env / Secret Manager
+├─ run.py                 # ✅ entrypoint: fetch→[seed]→FIFO→FX→write→reconcile→log→alert
+├─ Dockerfile             # ✅ job container (+ .dockerignore)
+├─ DEPLOY.md              # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
+├─ opend/                 # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
+├─ tests/                 # ✅ FIFO, schema, adapters, run, lemon8, export (232)
 ├─ requirements.txt
-├─ BUILD_SPEC.md      # (external link — source of truth)
-└─ HANDOFF.md         # continuation spec for the next builder
+├─ BUILD_SPEC.md          # (external link — source of truth)
+└─ HANDOFF.md             # continuation spec for the next builder
 ```
 
 ---
