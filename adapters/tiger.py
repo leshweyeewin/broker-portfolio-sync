@@ -555,6 +555,7 @@ class TigerAdapter:
                     qty=qty,
                     avg_cost=dec(pos.average_cost),
                     currency=self._currency(contract),
+                    name=("" if is_option else str(getattr(contract, "name", "") or "")),
                     market_price=(
                         dec(pos.market_price) if pos.market_price is not None else None
                     ),

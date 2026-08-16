@@ -431,6 +431,7 @@ class MooMooAdapter:
                             qty=qty,
                             avg_cost=dec(row["cost_price"]),
                             currency=self._row_currency(row, ticker_market=market),
+                            name=str(row.get("stock_name", "") or ""),
                             market_price=market_price,
                             as_of=today,
                         )

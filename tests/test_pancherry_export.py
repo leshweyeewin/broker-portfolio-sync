@@ -158,6 +158,18 @@ def test_render_open_positions_shape_and_hidden_flag():
     assert ts.rstrip().endswith("];")
 
 
+def test_render_open_positions_emits_names_when_provided():
+    positions = [
+        OpenPositionData(ticker="MSFT", shares=Decimal(10), legs=[]),
+        OpenPositionData(ticker="07709", shares=Decimal(400), legs=[]),   # no name in map
+    ]
+    ts = render_open_positions_ts(positions, names={"MSFT": "Microsoft"})
+    assert "name?: string;" in ts   # interface carries the optional field
+    assert "{ ticker: 'MSFT', name: \"Microsoft\", shares: 10, legs: [] }," in ts
+    # A ticker with no cached name renders without a name field.
+    assert "{ ticker: '07709', shares: 400, legs: [] }," in ts
+
+
 def test_write_open_positions_preserves_existing_hidden(tmp_path):
     path = tmp_path / "openPositions.ts"
     path.write_text(

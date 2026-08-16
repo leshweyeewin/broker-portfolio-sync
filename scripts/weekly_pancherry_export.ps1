@@ -24,7 +24,12 @@ if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out
 
 $log = Join-Path $logDir ("pancherry_" + (Get-Date).ToString("yyyyMMdd_HHmmss") + ".log")
 
-& "$repo\.venv\Scripts\python.exe" -m pancherry_export --pr *> $log
+# Refresh company names from the brokers first (Tiger/Longbridge direct; MooMoo
+# needs OpenD up). Best-effort — a broker that's down is skipped, cached names
+# kept — and it never blocks the export.
+& "$repo\.venv\Scripts\python.exe" -m core.ticker_names *>> $log
+
+& "$repo\.venv\Scripts\python.exe" -m pancherry_export --pr *>> $log
 $exit = $LASTEXITCODE
 
 # Keep the log directory tidy — drop pancherry logs older than 30 days.

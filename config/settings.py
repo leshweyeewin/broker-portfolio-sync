@@ -160,6 +160,13 @@ def get_pancherry_repo() -> str:
     return _optional("PANCHERRY_REPO", r"D:\Learn\Google\pancherry")
 
 
+def get_ticker_names_path() -> str:
+    """Local JSON cache of ticker → security-name, refreshed on demand from the
+    brokers (``python -m core.ticker_names``) and read by pancherry_export.
+    Override with TICKER_NAMES_PATH; defaults to a repo-local file."""
+    return _optional("TICKER_NAMES_PATH", "ticker_names.json")
+
+
 def get_pancherry_gh_settings() -> dict:
     """GitHub target for the auto-PR of the pancherry data files (Phase 3).
 

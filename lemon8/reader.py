@@ -172,16 +172,26 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
 def _return_pct(total: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:
     """Realized P/L as a % of the capital at risk on a *long* close.
 
-    On a long close the sheet row is the sell, whose ``Total`` is the (positive)
-    proceeds, and ``cost = proceeds - realized_pl``. Return = pl / cost.
+    The single trustworthy case is a **long position closed by a SALE**: that
+    row's ``Total`` is the (positive) sale proceeds, so ``cost = proceeds - P/L``
+    is the real cost basis and ``return = P/L / cost``.
 
-    Returns ``None`` when that can't be derived — no ``Total``/``P/L``, or a
-    non-positive derived cost (e.g. a short close, whose opening proceeds aren't
-    on this row). Callers must not fabricate a percentage in that case.
+    Any other closing row can't yield a % from one row, so we return ``None``:
+    - ``Total``/``P/L`` missing.
+    - ``Total <= 0`` — a BUY-to-close (short cover / short-option buyback). Here
+      ``Total`` is the buyback *outflow*, not the cost basis; the opening premium
+      that WAS the capital at risk isn't on this row. (Using ``abs(Total)`` here
+      was the old bug: it manufactured a denominator and printed nonsense like a
+      short put buyback showing +4058%.)
+    - Derived ``cost <= 0``.
+
+    Callers must not fabricate a percentage when this returns ``None``.
     """
     if total is None or realized_pl is None:
         return None
-    cost = abs(total) - realized_pl
+    if total <= 0:                       # buy-to-close: cost basis not on this row
+        return None
+    cost = total - realized_pl
     if cost <= 0:
         return None
     return (realized_pl / cost) * Decimal(100)

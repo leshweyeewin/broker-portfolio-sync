@@ -483,6 +483,7 @@ class Position:
     qty: Decimal
     avg_cost: Decimal
     currency: str
+    name: str = ""  # broker-reported security name (best-effort; "" if unavailable)
     market_price: Optional[Decimal] = None
     as_of: Optional[date] = None
     # Option-only fields (None for stocks)
@@ -496,6 +497,7 @@ class Position:
         object.__setattr__(self, "qty", dec(self.qty))
         object.__setattr__(self, "avg_cost", dec(self.avg_cost))
         object.__setattr__(self, "currency", self.currency.strip().upper())
+        object.__setattr__(self, "name", (self.name or "").strip())
         if self.market_price is not None:
             object.__setattr__(self, "market_price", dec(self.market_price))
         if self.strike is not None:

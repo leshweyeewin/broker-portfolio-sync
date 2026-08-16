@@ -182,6 +182,7 @@ export interface OptionLeg {
 
 export interface OpenPosition {
   ticker: string;
+  name?: string;    // broker-reported security name (auto-filled from the sync)
   shares: number;   // net equity; negative = short; 0 = options-only
   legs: OptionLeg[];
   hidden?: boolean; // set true to drop from the grid
@@ -192,14 +193,23 @@ export const openPositions: OpenPosition[] = [
 
 
 def render_open_positions_ts(
-    positions: list[OpenPositionData], *, hidden: Optional[set[str]] = None
+    positions: list[OpenPositionData],
+    *,
+    hidden: Optional[set[str]] = None,
+    names: Optional[dict[str, str]] = None,
 ) -> str:
     """Render the whole ``openPositions.ts`` file. ``hidden`` tickers get their
-    flag re-applied so user curation survives the regen."""
+    flag re-applied so user curation survives the regen; ``names`` (ticker →
+    security name, from the sync cache) fills the optional ``name`` field."""
     hidden = hidden or set()
+    names = names or {}
     lines = [_OPEN_POSITIONS_HEADER]
     for pos in positions:
-        head = f"  {{ ticker: '{pos.ticker}', shares: {_num(pos.shares)}"
+        head = f"  {{ ticker: '{pos.ticker}'"
+        nm = (names.get(pos.ticker) or "").strip()
+        if nm:
+            head += f", name: {_ts_str(nm)}"
+        head += f", shares: {_num(pos.shares)}"
         if pos.ticker in hidden:
             head += ", hidden: true"
         if not pos.legs:
@@ -216,11 +226,14 @@ def render_open_positions_ts(
     return "\n".join(lines)
 
 
-def write_open_positions(positions: list[OpenPositionData], path: Path) -> None:
-    """Regenerate ``openPositions.ts`` at ``path``, preserving hidden flags."""
+def write_open_positions(
+    positions: list[OpenPositionData], path: Path, *, names: Optional[dict[str, str]] = None
+) -> None:
+    """Regenerate ``openPositions.ts`` at ``path``, preserving hidden flags and
+    filling security names from the ``names`` map."""
     path = Path(path)
     hidden = _existing_hidden(path)
-    path.write_text(render_open_positions_ts(positions, hidden=hidden), encoding="utf-8")
+    path.write_text(render_open_positions_ts(positions, hidden=hidden, names=names), encoding="utf-8")
 
 
 def _existing_hidden(path: Path) -> set[str]:

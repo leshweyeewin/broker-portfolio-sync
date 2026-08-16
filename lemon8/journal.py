@@ -17,24 +17,52 @@ from dataclasses import dataclass
 from datetime import date
 
 from lemon8.reader import ClosedPosition
-from lemon8.card import render_card_svg
+from lemon8.card import render_trade_table_pages
 
 
 @dataclass(frozen=True)
 class WeeklyJournal:
-    """One week's journal deliverable: a single caption + blog + N card images."""
+    """One week's journal deliverable: a single caption + blog + table images.
+
+    ``table_pages`` are 3:4 portrait SVGs — a trade-log table (one row per closed
+    trade, both stocks and options) split across as many pages as it takes to
+    stay readable. This is the post's image carousel.
+    """
 
     week_ending: date
     positions: list[ClosedPosition]
     show_dollar_amounts: bool
     caption: str
     blog_draft: str
-    cards: list[tuple[ClosedPosition, str]]  # (position, card_svg) — one screenshot each
+    table_pages: list[str]  # one SVG per portrait page
 
 
 # --------------------------------------------------------------------------- #
 # Small shared formatters
 # --------------------------------------------------------------------------- #
+
+def _bold(s: str) -> str:
+    """Map ASCII letters/digits to Unicode sans-serif bold (𝗔-𝗭, 𝗮-𝘇, 𝟬-𝟵).
+
+    Social captions (Lemon8/TikTok) are plain-text boxes that don't render
+    Markdown, so ``**bold**`` shows the asterisks literally. Unicode bold survives
+    a copy-paste and displays bold in the post. Only used in the caption — the
+    blog is real Markdown. Never apply to hashtags: bold letters aren't matched as
+    tags.
+    """
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if 0x41 <= o <= 0x5A:      # A-Z
+            out.append(chr(0x1D5D4 + o - 0x41))
+        elif 0x61 <= o <= 0x7A:    # a-z
+            out.append(chr(0x1D5EE + o - 0x61))
+        elif 0x30 <= o <= 0x39:    # 0-9
+            out.append(chr(0x1D7EC + o - 0x30))
+        else:
+            out.append(ch)
+    return "".join(out)
+
 
 def _return_str(pos: ClosedPosition, *, dash: str = "Closed") -> str:
     return f"{pos.return_pct:+.1f}%" if pos.return_pct is not None else dash
@@ -64,30 +92,40 @@ def format_weekly_caption(
 ) -> str:
     """Format the single Lemon8 / TikTok caption for the week's post.
 
-    Lists every closed trade with its return; the image carousel carries the
-    per-trade cards. Percentage-only unless ``show_dollar_amounts=True``.
+    A summary line + the biggest movers only — not every trade (a busy week is
+    150+, which would be an unreadable caption; the full list lives in the table
+    images). Percentage-only unless ``show_dollar_amounts=True``.
     """
+    title = _bold(f"Weekly Trade Journal — week ending {week_ending:%d %b %Y}")
     if not positions:
-        return (
-            f"📊 Weekly Trade Journal — week ending {week_ending:%d %b %Y}\n\n"
-            "No trades closed this week. Staying patient. 🧘"
-        )
+        return f"📊 {title}\n\nNo trades closed this week. Staying patient. 🧘"
 
+    wins = sum(1 for p in positions if p.is_win is True)
+    losses = sum(1 for p in positions if p.is_win is False)
     lines = [
-        f"📊 Weekly Trade Journal — week ending {week_ending:%d %b %Y}",
+        f"📊 {title}",
         "",
-        f"{len(positions)} trade(s) closed this week:",
+        _bold(f"{len(positions)} trades closed · {wins} wins · {losses} losses"),
     ]
-    for pos in positions:
-        line = f"{_win_emoji(pos)} {pos.label}: {_return_str(pos)}"
-        if show_dollar_amounts and pos.realized_pl is not None:
-            line += f" ({pos.realized_pl:+.2f} {pos.currency})"
-        lines.append(line)
 
-    tags = " ".join(f"#{s}" for s in _unique_symbols(positions))
+    movers = sorted((p for p in positions if p.return_pct is not None), key=lambda p: p.return_pct)
+    if movers:
+        top: list[ClosedPosition] = []
+        for pos in movers[-3:][::-1] + movers[:3]:   # top winners, then top losers
+            if pos not in top:                        # dedupe when few movers overlap
+                top.append(pos)
+        lines.append("")
+        lines.append("Top movers:")
+        for pos in top:
+            line = f"{_win_emoji(pos)} {_bold(f'{pos.label}: {_return_str(pos)}')}"
+            if show_dollar_amounts and pos.realized_pl is not None:
+                line += f" ({pos.realized_pl:+.2f} {pos.currency})"
+            lines.append(line)
+
+    tags = " ".join(f"#{s}" for s in _unique_symbols(positions)[:12])
     lines.extend([
         "",
-        "👇 Full breakdown & reasoning on the blog:",
+        "👇 Full trade log in the images · breakdown on the blog:",
         blog_url if blog_url else "[Link in bio / Blog Draft]",
         "",
         f"#TradingJournal #Investing #OptionsTrading #StockMarket {tags}".rstrip(),
@@ -105,11 +143,12 @@ def format_weekly_blog(
     *,
     show_dollar_amounts: bool = False,
 ) -> str:
-    """Format the single Markdown blog draft covering all of the week's trades.
+    """Format the single Markdown blog draft for the week.
 
-    One section per trade (percentage + context); rationale is left as a TODO
-    for the user to fill before publishing — the numbers are automatic, the
-    story is not.
+    A summary (counts), the biggest movers, and a full trade table — one row per
+    closed trade, both stocks and options. Scales to a busy week (100+ trades)
+    without becoming a hundred prose stubs; the rationale is a single TODO for
+    the user to fill before publishing.
     """
     wins = sum(1 for p in positions if p.is_win is True)
     losses = sum(1 for p in positions if p.is_win is False)
@@ -118,47 +157,63 @@ def format_weekly_blog(
         f"# Weekly Trading Journal — week ending {week_ending.isoformat()}",
         "",
     ]
-    if positions:
-        lines.append(
-            f"**{len(positions)} position(s) closed** this week — "
-            f"{wins} win(s), {losses} loss(es)."
-        )
-    else:
-        lines.append("**No positions closed** this week.")
-    lines.append("")
-
-    for pos in positions:
-        lines.extend(_blog_section(pos, show_dollar_amounts))
+    if not positions:
+        lines.extend([
+            "**No positions closed** this week.",
+            "",
+            "---",
+            "_Generated automatically from portfolio sync logs._",
+        ])
+        return "\n".join(lines)
 
     lines.extend([
+        f"**{len(positions)} position(s) closed** this week — "
+        f"{wins} win(s), {losses} loss(es).",
+        "",
+    ])
+
+    movers = sorted((p for p in positions if p.return_pct is not None), key=lambda p: p.return_pct)
+    if movers:
+        lines.append("## Biggest movers")
+        lines.append("")
+        for p in movers[-3:][::-1]:
+            lines.append(f"- 🚀 **{p.label}** — `{_return_str(p, dash='N/A')}`")
+        for p in movers[:3]:
+            lines.append(f"- 📉 **{p.label}** — `{_return_str(p, dash='N/A')}`")
+        lines.append("")
+
+    lines.extend(_blog_trade_table(positions, show_dollar_amounts))
+
+    lines.extend([
+        "## Rationale & lessons",
+        "",
+        "_TODO — add your notes before publishing._",
+        "",
         "---",
         "_Generated automatically from portfolio sync logs._",
     ])
     return "\n".join(lines)
 
 
-def _blog_section(pos: ClosedPosition, show_dollar_amounts: bool) -> list[str]:
-    out = [
-        f"## {_win_emoji(pos)} {pos.label} — `{_return_str(pos, dash='N/A')}`",
-        "",
-        f"- **Asset:** {pos.asset.capitalize()}",
-        f"- **Closed:** {pos.close_date}",
-    ]
-    if pos.asset == "option":
-        if pos.strategy:
-            out.append(f"- **Strategy:** {pos.strategy}")
-        if pos.strike:
-            out.append(f"- **Strike:** {pos.strike}")
-        if pos.expiry:
-            out.append(f"- **Expiry:** {pos.expiry}")
-    if show_dollar_amounts and pos.realized_pl is not None:
-        out.append(f"- **Realized P/L:** `{pos.realized_pl:+.2f} {pos.currency}`")
+def _blog_trade_table(positions: list[ClosedPosition], show_dollar_amounts: bool) -> list[str]:
+    """A Markdown table of every closed trade, most-recent first."""
+    dollars = show_dollar_amounts
+    header = "| Date | Instrument | Asset | Result | Return % |"
+    rule = "|------|------------|-------|--------|----------|"
+    if dollars:
+        header = header[:-1] + " P/L |"
+        rule = rule[:-1] + "------|"
 
-    out.extend([
-        "",
-        "_Rationale & lessons: TODO — add your notes before publishing._",
-        "",
-    ])
+    out = ["## All closed trades", "", header, rule]
+    for p in sorted(positions, key=lambda p: (p.close_date, p.label), reverse=True):
+        result = "Win" if p.is_win is True else ("Loss" if p.is_win is False else "—")
+        pct = _return_str(p, dash="—")
+        row = f"| {p.close_date} | {p.label} | {p.asset.capitalize()} | {result} | {pct} |"
+        if dollars:
+            pl = f"{p.realized_pl:+.2f} {p.currency}" if p.realized_pl is not None else "—"
+            row = row[:-1] + f" {pl} |"
+        out.append(row)
+    out.append("")
     return out
 
 
@@ -180,15 +235,12 @@ def generate_weekly_journal(
     blog_draft = format_weekly_blog(
         positions, week_ending, show_dollar_amounts=show_dollar_amounts
     )
-    cards = [
-        (pos, render_card_svg(pos, show_dollar_amounts=show_dollar_amounts))
-        for pos in positions
-    ]
+    table_pages = render_trade_table_pages(positions, week_ending)
     return WeeklyJournal(
         week_ending=week_ending,
         positions=positions,
         show_dollar_amounts=show_dollar_amounts,
         caption=caption,
         blog_draft=blog_draft,
-        cards=cards,
+        table_pages=table_pages,
     )

@@ -251,7 +251,8 @@ class LongbridgeAdapter:
                     as_of=today,
                 )
                 if opt is None:
-                    positions.append(Position(asset_type=AssetType.STOCK, symbol=code, **common))
+                    name = str(getattr(pos, "symbol_name", "") or "")
+                    positions.append(Position(asset_type=AssetType.STOCK, symbol=code, name=name, **common))
                 else:
                     underlying, otype, strike, expiry = opt
                     positions.append(Position(

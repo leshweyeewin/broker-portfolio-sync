@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -21,6 +22,10 @@ from typing import Callable, Optional
 
 _API = "https://api.github.com"
 _TIMEOUT = 15
+
+# A dated draft filename, e.g. "2026-08-14-AAPL.md". Legacy per-trade drafts
+# match this; the current one-per-week file is "<date>-weekly-journal.md".
+_DATED_DRAFT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-.+\.md$")
 
 # (method, url, headers, body_bytes | None) -> (status_code, response_bytes)
 Transport = Callable[[str, str, dict, Optional[bytes]], "tuple[int, bytes]"]
@@ -35,6 +40,15 @@ class CommittedDraft:
     path: str
     url: str        # html_url of the committed file (may be "")
     updated: bool   # True if it replaced an existing file at that path
+
+
+def _gh_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "broker-portfolio-sync/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
 
 def _urllib_transport(method: str, url: str, headers: dict, body: Optional[bytes]):
@@ -70,12 +84,7 @@ def commit_blog_drafts(
     prefix = (settings.get("path") or "").strip("/")
     transport = transport or _urllib_transport
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "broker-portfolio-sync/1.0",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+    headers = _gh_headers(token)
 
     out: list[CommittedDraft] = []
     for filename, content in items:
@@ -112,3 +121,64 @@ def commit_blog_drafts(
             )
         )
     return out
+
+
+def prune_legacy_drafts(
+    *,
+    settings: dict,
+    transport: Optional[Transport] = None,
+) -> list[str]:
+    """Delete legacy one-draft-per-trade files from the drafts branch.
+
+    The journal is now a single ``<date>-weekly-journal.md`` per week; earlier
+    runs committed a ``<date>-<ticker>.md`` for every trade. This lists the
+    drafts directory and deletes the dated files that are NOT weekly journals,
+    leaving every ``-weekly-journal.md`` (past and present) in place. Returns
+    the repo paths deleted.
+
+    Self-healing: safe to call every run — once the old files are gone it just
+    lists and deletes nothing. Only touches files matching the dated draft
+    pattern, so unrelated files (e.g. a README) are never removed.
+    """
+    token = settings.get("token")
+    repo = settings.get("repo")
+    if not token or not repo:
+        raise BlogCommitError("GitHub not configured (need GITHUB_TOKEN and BLOG_REPO).")
+    branch = settings.get("branch") or "lemon8-drafts"
+    prefix = (settings.get("path") or "").strip("/")
+    transport = transport or _urllib_transport
+    headers = _gh_headers(token)
+
+    dir_url = f"{_API}/repos/{repo}/contents/{prefix}" if prefix else f"{_API}/repos/{repo}/contents"
+    status, body = transport("GET", f"{dir_url}?ref={branch}", headers, None)
+    if status == 404:
+        return []  # nothing committed to the drafts path yet
+    if status != 200:
+        raise BlogCommitError(f"GitHub list {prefix or '/'} -> {status}: {body[:200]!r}")
+
+    entries = json.loads(body or b"[]")
+    put_headers = {**headers, "Content-Type": "application/json"}
+    deleted: list[str] = []
+    for entry in entries:
+        name = entry.get("name", "")
+        if (
+            entry.get("type") != "file"
+            or not _DATED_DRAFT_RE.match(name)
+            or name.endswith("-weekly-journal.md")
+        ):
+            continue
+
+        path = entry.get("path")
+        payload = {
+            "message": f"lemon8: remove legacy per-trade draft {name}",
+            "sha": entry.get("sha"),
+            "branch": branch,
+        }
+        dstatus, dbody = transport(
+            "DELETE", f"{_API}/repos/{repo}/contents/{path}", put_headers,
+            json.dumps(payload).encode("utf-8"),
+        )
+        if dstatus != 200:
+            raise BlogCommitError(f"GitHub DELETE {path} -> {dstatus}: {dbody[:200]!r}")
+        deleted.append(path)
+    return deleted

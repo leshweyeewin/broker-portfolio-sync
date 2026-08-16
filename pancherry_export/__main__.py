@@ -26,7 +26,9 @@ from config.settings import (
     get_pancherry_repo,
     get_service_account_info,
     get_spreadsheet_id,
+    get_ticker_names_path,
 )
+from core.ticker_names import load_names
 from lemon8.reader import read_closed_positions
 from pancherry_export.exporter import (
     assess_journal_drift,
@@ -57,16 +59,18 @@ def run(client, repo: Path, *, today: date, dry_run: bool = False,
 
     positions = read_open_positions(client)
     entry = build_weekly_journal(read_closed_positions(client), today=today)
+    names = load_names(get_ticker_names_path())
 
     if dry_run:
-        log.info("[dry-run] openPositions: %d underlyings", len(positions))
+        named = sum(1 for p in positions if names.get(p.ticker))
+        log.info("[dry-run] openPositions: %d underlyings (%d named)", len(positions), named)
         log.info("[dry-run] journal %s: %d trades, %dW/%dL, %d%%",
                  entry["slug"], entry["trades"], entry["wins"], entry["losses"], entry["winRatePct"])
-        print(render_open_positions_ts(positions)[:400] + "\n...")
+        print(render_open_positions_ts(positions, names=names)[:400] + "\n...")
         print(render_journal_entry(entry))
         return 0
 
-    write_open_positions(positions, open_path)
+    write_open_positions(positions, open_path, names=names)
 
     # Read drift from the pre-refresh file, then update. First run of a week
     # inserts a full draft; a re-run refreshes only the stat tiles in place

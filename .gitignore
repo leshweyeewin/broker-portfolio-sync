@@ -23,6 +23,9 @@ logs/
 # Lemon8 weekly journal output (generated packages — copy-paste, not tracked)
 lemon8_out/
 
+# Ticker → name cache captured from broker positions during the sync
+ticker_names.json
+
 # Python
 .venv/
 __pycache__/

@@ -1,97 +1,138 @@
-"""Lemon8 image card generator (step 10 — BUILD_SPEC.md §11b).
+"""Lemon8 trade-log table images (step 10 — BUILD_SPEC.md §11b).
 
-Generates text/SVG/HTML card preview layouts for social image posts.
+The weekly post's image carousel: a trade-log table — one row per closed trade,
+both stocks and options — split across 3:4 portrait pages.
 
 Privacy Constraint (Load-bearing):
-- Default ``show_dollar_amounts=False`` renders ONLY return %, ticker, date, and asset type.
-- Absolute dollar amounts are hidden unless ``show_dollar_amounts=True`` is explicitly set.
+- Renders ONLY Date, Instrument, win/loss marker, and return % (where derivable).
+- Absolute dollar amounts and portfolio size are NEVER shown.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from datetime import date
+from xml.sax.saxutils import escape as _xml_escape
+
 from lemon8.reader import ClosedPosition
 
+# Lemon8 image cards are 3:4 portrait. 1080×1440 is the standard upload size.
+TABLE_W = 1080
+TABLE_H = 1440
+TABLE_ROWS_PER_PAGE = 25   # what fits comfortably at phone-readable size
 
-def render_card_summary(
-    pos: ClosedPosition,
+
+# --------------------------------------------------------------------------- #
+# Trade-log table pages (the weekly post's image carousel)
+# --------------------------------------------------------------------------- #
+#
+# One row per closed execution, both stocks and options together, split across
+# 3:4 portrait pages. Privacy-safe: Date | Instrument | Result | Return % — no
+# dollar amounts. A dot (green/red/grey) marks win/loss/undetermined, and the
+# return % is shown only where it can be derived (see reader._return_pct).
+
+_COL_DATE_X = 56
+_COL_LABEL_X = 190
+_COL_DOT_CX = 812
+_COL_PCT_X = 860        # left edge of the (right-ish) % column
+_ROW_TOP = 300          # y of the first data row baseline
+_ROW_H = 42
+
+_WIN = "#10B981"
+_LOSS = "#EF4444"
+_FLAT = "#6B7280"
+
+
+def _result_color(pos: ClosedPosition) -> str:
+    return _WIN if pos.is_win is True else (_LOSS if pos.is_win is False else _FLAT)
+
+
+def _pct_cell(pos: ClosedPosition) -> tuple[str, str]:
+    """(text, color) for the return-% column. Em dash when not derivable."""
+    if pos.return_pct is None:
+        return "—", _FLAT
+    return f"{pos.return_pct:+.1f}%", (_WIN if pos.return_pct >= 0 else _LOSS)
+
+
+def _trunc(s: str, n: int) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def render_trade_table_pages(
+    positions: list[ClosedPosition],
+    week_ending: date,
     *,
-    show_dollar_amounts: bool = False,
-) -> str:
-    """Render a text summary card block for social post images or previews."""
-    return_str = (
-        f"{pos.return_pct:+.1f}%"
-        if pos.return_pct is not None
-        else "Closed"
-    )
-    win_indicator = "🚀 WIN" if (pos.is_win is True) else ("📉 LOSS" if (pos.is_win is False) else "📊 TRADE")
+    rows_per_page: int = TABLE_ROWS_PER_PAGE,
+) -> list[str]:
+    """Render the week's closed trades as one or more 3:4 portrait table SVGs.
 
-    lines = [
-        "┌──────────────────────────────────────────┐",
-        f"│  {win_indicator:<12} {pos.label:>24}  │",
-        f"│  Return: {return_str:<30}  │",
-        f"│  Date: {pos.close_date:<32}  │",
+    Most-recent first; both asset classes in a single table. Returns one SVG
+    string per page (always at least one, even with no trades).
+    """
+    rows = sorted(positions, key=lambda p: (p.close_date, p.label), reverse=True)
+    pages = [rows[i : i + rows_per_page] for i in range(0, len(rows), rows_per_page)] or [[]]
+    total = len(pages)
+    return [
+        _render_table_page(page, page_no=i + 1, page_total=total,
+                           week_ending=week_ending, trade_total=len(rows))
+        for i, page in enumerate(pages)
     ]
 
-    # Options carry more useful context than stocks — surface the strategy and
-    # expiry so a screenshot card stands on its own.
-    if pos.asset == "option":
-        if pos.strategy:
-            lines.append(f"│  Strategy: {pos.strategy:<28}  │")
-        if pos.expiry:
-            lines.append(f"│  Expiry: {pos.expiry:<30}  │")
 
-    if show_dollar_amounts and pos.realized_pl is not None:
-        pl_str = f"{pos.realized_pl:+.2f} {pos.currency}"
-        lines.append(f"│  P/L: {pl_str:<33}  │")
-
-    lines.append("└──────────────────────────────────────────┘")
-    return "\n".join(lines)
-
-
-def render_card_svg(
-    pos: ClosedPosition,
+def _render_table_page(
+    page_rows: list[ClosedPosition],
     *,
-    show_dollar_amounts: bool = False,
+    page_no: int,
+    page_total: int,
+    week_ending: date,
+    trade_total: int,
 ) -> str:
-    """Render a clean SVG card markup for Lemon8 cover image generation.
-
-    One card = one screenshot of a single trade. The weekly journal renders one
-    of these per closed position, so a post carries a carousel of cards + a
-    single caption.
-    """
-    return_str = (
-        f"{pos.return_pct:+.1f}%"
-        if pos.return_pct is not None
-        else "CLOSED"
+    subtitle = (
+        f"week ending {week_ending:%d %b %Y} · {trade_total} closed · "
+        f"page {page_no}/{page_total}"
     )
-    bg_color = "#10B981" if (pos.is_win is True) else ("#EF4444" if (pos.is_win is False) else "#6B7280")
+    parts = [
+        f'<svg width="{TABLE_W}" height="{TABLE_H}" viewBox="0 0 {TABLE_W} {TABLE_H}" '
+        'xmlns="http://www.w3.org/2000/svg">',
+        f'<rect width="{TABLE_W}" height="{TABLE_H}" fill="#1F2937"/>',
+        f'<rect x="0" y="0" width="{TABLE_W}" height="12" fill="{_WIN}"/>',
+        f'<text x="{_COL_DATE_X}" y="110" font-family="sans-serif" font-weight="bold" '
+        f'font-size="46" fill="#FFFFFF">Weekly Trades</text>',
+        f'<text x="{_COL_DATE_X}" y="158" font-family="sans-serif" font-size="26" '
+        f'fill="#9CA3AF">{_xml_escape(subtitle)}</text>',
+        # column header + rule
+        f'<text x="{_COL_DATE_X}" y="238" font-family="sans-serif" font-size="24" '
+        f'fill="#9CA3AF">DATE</text>',
+        f'<text x="{_COL_LABEL_X}" y="238" font-family="sans-serif" font-size="24" '
+        f'fill="#9CA3AF">INSTRUMENT</text>',
+        f'<text x="{_COL_PCT_X}" y="238" font-family="sans-serif" font-size="24" '
+        f'fill="#9CA3AF">RETURN</text>',
+        f'<line x1="{_COL_DATE_X}" y1="256" x2="{TABLE_W - _COL_DATE_X}" y2="256" '
+        'stroke="#374151" stroke-width="2"/>',
+    ]
 
-    # For options the strategy (e.g. "Short Put") is the most descriptive
-    # subtitle; stocks just say STOCK.
-    subtitle = f"{(pos.strategy or pos.asset).upper()} • Closed {pos.close_date}"
+    for i, pos in enumerate(page_rows):
+        y = _ROW_TOP + i * _ROW_H
+        if i % 2 == 1:  # subtle zebra striping
+            parts.append(
+                f'<rect x="{_COL_DATE_X - 16}" y="{y - 30}" width="{TABLE_W - 2 * (_COL_DATE_X - 16)}" '
+                f'height="{_ROW_H}" rx="6" fill="#FFFFFF" fill-opacity="0.03"/>'
+            )
+        date_txt = _xml_escape(pos.close_date[5:] if len(pos.close_date) >= 10 else pos.close_date)
+        label_txt = _xml_escape(_trunc(pos.label, 34))
+        pct_txt, pct_color = _pct_cell(pos)
+        parts.extend([
+            f'<text x="{_COL_DATE_X}" y="{y}" font-family="sans-serif" font-size="28" '
+            f'fill="#9CA3AF">{date_txt}</text>',
+            f'<text x="{_COL_LABEL_X}" y="{y}" font-family="sans-serif" font-size="28" '
+            f'fill="#F3F4F6">{label_txt}</text>',
+            f'<circle cx="{_COL_DOT_CX}" cy="{y - 9}" r="9" fill="{_result_color(pos)}"/>',
+            f'<text x="{_COL_PCT_X}" y="{y}" font-family="sans-serif" font-weight="bold" '
+            f'font-size="28" fill="{pct_color}">{_xml_escape(pct_txt)}</text>',
+        ])
 
-    # Extra detail lines stack under the return figure. Options add an expiry;
-    # dollars remain an explicit opt-in (privacy rule).
-    detail_lines = []
-    y = 250
-    if pos.asset == "option" and pos.expiry:
-        detail_lines.append(
-            f'<text x="40" y="{y}" font-family="sans-serif" font-size="22" fill="#9CA3AF">Expires {pos.expiry}</text>'
-        )
-        y += 40
-    if show_dollar_amounts and pos.realized_pl is not None:
-        detail_lines.append(
-            f'<text x="40" y="{y}" font-family="sans-serif" font-size="24" fill="#F3F4F6">P/L: {pos.realized_pl:+.2f} {pos.currency}</text>'
-        )
-    details = "\n  ".join(detail_lines)
-
-    svg = f"""<svg width="600" height="400" xmlns="http://www.w3.org/2000/svg">
-  <rect width="600" height="400" rx="24" fill="#1F2937"/>
-  <rect x="0" y="0" width="600" height="16" fill="{bg_color}"/>
-  <text x="40" y="80" font-family="sans-serif" font-weight="bold" font-size="36" fill="#FFFFFF">{pos.label}</text>
-  <text x="40" y="130" font-family="sans-serif" font-size="20" fill="#9CA3AF">{subtitle}</text>
-  <text x="40" y="190" font-family="sans-serif" font-weight="bold" font-size="48" fill="{bg_color}">{return_str}</text>
-  {details}
-</svg>"""
-    return svg
+    parts.append(
+        f'<text x="{_COL_DATE_X}" y="{TABLE_H - 40}" font-family="sans-serif" font-size="22" '
+        f'fill="#6B7280">● win  ● loss  ● undetermined · % shown only where derivable</text>'
+    )
+    parts.append("</svg>")
+    return "\n".join(parts)

@@ -4,10 +4,10 @@ Coverage:
 - reader.py: read_closed_positions parses stock and option rows from FakeSheetClient
 - reader.py: missing expected headers raises SheetReadError (fail loud)
 - reader.py: return_pct derived correctly on long closes
-- card.py: render_card_summary and render_card_svg
+- card.py: render_trade_table_pages (3:4 portrait trade-log table)
 - journal.py: format_weekly_caption, format_weekly_blog, generate_weekly_journal
-- LOAD-BEARING PRIVACY REQUIREMENT: show_dollar_amounts=False (default) NEVER prints
-  absolute $ / currency amounts in rendered output.
+- LOAD-BEARING PRIVACY REQUIREMENT: the default output NEVER prints absolute $ /
+  currency amounts.
 """
 
 from __future__ import annotations
@@ -23,11 +23,12 @@ from lemon8.reader import (
     _return_pct,
     _dec,
 )
-from lemon8.card import render_card_summary, render_card_svg
+from lemon8.card import render_trade_table_pages
 from lemon8.journal import (
     format_weekly_caption,
     format_weekly_blog,
     generate_weekly_journal,
+    _bold,
 )
 from sheets.writer import (
     STOCKS_HEADERS,
@@ -130,6 +131,17 @@ def test_return_pct_calculation():
     assert _return_pct(Decimal("1000"), None) is None
 
 
+def test_return_pct_none_on_buy_to_close():
+    # A BUY-to-close row (Total <= 0) can't yield a %: Total is the buyback
+    # outflow, not the cost basis. Old abs()-based formula printed nonsense here
+    # (e.g. AVGO short put buyback Total=-42, P/L=+40.99 -> +4058%).
+    assert _return_pct(Decimal("-42"), Decimal("40.99")) is None
+    assert _return_pct(Decimal("-1060"), Decimal("336.97")) is None   # MSFT short close
+    assert _return_pct(Decimal("-30"), Decimal("-4.54")) is None      # small loss buyback
+    # A real long SALE at a big multiple is kept (NBIS 180 Put: bought 130, sold 1050)
+    assert _return_pct(Decimal("1050"), Decimal("920")) == pytest.approx(Decimal("707.6923"), abs=Decimal("0.01"))
+
+
 # --------------------------------------------------------------------------- #
 # PRIVACY TESTS (LOAD-BEARING)
 # --------------------------------------------------------------------------- #
@@ -148,9 +160,9 @@ def test_privacy_default_hides_dollar_amounts():
 
     week = date(2026, 3, 15)
 
-    # 1. Caption (one per week)
+    # 1. Caption (one per week) — return is shown in Unicode bold for paste-in
     caption = format_weekly_caption([pos], week)
-    assert "+20.0%" in caption
+    assert _bold("20.0%") in caption
     assert "300.00" not in caption
     assert "405.00" not in caption
 
@@ -160,22 +172,52 @@ def test_privacy_default_hides_dollar_amounts():
     assert "300.00" not in blog
     assert "405.00" not in blog
 
-    # 3. Card summary text
-    card = render_card_summary(pos)
-    assert "+20.0%" in card
-    assert "300.00" not in card
+    # 3. Table page image(s) — the return % appears, dollars never do
+    pages = render_trade_table_pages([pos], week)
+    joined = "\n".join(pages)
+    assert "+20.0%" in joined
+    assert "300.00" not in joined and "405.00" not in joined
+    assert "P/L" not in joined and "USD" not in joined
 
-    # 4. SVG card
-    svg = render_card_svg(pos)
-    assert "+20.0%" in svg
-    assert "P/L:" not in svg
-    assert "300.00" not in svg
-
-    # 5. Full weekly journal
+    # 4. Full weekly journal
     journal = generate_weekly_journal([pos], week)
     assert journal.show_dollar_amounts is False
     assert "300.00" not in journal.caption
     assert "300.00" not in journal.blog_draft
+    assert all("300.00" not in p for p in journal.table_pages)
+
+
+def test_table_paginates_and_covers_both_assets():
+    pos = [
+        ClosedPosition("Tiger", f"T{i}", "stock" if i % 2 else "option", "2026-08-1%d" % (i % 7),
+                       "USD", Decimal("10"), Decimal("13"), Decimal("5.0"),
+                       option_type="Put", strike="100")
+        for i in range(60)
+    ]
+    pages = render_trade_table_pages(pos, date(2026, 8, 14), rows_per_page=25)
+    assert len(pages) == 3            # 60 rows / 25 -> 3 pages
+    assert all(p.startswith("<svg") and 'viewBox="0 0 1080 1440"' in p for p in pages)
+    assert "page 1/3" in pages[0] and "page 3/3" in pages[2]
+
+
+def test_table_always_one_page_even_when_empty():
+    pages = render_trade_table_pages([], date(2026, 8, 14))
+    assert len(pages) == 1 and "0 closed" in pages[0]
+
+
+def test_caption_bolds_body_but_keeps_hashtags_plain():
+    # Unicode bold on tickers/returns breaks hashtag matching, so the #tags line
+    # must stay plain ASCII to remain searchable.
+    pos = ClosedPosition(
+        broker="Tiger", symbol="AAPL", asset="stock", close_date="2026-03-15",
+        currency="USD", realized_pl=Decimal("300"), realized_pl_sgd=Decimal("405"),
+        return_pct=Decimal("20.0"),
+    )
+    caption = format_weekly_caption([pos], date(2026, 3, 15))
+    # body carries bold characters...
+    assert _bold("AAPL") in caption
+    # ...but the hashtags are plain ASCII
+    assert "#TradingJournal" in caption and "#AAPL" in caption
 
 
 def test_show_dollar_amounts_opt_in():
@@ -198,12 +240,8 @@ def test_show_dollar_amounts_opt_in():
     blog = format_weekly_blog([pos], week, show_dollar_amounts=True)
     assert "+300.00 USD" in blog
 
-    card = render_card_summary(pos, show_dollar_amounts=True)
-    assert "+300.00 USD" in card
-
-    svg = render_card_svg(pos, show_dollar_amounts=True)
-    assert "P/L: +300.00 USD" in svg
-
     journal = generate_weekly_journal([pos], week, show_dollar_amounts=True)
     assert journal.show_dollar_amounts is True
     assert "+300.00 USD" in journal.caption
+    # The table images stay percentages-only even when the post opts into dollars.
+    assert all("300.00" not in p for p in journal.table_pages)
