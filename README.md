@@ -160,6 +160,18 @@ flowchart TD
 - **Nothing goes live unattended** — drafts land on a `*-drafts` branch, never the
   branch Cloudflare Pages builds; publishing is the merge you control.
 
+**Every trade carries its *which* and *why*:**
+- **Which / kind** — each trade shows its type, derived from data already synced:
+  the option **Strategy** (e.g. `Short Put`, `Cash Secured Put`), or a stock's
+  **Buy/Sell**. It appears in the caption top-movers `(kind)`, a blog
+  `Strategy / Action` column, and a `STRATEGY` column on the transactions card.
+- **Why / thesis** — a manual **`Reason`** column on the Stocks/Options tabs. You
+  type the trade thesis by hand in the sheet; it flows into the blog's `Why`
+  column and a short note on the caption's top movers. The sheet is the input —
+  the daily sync writes `Reason` blank and **preserves whatever you typed** (it
+  never clobbers a hand-entered reason), so it's safe to fill in over time. The
+  blog's weekly `Rationale & lessons` narrative section stays for the bigger story.
+
 ---
 
 ## The common schema (adapter ↔ pipeline contract)
@@ -246,7 +258,10 @@ Machine-owned tabs — written by the pipeline, never hand-edited:
 | **Dashboard** | Per-broker rollup: deposits, net capital in, account value, fees, realized/unrealized P/L, ROI — per currency and SGD |
 | **Run Log** | One row per run: status, rows added/updated, FX rates used, reconciliation result, warnings/errors |
 
-A hidden `_dedup_key` column on each data tab drives idempotent upserts.
+A hidden `_dedup_key` column on each data tab drives idempotent upserts. The
+Stocks/Options tabs also carry one **hand-editable** column, `Reason` — a
+free-text trade thesis you fill in, kept as the trailing column so the sync
+preserves it on every run (see the content pipeline above).
 
 ---
 
