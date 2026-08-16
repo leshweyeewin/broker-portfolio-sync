@@ -212,24 +212,33 @@ def scan_short_option_picks(
     filters: Optional[ScreenerFilter] = None,
     target_dte_min: int = 14,
     target_dte_max: int = 45,
+    include_benchmarks: bool = False,
+    max_tickers: int = 30,
 ) -> list[ScreenerResult]:
     """Scan candidate tickers for high-probability Short Put / Call setups.
 
     Tries Tiger QuoteClient first; falls back to yfinance option chains.
+
+    ``tickers`` (the watchlist / held names) are scanned **first**; the liquid
+    SPY/QQQ/mega-cap benchmarks are only appended when ``include_benchmarks`` is
+    set, so the default output is watchlist-first rather than dominated by index
+    ETFs. ``max_tickers`` caps how many names are scanned per run (chains are the
+    slow part).
     """
     today = today or date.today()
     filters = filters or ScreenerFilter()
     results: list[ScreenerResult] = []
 
-    # Combine liquid benchmark leaders + portfolio tickers
-    candidate_tickers = _clean_ticker_list(_LIQUID_BENCHMARKS + list(tickers))
+    # Watchlist/portfolio names first; benchmarks only as an opt-in fallback.
+    ordered = list(tickers) + (_LIQUID_BENCHMARKS if include_benchmarks else [])
+    candidate_tickers = _clean_ticker_list(ordered)
 
     try:
         import yfinance as yf
     except ImportError:
         return results
 
-    for ticker in candidate_tickers[:20]:
+    for ticker in candidate_tickers[:max_tickers]:
         try:
             tk = yf.Ticker(ticker)
             expiries = getattr(tk, "options", None)

@@ -109,3 +109,66 @@ def is_near_earnings(
         if abs((trade_date - ed).days) <= window_days:
             return True
     return False
+
+
+def refresh_earnings_cache(tickers: Optional[list[str]] = None) -> dict[str, int]:
+    """Re-fetch earnings dates from yfinance and merge them into the disk cache.
+
+    ``get_earnings_dates`` reads the JSON cache *before* the API, so a ticker
+    already in the file never picks up newly-scheduled or corrected dates — the
+    reason a stale date (e.g. an already-passed quarter) can linger. This forces
+    a fresh pull for each ticker and *merges* it with the existing dates
+    (union), so future/corrected dates are added while historical ones the API
+    no longer returns are preserved for the tagger.
+
+    ``tickers`` defaults to every ticker already in the cache. Returns
+    ``{ticker: total_dates_after_refresh}``.
+    """
+    disk = _load_static_cache()
+    targets = [t.upper().strip() for t in (tickers or sorted(disk.keys()))]
+
+    result: dict[str, int] = {}
+    for t in targets:
+        existing = {date.fromisoformat(d) for d in disk.get(t, [])}
+        fresh = _fetch_from_yfinance(t) or []
+        merged = sorted(existing | set(fresh))
+        disk[t] = [d.isoformat() for d in merged]
+        result[t] = len(merged)
+        if fresh:
+            log.info("Refreshed %s: %d dates (+%d new)", t, len(merged),
+                     len(set(fresh) - existing))
+        else:
+            log.warning("No fresh earnings data for %s — kept %d cached", t, len(merged))
+
+    _save_static_cache(disk)
+    _mem_cache.clear()
+    return result
+
+
+def main(argv=None) -> int:
+    """CLI: ``python -m analytics.earnings --refresh [TICKER ...]``."""
+    import argparse
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    p = argparse.ArgumentParser(description="Earnings-date cache maintenance.")
+    p.add_argument("--refresh", action="store_true", help="Re-fetch & merge from yfinance.")
+    p.add_argument("tickers", nargs="*", help="Tickers to refresh (default: all cached).")
+    args = p.parse_args(argv)
+
+    if not args.refresh:
+        p.print_help()
+        return 0
+
+    counts = refresh_earnings_cache(args.tickers or None)
+    print(f"Refreshed {len(counts)} tickers.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

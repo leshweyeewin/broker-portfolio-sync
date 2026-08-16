@@ -138,7 +138,9 @@ def run_analytics(
                 log.debug("Earnings calendar scan error: %s", exc)
 
             try:
-                report.screener_picks = scan_short_option_picks(ticker_list, today=today)
+                # Watchlist-first income scan (held + monitored names), not just
+                # traded tickers; benchmarks stay off by default.
+                report.screener_picks = scan_short_option_picks(full_universe, today=today)
             except Exception as exc:
                 log.debug("Option screener scan error: %s", exc)
 
