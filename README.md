@@ -70,8 +70,7 @@ flowchart LR
     MM -. TCP .-> OPEND
 
     subgraph Job["Scheduled Python job (Cloud Run)"]
-        AD["Broker adapters<br/>→ common schema"]
-        NORM["normalize (§8)"]
+        AD["Broker adapters<br/>→ common schema<br/>(normalize §8 in-adapter)"]
         FIFO["FIFO realized P/L<br/>+ unrealized from positions"]
         FX["FX → SGD<br/>(trade-date & current, cached)"]
         WR["idempotent upsert<br/>(_dedup_key)"]
@@ -93,7 +92,7 @@ flowchart LR
     TG --> AD
     OPEND --> AD
     SM -. secrets .-> Job
-    AD --> NORM --> FIFO --> FX --> WR --> GS
+    AD --> FIFO --> FX --> WR --> GS
     WR --> REC --> GS
     REC -->|mismatch| ALERT
     Job -->|failure| ALERT
@@ -123,7 +122,7 @@ the sheet.
 ```mermaid
 flowchart TD
     START([Daily trigger]) --> FETCH["Each adapter fetches<br/>cash / stock / option execs + positions<br/>since last run"]
-    FETCH --> NORM["Normalize (§8):<br/>tickers, actions, fees,<br/>deposit vs transfer"]
+    FETCH --> NORM["Normalize in-adapter (§8):<br/>tickers, actions, fees,<br/>deposit vs transfer"]
     NORM --> DEDUP["Assign stable _dedup_key (§6)"]
     DEDUP --> FIFO["FIFO engine (§3):<br/>realized P/L on close rows<br/>+ remaining holdings"]
     FIFO --> FXC["FX (§7):<br/>realized & cash @ trade-date rate<br/>unrealized @ current rate"]
