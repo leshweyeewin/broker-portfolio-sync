@@ -11,45 +11,9 @@ files and the Lemon8/TikTok post drafts (caption + transactions card + blog),
 opening them as review-only Draft PRs. The sheet is the single source of truth;
 the site is a pure consumer.
 
-> **Design source of truth:** [`BUILD_SPEC.md`](https://claude.ai/public/artifacts/b935403a-b127-4964-ade7-545da2383c71) (external artifact).
-> **Continuing the build?** Start with [`HANDOFF.md`](HANDOFF.md) — it records
-> what's built, the decisions new code must respect, and step-by-step next actions.
-
 **Non-goals:** no trading/order placement, no investment advice, no migration of
 legacy history (fresh start with cost-basis seeding). No auto-publishing — social
 posts are uploaded by hand; site PRs are merged by hand.
-
----
-
-## Build status
-
-**Core sync (daily):**
-
-| # | Step | Module | Status |
-|---|------|--------|--------|
-| 1 | Common schema + dataclasses | `adapters/base.py` | ✅ done |
-| 2 | Tiger adapter | `adapters/tiger.py` | ✅ done |
-| 3 | FIFO P/L engine | `core/fifo_pl.py` | ✅ done |
-| 4 | FX module (trade-date vs current, cached) | `core/fx.py` | ✅ done |
-| 5 | Sheets writer (idempotent upsert) | `sheets/writer.py` | ✅ done |
-| 6 | Longbridge adapter | `adapters/longbridge.py` | ✅ done |
-| 7 | Seeding + reconciliation | `core/reconcile.py` | ✅ done |
-| 8 | MooMoo adapter + OpenD sidecar | `adapters/moomoo.py`, `opend/` | ✅ done |
-| 9 | Alerting + Run Log + entrypoint + deploy | `alerting/`, `run.py`, `Dockerfile`, `DEPLOY.md` | ✅ done |
-| 10 | Option expiry lifecycle (ITM assignment / OTM worthless) | `core/fifo_pl.py`, `run.py` | ✅ done |
-| 11 | Dashboard rolling realized P/L (Week / Month / Year) | `sheets/writer.py` | ✅ done |
-
-**Weekly jobs + content pipeline:**
-
-| # | Step | Module | Status |
-|---|------|--------|--------|
-| 12 | Expiry watch + realized-P/L digest (Telegram) | `alerting/expiry.py`, `alerting/weekly_pl_alert.py` | ✅ done |
-| 13 | Lemon8 weekly journal (caption + card + blog draft) | `lemon8/`, `skills/` | ✅ done |
-| 14 | pancherry export → `.ts` data files + auto Draft PR | `pancherry_export/` | ✅ done |
-| 15 | Broker ticker-name cache (blog company names) | `core/ticker_names.py` | ✅ done |
-| 16 | Per-trade *which/why* (Strategy/Action + manual `Reason`) | `lemon8/`, `sheets/writer.py` | ✅ done |
-
-**232 tests passing.**
 
 ---
 
@@ -358,9 +322,7 @@ broker-portfolio-sync/
 ├─ DEPLOY.md              # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
 ├─ opend/                 # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
 ├─ tests/                 # ✅ FIFO, schema, adapters, run, lemon8, export (232)
-├─ requirements.txt
-├─ BUILD_SPEC.md          # (external link — source of truth)
-└─ HANDOFF.md             # continuation spec for the next builder
+└─ requirements.txt
 ```
 
 ---
@@ -393,7 +355,7 @@ python -m venv .venv
 
 ---
 
-## Design principles (see [`HANDOFF.md`](HANDOFF.md) §3 for the binding list)
+## Design principles
 
 1. **Decimal money, never float** — coerce via `adapters.base.dec()`.
 2. **Explicit, upper-cased currency** on every money row.
