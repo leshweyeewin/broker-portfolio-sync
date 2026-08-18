@@ -47,21 +47,25 @@ class TestRiskAlerts:
 
     def test_earnings_close_signal(self):
         """Earnings play with 1 day to expiry → CLOSE_POSITION."""
+        from unittest.mock import patch
         opt = _option(expiry="2025-06-16")
         trades = [_td(opt)]
         tags = {opt.dedup_key: "Earnings IV Crush"}
 
-        alerts = generate_risk_alerts(trades, tags, today=date(2025, 6, 15))
+        with patch("analytics.earnings.get_earnings_dates", return_value=[date(2025, 6, 16)]):
+            alerts = generate_risk_alerts(trades, tags, today=date(2025, 6, 15))
         assert len(alerts) == 1
         assert alerts[0].signal == Signal.CLOSE_POSITION
 
     def test_earnings_roll_on_loss(self):
         """Earnings play with loss and 5 days left → ROLL_SPREAD."""
+        from unittest.mock import patch
         opt = _option(expiry="2025-06-20")
         trades = [_td(opt, pl=-100)]
         tags = {opt.dedup_key: "Earnings IV Crush"}
 
-        alerts = generate_risk_alerts(trades, tags, today=date(2025, 6, 15))
+        with patch("analytics.earnings.get_earnings_dates", return_value=[date(2025, 6, 16)]):
+            alerts = generate_risk_alerts(trades, tags, today=date(2025, 6, 15))
         assert len(alerts) == 1
         assert alerts[0].signal == Signal.ROLL_SPREAD
 

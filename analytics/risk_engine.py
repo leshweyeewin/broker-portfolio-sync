@@ -150,19 +150,25 @@ def generate_risk_alerts(
 
 def _determine_signal(pos: dict, today: date) -> tuple[Signal, str]:
     """Pick the right playbook signal based on available data."""
+    from analytics.earnings import get_earnings_dates
     dte = pos["dte"]
     tag = pos["tag"]
     underlying = pos["underlying"]
     has_loss = pos["has_loss"]
 
-    # Earnings plays
-    is_earnings = (
-        "iv crush" in tag.lower() or
-        "earnings" in tag.lower() or
-        is_near_earnings(underlying, today, window_days=3)
-    )
+    # Check for upcoming earnings
+    dates = get_earnings_dates(underlying)
+    upcoming_earnings = [d for d in dates if d >= today]
+    past_earnings = [d for d in dates if d < today]
 
-    if is_earnings:
+    next_ed = upcoming_earnings[0] if upcoming_earnings else None
+    last_ed = past_earnings[-1] if past_earnings else None
+
+    is_upcoming_earnings = next_ed is not None and (next_ed - today).days <= 3
+    is_recent_earnings = last_ed is not None and (today - last_ed).days <= 1
+
+    # Active earnings event (today or next 1–3 days, or reporting today/yesterday)
+    if is_upcoming_earnings or is_recent_earnings or ("iv crush" in tag.lower() and is_upcoming_earnings):
         if dte <= 2:
             return (
                 Signal.CLOSE_POSITION,
@@ -178,11 +184,11 @@ def _determine_signal(pos: dict, today: date) -> tuple[Signal, str]:
             )
         return (
             Signal.CLOSE_POSITION,
-            f"Earnings play with {dte}d to expiry — plan to close in "
+            f"Earnings play ({next_ed or last_ed}) with {dte}d to expiry — plan to close in "
             f"the first 15 minutes post-earnings bell for peak IV collapse."
         )
 
-    # Non-earnings: day/medium-term plays
+    # If earnings already passed > 1 day ago or non-earnings trade:
     if has_loss and dte <= 5:
         return (
             Signal.CUT_TRADE,

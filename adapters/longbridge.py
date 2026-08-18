@@ -114,6 +114,20 @@ class LongbridgeAdapter:
     def _timestamp_to_date(self, ts: float) -> date:
         return datetime.fromtimestamp(ts, tz=self._tz).date()
 
+    # -- retry helper ------------------------------------------------------- #
+    def _call_with_retry(self, fn, *args, **kwargs):
+        """Execute a Longbridge API call with retry on rate limit (code 429002)."""
+        import time
+        for attempt in range(4):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                err_str = str(e).lower()
+                if ("429" in err_str or "limited" in err_str or "frequency" in err_str) and attempt < 3:
+                    time.sleep((attempt + 1) * 2.0)
+                else:
+                    raise
+
     # -- executions --------------------------------------------------------- #
     def _order_detail(self, order_id: str):
         """Fetch an order's full detail (fields + charge_detail), with a
@@ -121,10 +135,11 @@ class LongbridgeAdapter:
         import time
         for attempt in range(3):
             try:
+                time.sleep(0.1)  # small throttle to avoid bursting API limit
                 return self._client.order_detail(order_id)
             except Exception as e:  # noqa: BLE001
-                if "429" in str(e) and attempt < 2:
-                    time.sleep(2)  # wait for rate limit to reset
+                if ("429" in str(e) or "limited" in str(e).lower()) and attempt < 2:
+                    time.sleep(2.0 * (attempt + 1))
                 else:
                     print(f"Warning: Could not fetch order_detail for {order_id}: {e}")
                     return None
@@ -203,7 +218,7 @@ class LongbridgeAdapter:
         ``(OrderDetail, fill_datetime)`` tuples, dated by the fill's
         trade_done_at (the latest fill for a partially-filled order)."""
         start_at = self._since_to_datetime(since)
-        executions = self._client.history_executions(start_at=start_at) or []
+        executions = self._call_with_retry(self._client.history_executions, start_at=start_at) or []
 
         # Unique order_ids, remembering each order's latest fill time.
         order_ids: list = []
@@ -229,7 +244,7 @@ class LongbridgeAdapter:
     def fetch_positions(self) -> list[Position]:
         positions: list[Position] = []
         
-        result = self._client.stock_positions()
+        result = self._call_with_retry(self._client.stock_positions)
         if not result or not result.channels:
             return positions
             
@@ -266,7 +281,7 @@ class LongbridgeAdapter:
         """Net asset value per currency balance, as (amount, currency)."""
         out: list[tuple[Decimal, str]] = []
         try:
-            balances = self._client.account_balance()
+            balances = self._call_with_retry(self._client.account_balance)
         except Exception as e:  # noqa: BLE001
             print(f"Warning: Longbridge account_balance failed: {e}")
             return out
@@ -289,7 +304,7 @@ class LongbridgeAdapter:
             
         end_at = datetime.now(tz=self._tz)
         
-        cash_flows = self._client.cash_flow(start_at=start_at, end_at=end_at)
+        cash_flows = self._call_with_retry(self._client.cash_flow, start_at=start_at, end_at=end_at)
         if not cash_flows:
             return []
 
