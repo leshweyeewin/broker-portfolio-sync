@@ -237,28 +237,43 @@ def format_risk_alert_message(
     if not alerts:
         return f"✅ No open options in the 1–14 day expiry window (as of {today:%d %b %Y})."
 
+    priority_signals = {Signal.CLOSE_POSITION, Signal.ROLL_SPREAD, Signal.CUT_TRADE, Signal.ROLL_TIMELINE}
+    actionable = [a for a in alerts if a.signal in priority_signals]
+    review = [a for a in alerts if a.signal not in priority_signals]
+
     lines = [
         f"🚨 Option Risk Alerts — {len(alerts)} position(s) expiring within 14 days "
         f"(as of {today:%d %b %Y}):",
         "",
     ]
 
-    for a in alerts:
+    # Actionable priority alerts
+    for a in actionable:
         emoji = {
             Signal.CLOSE_POSITION: "🔴",
             Signal.ROLL_SPREAD: "🟠",
             Signal.CUT_TRADE: "🔴",
             Signal.ROLL_TIMELINE: "🟡",
-            Signal.NEEDS_REVIEW: "⚪",
         }.get(a.signal, "⚪")
 
         strike_display = a.strike.lstrip("$").strip()
         lines.append(
             f"{emoji} [{a.signal.value}] {a.underlying} {strike_display} "
-            f"{a.option_type} · {a.side} ×{abs(a.net_qty):.0f} · "
-            f"{a.days_to_expiry}d left"
+            f"{a.option_type} · {a.side} ×{abs(a.net_qty):.0f} · {a.days_to_expiry}d left"
         )
         lines.append(f"   {a.reason}")
         lines.append("")
 
-    return "\n".join(lines)
+    # Routine technical reviews
+    if review:
+        if actionable:
+            lines.append("⚪ Monitor & Review (4–14d left):")
+        for a in review:
+            strike_display = a.strike.lstrip("$").strip()
+            lines.append(
+                f"   • {a.underlying} {strike_display} {a.option_type} · {a.side} ×{abs(a.net_qty):.0f} · {a.days_to_expiry}d left"
+            )
+        lines.append("")
+
+    return "\n".join(lines).strip()
+

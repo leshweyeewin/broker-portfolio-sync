@@ -67,6 +67,35 @@ def _urllib_post(url: str, data: bytes, timeout: int) -> None:
         raise NotifyError(f"Telegram rejected the message: {payload}")
 
 
+def _split_message(text: str, max_len: int = 4000) -> list[str]:
+    """Split text into chunks not exceeding max_len characters, splitting on newlines."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    lines = text.splitlines(keepends=True)
+    current_chunk = []
+    current_len = 0
+
+    for line in lines:
+        if current_len + len(line) > max_len:
+            if current_chunk:
+                chunks.append("".join(current_chunk).strip())
+                current_chunk = []
+                current_len = 0
+            # If a single line is absurdly long, slice it
+            while len(line) > max_len:
+                chunks.append(line[:max_len])
+                line = line[max_len:]
+        current_chunk.append(line)
+        current_len += len(line)
+
+    if current_chunk:
+        chunks.append("".join(current_chunk).strip())
+
+    return [c for c in chunks if c]
+
+
 def send_telegram(
     text: str,
     *,
@@ -77,23 +106,26 @@ def send_telegram(
 ) -> None:
     """Send ``text`` to the configured Telegram chat.
 
-    ``token``/``chat_id`` default to ``TELEGRAM_BOT_TOKEN`` / ``TELEGRAM_CHAT_ID``
-    from the environment (via ``config.settings``). Raises ``NotifyError`` on any
-    delivery failure, ``ConfigError`` if credentials are missing.
+    Splits messages longer than 4000 characters into multiple sequential messages
+    to stay strictly within Telegram's 4096 character limit.
     """
     token = token or get_telegram_bot_token()
     chat_id = chat_id or get_telegram_chat_id()
     transport = transport or _urllib_post
 
     url = f"{_API_BASE}/bot{token}/sendMessage"
-    data = urlencode(
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": "true",
-        }
-    ).encode("utf-8")
-    transport(url, data, timeout)
+    chunks = _split_message(text, max_len=4000)
+
+    for chunk in chunks:
+        data = urlencode(
+            {
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": "true",
+            }
+        ).encode("utf-8")
+        transport(url, data, timeout)
+
 
 
 def notify_safe(
