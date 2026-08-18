@@ -147,7 +147,7 @@ def get_upcoming_earnings(
     tickers: list[str],
     *,
     today: Optional[date] = None,
-    days_ahead: int = 2,
+    days_ahead: int = 14,
 ) -> list[UpcomingEarnings]:
     """Find upcoming quarterly earnings for tickers in [today, today + days_ahead]."""
     today = today or date.today()

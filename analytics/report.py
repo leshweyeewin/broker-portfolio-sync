@@ -133,7 +133,7 @@ def run_analytics(
                 log.debug("Daily movers scan error: %s", exc)
 
             try:
-                report.upcoming_earnings = get_upcoming_earnings(full_universe, today=today, days_ahead=7)
+                report.upcoming_earnings = get_upcoming_earnings(full_universe, today=today, days_ahead=14)
             except Exception as exc:
                 log.debug("Earnings calendar scan error: %s", exc)
 
@@ -172,9 +172,9 @@ def format_telegram_report(report: AnalyticsReport, *, today: date | None = None
             sections.append(f"   Bearish: {top_bears}")
         sections.append("")
 
-    # 2. Upcoming Earnings (Next 1–2 Days)
+    # 2. Upcoming Earnings (Next 2 Weeks)
     if report.upcoming_earnings:
-        sections.append("📅 Upcoming Earnings (Prepare IV Crush Plays):")
+        sections.append("📅 Upcoming Earnings (Next 2 Weeks — Prepare IV Crush Plays):")
         for e in report.upcoming_earnings:
             sections.append(f"   ⚡ {e.ticker} · {e.note} ({e.earnings_date:%a %d %b})")
         sections.append("")
