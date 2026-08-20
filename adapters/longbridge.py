@@ -45,7 +45,20 @@ from adapters.base import (
     dec,
     is_option_code,
     parse_option_code,
+    parse_option_legs,
 )
+
+
+def _combo_leg_buy_flags(legs, is_buy: bool) -> list[bool]:
+    """Determine per-leg buy/sell directions for a combo order."""
+    if len(legs) == 2 and legs[0][1] == legs[1][1]:
+        otype = legs[0][1]
+        strikes = [leg[2] for leg in legs]
+        long_strike = min(strikes) if otype == OptionType.CALL else max(strikes)
+        long_idx = strikes.index(long_strike)
+        return [is_buy if i == long_idx else not is_buy for i in range(2)]
+    return [is_buy if i == 0 else not is_buy for i in range(len(legs))]
+
 
 # --------------------------------------------------------------------------- #
 # Credentials
@@ -180,36 +193,64 @@ class LongbridgeAdapter:
 
     def fetch_option_executions(self, since: date | None) -> list[OptionTrade]:
         """Option executions carry an OCC-style symbol (e.g.
-        ``PYPL260828C60000.US``). Route those here so they land in the Options
-        tab, not Stocks."""
+        ``PYPL260828C60000.US``) or combo symbol (e.g. ``SNDQ260821P23/25``).
+        Route those here and decompose multi-leg combos into individual leg trades."""
         trades: list[OptionTrade] = []
         for order, fill_dt in self._get_filled_orders(since):
             qty = dec(order.executed_quantity)
             if qty == 0:
                 continue
             code = str(order.symbol).split(".")[0]
-            parsed = parse_option_code(code)
-            if parsed is None:
+            legs = parse_option_legs(code)
+            if legs is None:
                 continue  # stock — handled by fetch_stock_executions
-            underlying, otype, strike, expiry = parsed
 
-            trades.append(
-                OptionTrade(
-                    date=self._timestamp_to_date(fill_dt.timestamp()),
-                    broker=Broker.LONGBRIDGE,
-                    underlying=underlying,
-                    option_type=otype,
-                    strike=strike,
-                    qty=qty,
-                    expiry=expiry,
-                    action=OptionAction.BUY if order.side == OrderSide.Buy else OptionAction.SELL,
-                    premium=dec(order.executed_price or order.price or "0"),
-                    fee=self._fee(order),
-                    currency=str(order.currency),
-                    fill_id=str(order.order_id),
-                    timestamp=fill_dt,
+            is_buy = (order.side == OrderSide.Buy)
+            price = dec(order.executed_price or order.price or "0")
+            fee = self._fee(order)
+
+            if len(legs) == 1:
+                underlying, otype, strike, expiry = legs[0]
+                trades.append(
+                    OptionTrade(
+                        date=self._timestamp_to_date(fill_dt.timestamp()),
+                        broker=Broker.LONGBRIDGE,
+                        underlying=underlying,
+                        option_type=otype,
+                        strike=strike,
+                        qty=qty,
+                        expiry=expiry,
+                        action=OptionAction.BUY if is_buy else OptionAction.SELL,
+                        premium=price,
+                        fee=fee,
+                        currency=str(order.currency),
+                        fill_id=str(order.order_id),
+                        timestamp=fill_dt,
+                    )
                 )
-            )
+            else:
+                buy_flags = _combo_leg_buy_flags(legs, is_buy)
+                for i, (underlying, otype, strike, expiry) in enumerate(legs):
+                    leg_is_buy = buy_flags[i]
+                    leg_fee = fee if i == 0 else Decimal("0")
+                    trades.append(
+                        OptionTrade(
+                            date=self._timestamp_to_date(fill_dt.timestamp()),
+                            broker=Broker.LONGBRIDGE,
+                            underlying=underlying,
+                            option_type=otype,
+                            strike=strike,
+                            qty=qty,
+                            expiry=expiry,
+                            action=OptionAction.BUY if leg_is_buy else OptionAction.SELL,
+                            premium=price if i == 0 else Decimal("0"),
+                            fee=leg_fee,
+                            currency=str(order.currency),
+                            fill_id=f"{order.order_id}:{i}",
+                            timestamp=fill_dt,
+                            strategy="Vertical Spread" if len(legs) == 2 else "Multi-Leg",
+                        )
+                    )
         return trades
 
     def _get_filled_orders(self, since: date | None) -> list:
@@ -256,7 +297,7 @@ class LongbridgeAdapter:
                     continue
 
                 code = str(pos.symbol).split(".")[0]
-                opt = parse_option_code(code)
+                legs = parse_option_legs(code)
                 common = dict(
                     broker=Broker.LONGBRIDGE,
                     qty=qty,
@@ -265,15 +306,15 @@ class LongbridgeAdapter:
                     market_price=None,  # SDK doesn't return market_price on the position
                     as_of=today,
                 )
-                if opt is None:
+                if legs is None:
                     name = str(getattr(pos, "symbol_name", "") or "")
                     positions.append(Position(asset_type=AssetType.STOCK, symbol=code, name=name, **common))
                 else:
-                    underlying, otype, strike, expiry = opt
-                    positions.append(Position(
-                        asset_type=AssetType.OPTION, symbol=underlying,
-                        option_type=otype, strike=strike, expiry=expiry, **common,
-                    ))
+                    for underlying, otype, strike, expiry in legs:
+                        positions.append(Position(
+                            asset_type=AssetType.OPTION, symbol=underlying,
+                            option_type=otype, strike=strike, expiry=expiry, **common,
+                        ))
         return positions
 
     # -- account value (§4 dashboard) --------------------------------------- #

@@ -1,4 +1,4 @@
-﻿"""Tests for Longbridge adapter (step 6).
+"""Tests for Longbridge adapter (step 6).
 
 Mocks the Longbridge SDK to ensure the adapter maps fields correctly to the common schema.
 """
@@ -172,14 +172,55 @@ class TestLongbridgeAdapter(unittest.TestCase):
         movements = self.adapter.fetch_cash_movements(None)
 
         self.assertEqual(len(movements), 2)
-        
         m1 = movements[0]
         self.assertEqual(m1.type, CashType.DEPOSIT)
         self.assertEqual(m1.amount, Decimal("1000.00"))
-        
         m2 = movements[1]
         self.assertEqual(m2.type, CashType.FEE)
         self.assertEqual(m2.amount, Decimal("5.00"))
 
+    def test_fetch_multi_leg_option_executions(self):
+        """Test that multi-leg combo orders (e.g. vertical spread) decompose into per-leg OptionTrades."""
+        dt = datetime(2025, 3, 15, 10, 0, tzinfo=timezone.utc)
+        self.mock_client.history_executions.return_value = [
+            FakeExecution("combo1", dt),
+        ]
+        self.mock_client.order_detail.return_value = FakeOrderDetail(
+            "combo1", "SNDQ260821P23/25.US", OrderSide.Buy, "1.50", "2", dt, "2.00"
+        )
+
+        trades = self.adapter.fetch_option_executions(date(2025, 3, 1))
+
+        self.assertEqual(len(trades), 2)
+        # Leg 0: SNDQ 23 Put (Lower strike -> Sell for Put credit spread)
+        # Leg 1: SNDQ 25 Put (Higher strike -> Buy for Put credit spread)
+        self.assertEqual(trades[0].underlying, "SNDQ")
+        self.assertEqual(trades[0].strike, Decimal("23"))
+        self.assertEqual(trades[0].option_type, OptionType.PUT)
+        self.assertEqual(trades[0].action, OptionAction.SELL)
+        self.assertEqual(trades[0].fill_id, "combo1:0")
+        self.assertEqual(trades[0].fee, Decimal("2.00"))  # fee on first leg
+
+        self.assertEqual(trades[1].underlying, "SNDQ")
+        self.assertEqual(trades[1].strike, Decimal("25"))
+        self.assertEqual(trades[1].option_type, OptionType.PUT)
+        self.assertEqual(trades[1].action, OptionAction.BUY)
+        self.assertEqual(trades[1].fill_id, "combo1:1")
+        self.assertEqual(trades[1].fee, Decimal("0"))
+
+    def test_fetch_multi_leg_option_positions(self):
+        """Test that multi-leg combo positions decompose into per-leg Positions."""
+        self.mock_client.stock_positions.return_value = FakePositionsResponse([
+            FakePosition("SNDQ260821P23/25.US", "2", "1.50"),
+        ])
+
+        positions = self.adapter.fetch_positions()
+        self.assertEqual(len(positions), 2)
+        self.assertEqual(positions[0].symbol, "SNDQ")
+        self.assertEqual(positions[0].strike, Decimal("23"))
+        self.assertEqual(positions[1].symbol, "SNDQ")
+        self.assertEqual(positions[1].strike, Decimal("25"))
+
 if __name__ == "__main__":
     unittest.main()
+
