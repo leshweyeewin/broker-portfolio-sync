@@ -165,6 +165,21 @@ class LongbridgeAdapter:
             return dec(getattr(cd, "total_amount", None) or "0")
         return Decimal("0")
 
+    @staticmethod
+    def _has_option_fees(detail) -> bool:
+        """Check if charge_detail contains options-specific fees."""
+        cd = getattr(detail, "charge_detail", None)
+        if cd is None:
+            return False
+        items = getattr(cd, "items", []) or []
+        for item in items:
+            fees = getattr(item, "fees", []) or []
+            for f in fees:
+                code = str(getattr(f, "code", "") or "")
+                if code.startswith("Options") or "option" in code.lower():
+                    return True
+        return False
+
     def fetch_stock_executions(self, since: date | None) -> list[StockTrade]:
         trades: list[StockTrade] = []
         for order, fill_dt in self._get_filled_orders(since):
@@ -172,7 +187,7 @@ class LongbridgeAdapter:
             if qty == 0:
                 continue
             code = str(order.symbol).split(".")[0]  # Longbridge uses AAPL.US
-            if is_option_code(code):
+            if is_option_code(code) or self._has_option_fees(order):
                 continue  # option execution — handled by fetch_option_executions
 
             trades.append(
@@ -202,8 +217,41 @@ class LongbridgeAdapter:
                 continue
             code = str(order.symbol).split(".")[0]
             legs = parse_option_legs(code)
+
             if legs is None:
-                continue  # stock — handled by fetch_stock_executions
+                if not self._has_option_fees(order):
+                    continue  # stock — handled by fetch_stock_executions
+
+                # Combo order returned with parent underlying symbol (e.g. CRWV.US)
+                # Resolve legs from positions matching this underlying
+                matching_positions = [
+                    p for p in self.fetch_positions()
+                    if p.asset_type == AssetType.OPTION and p.symbol == code
+                ]
+                if matching_positions:
+                    fee = self._fee(order)
+                    for i, pos in enumerate(matching_positions):
+                        leg_is_buy = (pos.qty > 0)
+                        leg_fee = fee if i == 0 else Decimal("0")
+                        trades.append(
+                            OptionTrade(
+                                date=self._timestamp_to_date(fill_dt.timestamp()),
+                                broker=Broker.LONGBRIDGE,
+                                underlying=pos.symbol,
+                                option_type=pos.option_type,
+                                strike=pos.strike,
+                                qty=abs(pos.qty),
+                                expiry=pos.expiry,
+                                action=OptionAction.BUY if leg_is_buy else OptionAction.SELL,
+                                premium=pos.avg_cost or Decimal("0"),
+                                fee=leg_fee,
+                                currency=str(order.currency),
+                                fill_id=f"{order.order_id}:{i}",
+                                timestamp=fill_dt,
+                                strategy="Vertical Spread" if len(matching_positions) == 2 else "Multi-Leg",
+                            )
+                        )
+                continue
 
             is_buy = (order.side == OrderSide.Buy)
             price = dec(order.executed_price or order.price or "0")
@@ -254,12 +302,27 @@ class LongbridgeAdapter:
         return trades
 
     def _get_filled_orders(self, since: date | None) -> list:
-        """Discover filled orders by FILL time via history_executions, then join
-        each unique order_id to order_detail for full detail + fee. Returns
-        ``(OrderDetail, fill_datetime)`` tuples, dated by the fill's
-        trade_done_at (the latest fill for a partially-filled order)."""
+        """Discover filled orders by FILL time via history_executions and
+        today_executions, then join each unique order_id to order_detail for
+        full detail + fee. Returns ``(OrderDetail, fill_datetime)`` tuples,
+        dated by the fill's trade_done_at (the latest fill for a partially-filled
+        order)."""
         start_at = self._since_to_datetime(since)
-        executions = self._call_with_retry(self._client.history_executions, start_at=start_at) or []
+        executions = list(self._call_with_retry(self._client.history_executions, start_at=start_at) or [])
+        try:
+            today_execs = self._call_with_retry(self._client.today_executions) or []
+            for te in today_execs:
+                te_dt = getattr(te, "trade_done_at", None)
+                if te_dt is not None and start_at is not None:
+                    # Ensure timezone-aware comparison
+                    if te_dt.tzinfo is None and start_at.tzinfo is not None:
+                        te_dt = te_dt.replace(tzinfo=start_at.tzinfo)
+                    if te_dt < start_at:
+                        continue
+                executions.append(te)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).debug("Longbridge today_executions error: %s", exc)
 
         # Unique order_ids, remembering each order's latest fill time.
         order_ids: list = []
