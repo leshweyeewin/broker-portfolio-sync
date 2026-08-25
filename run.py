@@ -811,6 +811,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             from analytics.report import run_analytics, format_telegram_report
             report = run_analytics(writer)
             message = format_telegram_report(report)
+            print(message)
             delivered = notify_safe(message)
             if delivered:
                 log.info("Analytics report sent.")
