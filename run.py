@@ -811,9 +811,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             from analytics.report import run_analytics, format_telegram_report
             report = run_analytics(writer)
             message = format_telegram_report(report)
-            print(message)
-            notify_safe(message)
-            log.info("Analytics report sent.")
+            delivered = notify_safe(message)
+            if delivered:
+                log.info("Analytics report sent.")
+            else:
+                log.warning("Analytics report could not be delivered to Telegram.")
         except Exception as exc:
             log.error("Analytics failed: %s", exc, exc_info=True)
             return 1
