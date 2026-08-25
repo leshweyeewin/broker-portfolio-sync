@@ -133,7 +133,9 @@ def run_analytics(
                 log.debug("Daily movers scan error: %s", exc)
 
             try:
-                report.upcoming_earnings = get_upcoming_earnings(full_universe, today=today, days_ahead=14)
+                report.upcoming_earnings = get_upcoming_earnings(
+                    full_universe, today=today, days_ahead=14, with_expected_move=True
+                )
             except Exception as exc:
                 log.debug("Earnings calendar scan error: %s", exc)
 
@@ -176,7 +178,8 @@ def format_telegram_report(report: AnalyticsReport, *, today: date | None = None
     if report.upcoming_earnings:
         sections.append("📅 Upcoming Earnings (Next 2 Weeks — Prepare IV Crush Plays):")
         for e in report.upcoming_earnings:
-            sections.append(f"   ⚡ {e.ticker} · {e.note} ({e.earnings_date:%a %d %b})")
+            em = f" · ±{e.expected_move_pct:.1f}% exp move" if e.expected_move_pct is not None else ""
+            sections.append(f"   ⚡ {e.ticker} · {e.note} ({e.earnings_date:%a %d %b}){em}")
         sections.append("")
 
     # 3. High-Probability Short Put / Short Call Picks (Systematic Screener)
@@ -188,16 +191,18 @@ def format_telegram_report(report: AnalyticsReport, *, today: date | None = None
         if puts:
             sections.append("   🟢 Bullish Income (Short Put):")
             for p in puts[:3]:
+                rr = f" · IV/RV {p.iv_rv_ratio:.2f}" if p.iv_rv_ratio is not None else ""
                 sections.append(
                     f"      • {p.symbol} ${p.strike} Put exp {p.expiry} · "
-                    f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}"
+                    f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}{rr}"
                 )
         if calls:
             sections.append("   🔴 Bearish Income (Short Call):")
             for p in calls[:3]:
+                rr = f" · IV/RV {p.iv_rv_ratio:.2f}" if p.iv_rv_ratio is not None else ""
                 sections.append(
                     f"      • {p.symbol} ${p.strike} Call exp {p.expiry} · "
-                    f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}"
+                    f"Δ {p.delta:.2f} · Mid ${p.mid_price:.2f} · OI {p.open_interest:,}{rr}"
                 )
         sections.append("")
 

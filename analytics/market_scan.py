@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -43,6 +44,120 @@ class UpcomingEarnings:
     earnings_date: date
     days_left: int
     note: str = ""
+    expected_move_pct: Optional[float] = None  # ATM-straddle implied move (%), if computed
+
+
+# --------------------------------------------------------------------------- #
+# Volatility helpers (plugin-free: realized vol + straddle-implied expected move)
+# --------------------------------------------------------------------------- #
+
+DEFAULT_MIN_IV_RV = 1.0  # only surface short-premium setups where IV >= realized vol
+
+
+def _annualized_realized_vol(closes, window: int = 30) -> Optional[float]:
+    """Annualized realized volatility (decimal) from a close-price series.
+
+    Std of daily log returns over the last ``window`` days, annualized by
+    ``sqrt(252)``. Returns ``None`` if there isn't enough clean data. Same scale
+    as yfinance ``impliedVolatility`` (0.30 == 30%), so IV/RV is unitless.
+    """
+    vals: list[float] = []
+    for c in closes:
+        try:
+            v = float(c)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            vals.append(v)
+    vals = vals[-(window + 1):]
+    if len(vals) < 3:
+        return None
+    rets = [math.log(vals[i] / vals[i - 1]) for i in range(1, len(vals))]
+    if len(rets) < 2:
+        return None
+    return statistics.stdev(rets) * math.sqrt(252)
+
+
+def _atm_mid(rows: list[dict], underlying_price: float) -> Optional[float]:
+    """Mid price of the strike closest to ``underlying_price`` (None if none usable)."""
+    best_mid: Optional[float] = None
+    best_dist: Optional[float] = None
+    for r in rows:
+        try:
+            strike = float(r.get("strike"))
+        except (TypeError, ValueError):
+            continue
+        bid = float(r.get("bid") or 0)
+        ask = float(r.get("ask") or 0)
+        last = float(r.get("lastPrice") or 0)
+        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else last
+        if mid <= 0:
+            continue
+        dist = abs(strike - underlying_price)
+        if best_dist is None or dist < best_dist:
+            best_mid, best_dist = mid, dist
+    return best_mid
+
+
+def _expected_move_pct(straddle_price: float, underlying_price: float) -> Optional[float]:
+    """Straddle-implied expected move as a % of price (None if inputs invalid)."""
+    if underlying_price <= 0 or straddle_price <= 0:
+        return None
+    return round(straddle_price / underlying_price * 100, 1)
+
+
+def _estimate_expected_move(tk, earnings_date: date, underlying_price: float) -> Optional[float]:
+    """ATM-straddle expected move (%) for the first expiry on/after ``earnings_date``."""
+    try:
+        expiries = list(getattr(tk, "options", None) or [])
+    except Exception:
+        return None
+    exp = None
+    for e in expiries:
+        try:
+            if date.fromisoformat(e) >= earnings_date:
+                exp = e
+                break
+        except ValueError:
+            continue
+    if not exp or underlying_price <= 0:
+        return None
+    try:
+        chain = tk.option_chain(exp)
+        calls = chain.calls.to_dict("records")
+        puts = chain.puts.to_dict("records")
+    except Exception:
+        return None
+    call_mid = _atm_mid(calls, underlying_price)
+    put_mid = _atm_mid(puts, underlying_price)
+    if call_mid is None or put_mid is None:
+        return None
+    return _expected_move_pct(call_mid + put_mid, underlying_price)
+
+
+def _attach_expected_moves(events: list["UpcomingEarnings"]) -> None:
+    """Best-effort: fill ``expected_move_pct`` on each event from yfinance chains."""
+    if not events:
+        return
+    try:
+        import yfinance as yf
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    except ImportError:
+        return
+    for ev in events:
+        try:
+            tk = yf.Ticker(ev.ticker)
+            fast_info = getattr(tk, "fast_info", None)
+            price = getattr(fast_info, "last_price", None)
+            if not price:
+                h = tk.history(period="1d")
+                if not h.empty:
+                    price = float(h["Close"].iloc[-1])
+            if not price:
+                continue
+            ev.expected_move_pct = _estimate_expected_move(tk, ev.earnings_date, float(price))
+        except Exception as exc:
+            log.debug("Expected-move calc failed for %s: %s", ev.ticker, exc)
 
 
 def _clean_ticker_list(tickers: list[str]) -> list[str]:
@@ -148,8 +263,14 @@ def get_upcoming_earnings(
     *,
     today: Optional[date] = None,
     days_ahead: int = 14,
+    with_expected_move: bool = False,
 ) -> list[UpcomingEarnings]:
-    """Find upcoming quarterly earnings for tickers in [today, today + days_ahead]."""
+    """Find upcoming quarterly earnings for tickers in [today, today + days_ahead].
+
+    When ``with_expected_move`` is set, each event is annotated (best-effort) with
+    the ATM-straddle implied move from yfinance option chains. Off by default so
+    the function stays network-free for callers that only need the calendar.
+    """
     today = today or date.today()
     clean_tickers = _clean_ticker_list(tickers)
 
@@ -168,6 +289,9 @@ def get_upcoming_earnings(
                     days_left=days_left,
                     note=note,
                 ))
+
+    if with_expected_move:
+        _attach_expected_moves(events)
 
     events.sort(key=lambda e: (e.days_left, e.ticker))
     return events
@@ -214,6 +338,7 @@ def scan_short_option_picks(
     target_dte_max: int = 45,
     include_benchmarks: bool = False,
     max_tickers: int = 30,
+    min_iv_rv: float = DEFAULT_MIN_IV_RV,
 ) -> list[ScreenerResult]:
     """Scan candidate tickers for high-probability Short Put / Call setups.
 
@@ -245,13 +370,19 @@ def scan_short_option_picks(
             if not expiries:
                 continue
 
-            # Get current price
+            # Current price + trailing realized vol (for the IV/RV richness score)
             fast_info = getattr(tk, "fast_info", None)
             curr_price = getattr(fast_info, "last_price", None)
-            if not curr_price:
-                hist = tk.history(period="1d")
-                if not hist.empty:
-                    curr_price = float(hist["Close"].iloc[-1])
+            realized_vol: Optional[float] = None
+            try:
+                uh = tk.history(period="3mo")
+                if not uh.empty:
+                    u_closes = uh["Close"].dropna().tolist()
+                    realized_vol = _annualized_realized_vol(u_closes)
+                    if not curr_price and u_closes:
+                        curr_price = float(u_closes[-1])
+            except Exception as exc:
+                log.debug("Realized-vol fetch failed for %s: %s", ticker, exc)
             if not curr_price:
                 continue
 
@@ -287,6 +418,10 @@ def scan_short_option_picks(
 
                         delta = abs(_estimate_delta(curr_price, strike, dte, iv, is_call=False))
                         if filters.delta_min <= delta <= filters.delta_max:
+                            ratio = (round(iv / realized_vol, 2)
+                                     if (realized_vol and realized_vol > 0 and iv > 0) else None)
+                            if ratio is not None and ratio < min_iv_rv:
+                                continue
                             results.append(ScreenerResult(
                                 symbol=ticker,
                                 expiry=exp_str,
@@ -297,9 +432,10 @@ def scan_short_option_picks(
                                 spread=Decimal(f"{spread:.2f}"),
                                 delta=round(delta, 2),
                                 iv=round(iv, 2),
-                                ivp=75.0,
+                                ivp=0.0,
                                 open_interest=oi,
                                 mid_price=Decimal(f"{mid:.2f}"),
+                                iv_rv_ratio=ratio,
                             ))
 
                 # Process Calls (Bearish Short Call)
@@ -322,6 +458,10 @@ def scan_short_option_picks(
 
                         delta = abs(_estimate_delta(curr_price, strike, dte, iv, is_call=True))
                         if filters.delta_min <= delta <= filters.delta_max:
+                            ratio = (round(iv / realized_vol, 2)
+                                     if (realized_vol and realized_vol > 0 and iv > 0) else None)
+                            if ratio is not None and ratio < min_iv_rv:
+                                continue
                             results.append(ScreenerResult(
                                 symbol=ticker,
                                 expiry=exp_str,
@@ -332,14 +472,16 @@ def scan_short_option_picks(
                                 spread=Decimal(f"{spread:.2f}"),
                                 delta=round(delta, 2),
                                 iv=round(iv, 2),
-                                ivp=75.0,
+                                ivp=0.0,
                                 open_interest=oi,
                                 mid_price=Decimal(f"{mid:.2f}"),
+                                iv_rv_ratio=ratio,
                             ))
 
         except Exception as exc:
             log.debug("Option scan failed for %s: %s", ticker, exc)
             continue
 
-    results.sort(key=lambda r: (r.symbol, r.expiry, r.strike))
+    # Richest premium first (highest IV/RV), then stable by symbol/expiry/strike.
+    results.sort(key=lambda r: (-(r.iv_rv_ratio or 0.0), r.symbol, r.expiry, r.strike))
     return results

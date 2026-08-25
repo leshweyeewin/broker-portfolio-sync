@@ -57,6 +57,7 @@ class ScreenerResult:
     open_interest: int
     volume: int = 0
     mid_price: Decimal = ZERO
+    iv_rv_ratio: Optional[float] = None  # current IV ÷ trailing realized vol (>1 = rich premium)
 
     @property
     def direction(self) -> str:
