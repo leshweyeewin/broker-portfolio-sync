@@ -84,7 +84,7 @@ broker-portfolio-sync/
 │  ├─ reconcile.py        # ✅ seeding + post-write qty check
 │  └─ ticker_names.py     # ✅ broker → {ticker: company name} cache (blog)
 ├─ analytics/             # ✅ portfolio analytics, diagnostics, options playbook
-│  ├─ report.py           #    Analytics orchestrator & Telegram report formatter
+│  ├─ reporting/          #    Analytics orchestrator & Telegram report formatter
 │  ├─ data/               #    Local JSON caches (earnings dates, IV history)
 │  ├─ earnings/           #    Earnings & IV-crush domain (see docs/analytics.md)
 │  ├─ screening/          #    Signal scanners (screener, market_scan, swing, tagger)
@@ -107,7 +107,7 @@ broker-portfolio-sync/
 ├─ Dockerfile             # ✅ job container (+ .dockerignore)
 ├─ DEPLOY.md              # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
 ├─ opend/                 # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
-├─ tests/                 # ✅ test suite (412 passing tests)
+├─ tests/                 # ✅ test suite (423 passing tests)
 └─ requirements.txt
 ```
 

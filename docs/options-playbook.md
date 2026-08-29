@@ -66,6 +66,58 @@ The playbook contains additional dedicated strategy builders in `analytics.optio
 - **Directional Builder (`directional_builder.py`)**: Plans and scores debit spreads (bull call / bear put) and naked long options. Explicitly surfaces time-decay (theta) risk and max return capped by the spread.
 - **Mid-Week Planner (`mid_week_planner.py`)**: Supports short-dated (Monday/Wednesday) setups for protective hedges or quick post-news directional trades.
 
+## Strategy filter reference
+
+All hardcoded DTE/delta ranges live in `analytics/options/strategies.py` — the
+single source of truth. The directional builder consumes these filters when
+scanning tickers.
+
+```mermaid
+flowchart TD
+    TICKER["Ticker Universe"] --> SCAN["directional_builder.py\nscan_ticker()"]
+
+    SCAN --> WHEEL_STD["WheelFilters\n(CSP / CC standard)\n30–45 DTE · Δ 0.25–0.35"]
+    SCAN --> WHEEL_ST["WheelFiltersShortTerm\n(CSP / CC accelerated)\n7–14 DTE · Δ 0.25–0.35"]
+    SCAN --> LEAPS["LeapsFilters\n(PMCC long leg)\n180–730 DTE · Δ 0.70–0.85"]
+    SCAN --> SPREAD["SpreadFilters\n(Credit Spreads)\n21–45 DTE · Δ 0.15–0.35"]
+    SCAN --> SPREAD_ST["SpreadFiltersShortTerm\n(Weekly Spreads)\n7–14 DTE · Δ 0.15–0.35"]
+    SCAN --> DIR["DirectionalFilters\n(Bull Call / Long Call)\n30–45 DTE · Δ 0.40–0.60"]
+
+    WHEEL_STD --> CSP["build_cash_secured_puts()"]
+    WHEEL_STD --> CC["build_covered_calls()"]
+    WHEEL_ST --> CSP
+    WHEEL_ST --> CC
+
+    LEAPS --> PMCC["build_pmcc_leaps()\n+ build_full_pmcc()"]
+
+    SPREAD --> PCS["build_put_credit_spreads()"]
+    SPREAD --> CCS["build_call_credit_spreads()"]
+    SPREAD --> IC["build_iron_condors()"]
+    SPREAD_ST --> PCS
+    SPREAD_ST --> CCS
+
+    DIR --> BCS["build_bull_call_spreads()"]
+    DIR --> LC["build_long_calls()"]
+```
+
+| Filter class | Strategy | DTE range | Delta range | Notes |
+|---|---|---|---|---|
+| `WheelFilters` | CSP / CC (standard) | 30–45 | 0.25–0.35 | Core monthly income cycle |
+| `WheelFiltersShortTerm` | CSP / CC (accelerated) | 7–14 | 0.25–0.35 | Weekly income on high-conviction names |
+| `LeapsFilters` | PMCC long leg | 180–730 | 0.70–0.85 | Deep ITM LEAPS as stock replacement |
+| `SpreadFilters` | Credit spreads / IC | 21–45 | 0.15–0.35 | Standard income spreads |
+| `SpreadFiltersShortTerm` | Weekly credit spreads | 7–14 | 0.15–0.35 | Short-dated income plays |
+| `DirectionalFilters` | Bull call / long call | 30–45 | 0.40–0.60 | Debit directional bets |
+
+**Dual-DTE scanning:** The Wheel strategies (CSP/CC) are scanned at **both**
+the standard (30–45) and short-term (7–14) DTE windows in a single pass, so the
+builder surfaces candidates across both income cycles without allowing the
+15–29 "dead zone" in between.
+
+**PMCC cross-expiry pairing:** `build_full_pmcc()` pairs a LEAPS long call
+(180–730 DTE, deep ITM) with a short call from a nearer expiry (30–45 DTE),
+computing net debit and approximate max profit for the diagonal.
+
 ## Portfolio Controls & Journal (Phase 2)
 
 - **Portfolio Risk (`portfolio_risk.py`)**: Aggregates open-option max loss, delta/theta exposure, assignment notional, and sector concentration across your linked accounts. Enforces configurable guardrails like maximum risk per trade or aggregate open risk.
@@ -80,3 +132,4 @@ The playbook contains additional dedicated strategy builders in `analytics.optio
   turned into zero; unbounded risk is represented explicitly.
 - Broker fills and positions remain the accounting source of truth; a trade plan
   is a separate, user-authored intent record that may be linked to fills later.
+

@@ -22,19 +22,20 @@ flowchart TD
 
 ```
 analytics/
-├─ report.py           # Analytics orchestrator & Telegram report formatter
+├─ reporting/          # Report orchestration
+│  └─ report.py          # Analytics orchestrator & Telegram report formatter
 ├─ data/               # Local JSON caches (earnings dates, IV history)
 ├─ earnings/           # Earnings & IV-crush domain
 │  ├─ earnings.py         # Earnings date lookup (yfinance API + JSON cache)
 │  ├─ earnings_move.py    # Historical earnings-move study (Step-4 edge)
+│  ├─ earnings_planner.py # Writes the "Earnings Plan" sheet tab
 │  ├─ iv_logger.py        # Daily ATM-IV snapshot → data/iv_history.json
 │  ├─ iv_crush.py         # IV-crush screener (4-step playbook grade)
-│  ├─ iv_crush_history.py # Crush consistency + magnitude (Steps 2 & 3)
-│  └─ earnings_planner.py # Writes the "Earnings Plan" sheet tab
+│  └─ iv_crush_history.py # Crush consistency + magnitude (Steps 2 & 3)
 ├─ screening/          # Signal scanners
 │  ├─ screener.py         # Live option screener via Tiger QuoteClient
-│  ├─ market_scan.py      # Plugin-free volatility / expected-move signals
-│  ├─ swing.py            # Swing-setup scanner
+│  ├─ market_scan.py      # Daily movers, earnings calendar, short-option picks
+│  ├─ swing.py            # Swing-setup scanner (Breakout / Pullback-buy / etc.)
 │  └─ tagger.py           # Strategy tagging (IV Crush, Day Trade, Medium-Term)
 ├─ risk/               # Risk & sizing
 │  ├─ risk_engine.py      # 1–14 DTE expiry risk engine + playbook signals
@@ -49,11 +50,12 @@ You can run the analytics anytime in your terminal:
 
 ```bash
 # 1. Run analysis and print report to terminal (read-only against your sheet)
-./.venv/Scripts/python.exe -m analytics.report
+./.venv/Scripts/python.exe -m analytics.reporting.report
 
 # 2. Run analysis and send Telegram alert
-./.venv/Scripts/python.exe -m analytics.report --notify
+./.venv/Scripts/python.exe -m analytics.reporting.report --notify
 
 # 3. Run full sync and immediately output analytics
 ./.venv/Scripts/python.exe run.py --analytics
 ```
+
