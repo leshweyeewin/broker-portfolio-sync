@@ -511,25 +511,152 @@ def _min_optional(a: Decimal | None, b: Decimal | None) -> Decimal | None:
     return min(values) if values else None
 
 
-# --------------------------------------------------------------------------- #
-# Local, read-only CLI (documentation of the pure API; no network provider).
-# --------------------------------------------------------------------------- #
-def main(argv=None) -> int:
-    import sys
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-    argparse.ArgumentParser(
-        description="Pure credit-spread/iron-condor builder. Import "
-                    "build_put_credit_spreads / build_call_credit_spreads / "
-                    "build_iron_condors with an OptionChainSnapshot; this module "
-                    "does not fetch chains or place orders.").parse_args(argv)
-    print("analytics.options.strategies is a pure library — supply an "
-          "OptionChainSnapshot to the build_* functions. No provider is wired here.")
-    return 0
 
+from adapters.base import dec
+from analytics.options.payoff import (
+    OptionLeg,
+    PayoffSummary,
+    bull_call_spread,
+    bear_put_spread,
+    long_call,
+    long_put,
+    summarize_expiry,
+)
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+@dataclass(frozen=True)
+class DirectionalFilters:
+    min_open_interest: int = 100
+    max_spread_pct: Decimal = Decimal("0.15")
+    min_dte: int = 14
+    max_dte: int = 60
+    long_delta_low: Decimal = Decimal("0.40")
+    long_delta_high: Decimal = Decimal("0.70")
+    min_width: Decimal = Decimal("1")
+    max_width: Decimal = Decimal("10")
+
+    def __post_init__(self) -> None:
+        for name in ("max_spread_pct", "long_delta_low", "long_delta_high", "min_width", "max_width"):
+            object.__setattr__(self, name, dec(getattr(self, name)))
+
+@dataclass(frozen=True)
+class DirectionalCandidate:
+    underlying: str
+    strategy: str
+    expiry: date
+    dte: int
+    legs: tuple
+    net_debit: Decimal
+    debit_per_share: Decimal
+    max_profit: Decimal | None
+    max_loss: Decimal | None
+    return_on_risk: Decimal | None
+    breakevens: tuple
+    signal_context: str
+    snapshot_id: str
+    warnings: tuple = ()
+
+@dataclass(frozen=True)
+class DirectionalScan:
+    underlying: str
+    expiry: date
+    candidates: tuple = ()
+    rejections: tuple = ()
+    warnings: tuple = ()
+
+def _build_directional(
+    strategy: str,
+    snapshot,
+    expiry: date,
+    *,
+    today: date | None,
+    filters: DirectionalFilters | None,
+    rsi: float | None,
+) -> DirectionalScan:
+    filt = filters or DirectionalFilters()
+    today = today or date.today()
+    right = "put" if strategy in ("bear_put", "long_put") else "call"
+    
+    scan_warnings = []
+    rejections = []
+    candidates = []
+    
+    dte = (expiry - today).days
+    if dte < filt.min_dte or dte > filt.max_dte:
+        rejections.append(Rejection(strategy, f"DTE {dte} outside [{filt.min_dte},{filt.max_dte}]"))
+        return DirectionalScan(snapshot.underlying, expiry, (), tuple(rejections), tuple(scan_warnings))
+        
+    quotes = [q for q in quotes_for_expiry(snapshot, expiry) if q.contract.right == right]
+    if not quotes:
+        rejections.append(Rejection(strategy, f"no {right} quotes"))
+        return DirectionalScan(snapshot.underlying, expiry, (), tuple(rejections), tuple(scan_warnings))
+        
+    by_strike = {q.contract.strike: q for q in quotes}
+    
+    for long_q in quotes:
+        long_strike = long_q.contract.strike
+        quality = evaluate_quote_quality(long_q, min_open_interest=filt.min_open_interest, max_spread_pct=filt.max_spread_pct)
+        if not quality.tradable or quality.price is None: continue
+        
+        delta = abs(float(long_q.delta)) if long_q.delta else 0
+        if delta < float(filt.long_delta_low) or delta > float(filt.long_delta_high): continue
+        
+        # If long option
+        if strategy in ("long_call", "long_put"):
+            legs = (long_call(long_strike, quality.price) if right == "call" else long_put(long_strike, quality.price),)
+            summary = summarize_expiry(legs)
+            
+            candidates.append(DirectionalCandidate(
+                underlying=snapshot.underlying, strategy=strategy, expiry=expiry, dte=dte, legs=legs,
+                net_debit=-summary.net_credit, debit_per_share=-summary.net_credit/100,
+                max_profit=summary.max_profit, max_loss=summary.max_loss, return_on_risk=None,
+                breakevens=summary.breakevens, signal_context=rsi_signal_context(rsi, "iron_condor"),
+                snapshot_id=snapshot.snapshot_id, warnings=tuple(quality.warnings)
+            ))
+        else:
+            # Debit spread
+            short_q = _pick_short_for_debit(right, long_strike, by_strike, filt)
+            if not short_q: continue
+            short_strike = short_q.contract.strike
+            s_quality = evaluate_quote_quality(short_q, min_open_interest=filt.min_open_interest, max_spread_pct=filt.max_spread_pct)
+            if not s_quality.tradable or s_quality.price is None: continue
+            
+            try:
+                legs = bull_call_spread(long_strike, quality.price, short_strike, s_quality.price) if right == "call" else bear_put_spread(long_strike, quality.price, short_strike, s_quality.price)
+                summary = summarize_expiry(legs)
+                debit = -summary.net_credit
+                if debit <= 0: continue
+                
+                candidates.append(DirectionalCandidate(
+                    underlying=snapshot.underlying, strategy=strategy, expiry=expiry, dte=dte, legs=legs,
+                    net_debit=debit, debit_per_share=debit/100, max_profit=summary.max_profit, max_loss=summary.max_loss,
+                    return_on_risk=summary.max_profit/summary.max_loss if summary.max_loss else None,
+                    breakevens=summary.breakevens, signal_context=rsi_signal_context(rsi, "iron_condor"),
+                    snapshot_id=snapshot.snapshot_id, warnings=tuple(dict.fromkeys((*quality.warnings, *s_quality.warnings)))
+                ))
+            except: continue
+            
+    return DirectionalScan(snapshot.underlying, expiry, tuple(candidates), tuple(rejections), tuple(scan_warnings))
+
+def _pick_short_for_debit(right, long_strike, by_strike, filt):
+    if right == "call":
+        strikes = sorted(s for s in by_strike if s > long_strike)
+    else:
+        strikes = sorted((s for s in by_strike if s < long_strike), reverse=True)
+    for strike in strikes:
+        width = abs(long_strike - strike)
+        if filt.min_width <= width <= filt.max_width:
+            return by_strike[strike]
+    return None
+
+def build_bull_call_spreads(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    return _build_directional("bull_call", snapshot, expiry, today=today, filters=filters, rsi=rsi)
+
+def build_bear_put_spreads(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    return _build_directional("bear_put", snapshot, expiry, today=today, filters=filters, rsi=rsi)
+
+def build_long_calls(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    return _build_directional("long_call", snapshot, expiry, today=today, filters=filters, rsi=rsi)
+
+def build_long_puts(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    return _build_directional("long_put", snapshot, expiry, today=today, filters=filters, rsi=rsi)
+

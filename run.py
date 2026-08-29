@@ -808,7 +808,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Run analytics if requested
     if args.analytics:
         try:
-            from analytics.report import run_analytics, format_telegram_report
+            from analytics.reporting.report import run_analytics, format_telegram_report
             report = run_analytics(writer)
             message = format_telegram_report(report)
             print(message)

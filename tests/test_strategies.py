@@ -205,3 +205,29 @@ def test_rsi_signal_context_is_context_not_advice():
     assert "oversold" in rsi_signal_context(25.0, "put_credit").lower()
     assert "overbought" in rsi_signal_context(80.0, "call_credit").lower()
     assert "neutral" in rsi_signal_context(55.0, "iron_condor").lower()
+
+from analytics.options.strategies import build_bull_call_spreads, build_long_calls
+
+def _directional_chain():
+    # Long call at 105 (Delta 0.50), short call at 110
+    return _snapshot([
+        _quote(Decimal("105"), "call", "4.0", "4.2", "0.50"),
+        _quote(Decimal("110"), "call", "1.0", "1.1", "0.20"),
+    ])
+
+def test_build_bull_call_spread():
+    scan = build_bull_call_spreads(_directional_chain(), EXPIRY, today=TODAY)
+    assert len(scan.candidates) == 1
+    c = scan.candidates[0]
+    assert c.strategy == "bull_call"
+    assert c.net_debit > 0
+    assert c.max_loss == c.net_debit
+
+def test_build_long_call():
+    scan = build_long_calls(_directional_chain(), EXPIRY, today=TODAY)
+    assert len(scan.candidates) == 1
+    c = scan.candidates[0]
+    assert c.strategy == "long_call"
+    assert c.net_debit > 0
+    assert c.max_loss == c.net_debit
+    
