@@ -1,7 +1,7 @@
 # Registers the weekly realized-P/L Telegram digest in Windows Task Scheduler.
 # Default: Sunday 17:45 (leads off the weekly digests, before the 18:00 expiry
 # alert). Change with -At / -Day:
-#   .\scripts\weekly_pl_alert_register.ps1 -At "18:00"
+#   .\scripts\setup\weekly_pl_alert_register.ps1 -At "18:00"
 param(
     [string]$At = "17:45",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]
@@ -11,7 +11,7 @@ param(
 $repo = "D:\Learn\Google\broker-portfolio-sync"
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly_pl_alert.ps1`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly\weekly_pl_alert.ps1`""
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Day -At $At
 

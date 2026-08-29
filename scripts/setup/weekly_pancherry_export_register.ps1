@@ -1,6 +1,6 @@
 # Registers the weekly pancherry data-refresh job in Windows Task Scheduler.
 # Default: Sunday 18:45 (after the 18:30 Lemon8 job). Change with -At / -Day:
-#   .\scripts\weekly_pancherry_export_register.ps1 -At "19:15"
+#   .\scripts\setup\weekly_pancherry_export_register.ps1 -At "19:15"
 param(
     [string]$At = "18:45",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]
@@ -10,7 +10,7 @@ param(
 $repo = "D:\Learn\Google\broker-portfolio-sync"
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly_pancherry_export.ps1`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly\weekly_pancherry_export.ps1`""
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Day -At $At
 

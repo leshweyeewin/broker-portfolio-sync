@@ -1,6 +1,6 @@
 # Registers the weekly Lemon8 journal job in Windows Task Scheduler.
 # Default: Sunday 18:30 (after the 18:00 expiry alert). Change with -At / -Day:
-#   .\scripts\weekly_lemon8_register.ps1 -At "19:00"
+#   .\scripts\setup\weekly_lemon8_register.ps1 -At "19:00"
 param(
     [string]$At = "18:30",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]
@@ -10,7 +10,7 @@ param(
 $repo = "D:\Learn\Google\broker-portfolio-sync"
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly_lemon8.ps1`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly\weekly_lemon8.ps1`""
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Day -At $At
 

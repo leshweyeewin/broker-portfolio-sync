@@ -1,7 +1,7 @@
 # Registers the weekly options-expiry alert in Windows Task Scheduler.
 # Default: Sunday 18:00. Re-run with a different -At / -Day to change it, e.g.:
-#   .\scripts\weekly_expiry_alert_register.ps1 -At "17:30"
-#   .\scripts\weekly_expiry_alert_register.ps1 -Day Monday -At "06:30"
+#   .\scripts\setup\weekly_expiry_alert_register.ps1 -At "17:30"
+#   .\scripts\setup\weekly_expiry_alert_register.ps1 -Day Monday -At "06:30"
 param(
     [string]$At = "18:00",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]
@@ -11,7 +11,7 @@ param(
 $repo = "D:\Learn\Google\broker-portfolio-sync"
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly_expiry_alert.ps1`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\weekly\weekly_expiry_alert.ps1`""
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Day -At $At
 

@@ -2,7 +2,7 @@
 #
 # Reads the Options tab (read-only), nets each contract's open quantity, and
 # Telegrams every contract expiring within the next 7 days. Runs Sunday evening,
-# separate from the daily 06:00 sync (scripts/daily_sync.ps1) — it does NOT sync
+# separate from the daily 06:00 sync (scripts/daily/daily_sync.ps1) — it does NOT sync
 # brokers, it just reads whatever the last sync wrote and sends the heads-up.
 #
 # Register with scripts/setup/weekly_expiry_alert_register.ps1. Each run logs to logs/.

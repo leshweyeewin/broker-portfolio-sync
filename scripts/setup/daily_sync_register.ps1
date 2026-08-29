@@ -1,12 +1,12 @@
 # Registers the daily portfolio-sync task in Windows Task Scheduler.
 # Re-run with a different -At to change the time, e.g.:
-#   .\scripts\daily_sync_register.ps1 -At "18:30"
+#   .\scripts\setup\daily_sync_register.ps1 -At "18:30"
 param([string]$At = "06:00")
 
 $repo = "D:\Learn\Google\broker-portfolio-sync"
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\daily_sync.ps1`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$repo\scripts\daily\daily_sync.ps1`""
 
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
 
