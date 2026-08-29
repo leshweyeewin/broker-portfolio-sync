@@ -16,7 +16,7 @@
 # MooMoo only syncs if the OpenD gateway is running at run time; if it isn't,
 # MooMoo fails-soft (PARTIAL) and Tiger + Longbridge still sync.
 #
-# Register with scripts/register_daily_task.ps1. Each run logs to logs/ (gitignored).
+# Register with scripts/daily_sync_register.ps1. Each run logs to logs/ (gitignored).
 
 # NOTE: do NOT set $ErrorActionPreference='Stop'. The broker SDKs log to stderr,
 # and under Task Scheduler's Windows PowerShell 5.1, Stop turns any native stderr

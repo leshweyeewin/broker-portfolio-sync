@@ -1,7 +1,7 @@
 # Registers the weekly options-expiry alert in Windows Task Scheduler.
 # Default: Sunday 18:00. Re-run with a different -At / -Day to change it, e.g.:
-#   .\scripts\register_weekly_expiry_task.ps1 -At "17:30"
-#   .\scripts\register_weekly_expiry_task.ps1 -Day Monday -At "06:30"
+#   .\scripts\weekly_expiry_alert_register.ps1 -At "17:30"
+#   .\scripts\weekly_expiry_alert_register.ps1 -Day Monday -At "06:30"
 param(
     [string]$At = "18:00",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]

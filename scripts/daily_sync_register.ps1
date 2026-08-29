@@ -1,6 +1,6 @@
 # Registers the daily portfolio-sync task in Windows Task Scheduler.
 # Re-run with a different -At to change the time, e.g.:
-#   .\scripts\register_daily_task.ps1 -At "18:30"
+#   .\scripts\daily_sync_register.ps1 -At "18:30"
 param([string]$At = "06:00")
 
 $repo = "D:\Learn\Google\broker-portfolio-sync"

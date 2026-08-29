@@ -6,10 +6,10 @@ them against live broker positions, and identifies orphaned/expired positions.
 
 Usage:
     # Dry-run (default: reports mismatches without modifying the sheet)
-    python scripts/reconcile_fixup.py
+    python tools/reconcile_fixup.py
 
     # Apply changes (flips status of expired/stale rows from 'Open' to 'Closed')
-    python scripts/reconcile_fixup.py --apply
+    python tools/reconcile_fixup.py --apply
 """
 
 from __future__ import annotations

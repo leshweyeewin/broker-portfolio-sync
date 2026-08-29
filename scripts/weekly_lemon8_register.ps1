@@ -1,6 +1,6 @@
 # Registers the weekly Lemon8 journal job in Windows Task Scheduler.
 # Default: Sunday 18:30 (after the 18:00 expiry alert). Change with -At / -Day:
-#   .\scripts\register_weekly_lemon8_task.ps1 -At "19:00"
+#   .\scripts\weekly_lemon8_register.ps1 -At "19:00"
 param(
     [string]$At = "18:30",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]

@@ -5,7 +5,7 @@
 # separate from the daily 06:00 sync (scripts/daily_sync.ps1) — it does NOT sync
 # brokers, it just reads whatever the last sync wrote and sends the heads-up.
 #
-# Register with scripts/register_weekly_expiry_task.ps1. Each run logs to logs/.
+# Register with scripts/weekly_expiry_alert_register.ps1. Each run logs to logs/.
 
 # NOTE: same PS 5.1 gotcha as daily_sync.ps1 — do NOT set ErrorActionPreference
 # to 'Stop', or a native stderr line from a dependency aborts the run. Continue

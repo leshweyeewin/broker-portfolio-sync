@@ -5,7 +5,7 @@
 # on closed trades, not the mark-to-market swing on open positions.
 #
 # Runs Sunday evening, leading off the weekly digests (before the expiry alert).
-# Register with scripts/register_weekly_pl_task.ps1. Logs to logs/.
+# Register with scripts/weekly_pl_alert_register.ps1. Logs to logs/.
 
 # Same PS 5.1 gotcha as daily_sync.ps1 — do NOT set ErrorActionPreference 'Stop'.
 $ErrorActionPreference = "Continue"

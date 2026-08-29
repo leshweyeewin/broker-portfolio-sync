@@ -1,6 +1,6 @@
 # Registers the weekly pancherry data-refresh job in Windows Task Scheduler.
 # Default: Sunday 18:45 (after the 18:30 Lemon8 job). Change with -At / -Day:
-#   .\scripts\register_weekly_pancherry_task.ps1 -At "19:15"
+#   .\scripts\weekly_pancherry_export_register.ps1 -At "19:15"
 param(
     [string]$At = "18:45",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]

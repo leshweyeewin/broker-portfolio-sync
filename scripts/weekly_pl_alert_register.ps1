@@ -1,7 +1,7 @@
 # Registers the weekly realized-P/L Telegram digest in Windows Task Scheduler.
 # Default: Sunday 17:45 (leads off the weekly digests, before the 18:00 expiry
 # alert). Change with -At / -Day:
-#   .\scripts\register_weekly_pl_task.ps1 -At "18:00"
+#   .\scripts\weekly_pl_alert_register.ps1 -At "18:00"
 param(
     [string]$At = "17:45",
     [ValidateSet("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")]

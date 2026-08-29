@@ -230,7 +230,7 @@ class TestReconcile(unittest.TestCase):
         self.assertIn("SPY", warnings[0])
 
     def test_find_stale_open_rows_detects_expired_and_closed_positions(self):
-        from scripts.reconcile_fixup import find_stale_open_rows
+        from tools.reconcile_fixup import find_stale_open_rows
         from sheets.writer import PortfolioWriter, build_stock_row, build_option_row
         from tests.test_writer import FakeSheetClient
         from adapters.base import StockTrade, OptionTrade, StockAction, OptionAction, OptionType, Broker

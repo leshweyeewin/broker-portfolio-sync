@@ -2,8 +2,9 @@
 
 One daily writer keeps the sheet current; everything else is a **read-only**
 weekly or on-demand job downstream of it. Each has its own entrypoint and
-PowerShell task (`scripts/register_*_task.ps1` to install; `scripts/*.ps1` to
-run).
+PowerShell task: a runner `scripts/<name>.ps1` does the work, and its one-time
+installer `scripts/<name>_register.ps1` registers the Windows scheduled task that
+invokes it (e.g. `daily_sync.ps1` + `daily_sync_register.ps1`).
 
 | Cadence | Job | Entrypoint | Reads / Writes |
 |---------|-----|-----------|----------------|
