@@ -19,7 +19,6 @@ HANDOFF.md
 # Planning / source-material docs — kept locally, scrubbed from git history
 /implementation_plan.md
 /moomoo_option_playbook/FEATURES_TO_BUILD.md
-/moomoo_option_playbook/moomoo_playbook_summary.md
 
 # Local scratch scripts — kept on disk, not tracked
 scratch/
