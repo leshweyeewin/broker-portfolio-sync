@@ -14,7 +14,7 @@ from typing import Any
 
 from analytics.iv_crush import scan_iv_crush, IVCrushCandidate
 from config.settings import get_service_account_info, get_spreadsheet_id
-from sheets.writer import PortfolioWriter, SheetClient
+from sheets.writer import PortfolioWriter, SheetClient, EARNINGS_PLAN_HEADERS
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +64,10 @@ def main(argv=None) -> int:
     try:
         client = SheetClient(get_service_account_info(), get_spreadsheet_id())
         writer = PortfolioWriter(client)
-        writer.overwrite_earnings_plan(rows)
+        writer.ensure_tabs()  # create the "Earnings Plan" tab if the sheet lacks it
+        # Header row first — writer._ensure_headers doesn't cover this tab, so the
+        # planner owns writing the column labels above its data rows.
+        writer.overwrite_earnings_plan([EARNINGS_PLAN_HEADERS] + rows)
         log.info("Successfully wrote %d candidates to Earnings Plan tab.", len(rows))
     except Exception as exc:
         log.error("Failed to write to Google Sheets: %s", exc)
