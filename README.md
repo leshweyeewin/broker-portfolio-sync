@@ -41,6 +41,21 @@ Sheet, then **reconciles** computed quantities against broker positions. Money i
 `Decimal` throughout, and the run **fails loud** rather than half-writing. See
 [docs/architecture.md](docs/architecture.md) for the diagrams.
 
+## Key Tools (Playbook & Analytics)
+
+The repository contains several offline decision-support tools you can run locally:
+
+| Tool | Run Command | Description |
+|---|---|---|
+| **IV Crush Screener** | `python -m analytics.earnings.iv_crush` | Screens for earnings plays with a RICH/FAIR edge, grades them, and pipes them into credit-spread builders using live quotes. |
+| **Earnings Planner** | `python -m analytics.earnings.earnings_planner` | Runs the IV Crush screener over your watchlist and auto-fills the "Earnings Plan" tab in your Google Sheet. |
+| **IV Logger** | `python -m analytics.earnings.iv_logger` | Logs daily ATM-IV snapshots to `data/iv_history.json` to build the required historical context for the screener. |
+| **Income Workspace** | `python -m analytics.options.income_workspace` | Auto-detects eligible shares and cash to plan Wheel, Covered Call, Cash-Secured Put, and PMCC trades. |
+| **Directional Builder** | `python -m analytics.options.directional_builder` | Plans and scores debit spreads and long options. |
+| **Mid-Week Planner** | `python -m analytics.options.mid_week_planner` | Supports short-dated (Mon/Wed) setups and weeklies. |
+| **Strategy Journal** | `python -m analytics.options.journal` | Correlates original trade plans against final realized P/L to grade your execution discipline. |
+| **Portfolio Risk** | `python -m analytics.options.portfolio_risk` | Aggregates open max-loss and enforces configurable risk guardrails across linked accounts. |
+
 ## Quickstart
 
 ```bash

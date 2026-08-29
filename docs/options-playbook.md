@@ -13,7 +13,11 @@ analytics/options/
 ├─ market_context.py   # Technical, earnings and expected-move context card
 ├─ trade_plans.py      # Local read-only plans + lifecycle validation
 ├─ income_workspace.py # Wheel, CC, CSP and PMCC research workspace
-└─ strategies.py       # Pure credit-spread / iron-condor builder + scoring
+├─ directional_builder.py # Debit spread and long option builder
+├─ mid_week_planner.py # Short-dated / weeklies expiry planner
+├─ strategies.py       # Pure credit-spread / iron-condor builder + scoring
+├─ portfolio_risk.py   # Portfolio-level risk limits and guardrails
+└─ journal.py          # Strategy execution journal and P/L scorecard
 ```
 
 ## Foundations (Slices 1–2)
@@ -54,6 +58,19 @@ candidates; it never fetches a chain, sends a notification, or places an order.
   from current IV.
 - A live-provider → snapshot adapter is intentionally **not** wired here
   (offline-first; integrate a provider only behind the same model).
+
+## Additional Builders (Phase 1)
+
+The playbook contains additional dedicated strategy builders in `analytics.options`:
+- **Income Workspace (`income_workspace.py`)**: Detects eligible shares and cash from your portfolio to plan Wheel, Covered Call, Cash-Secured Put, and PMCC trades. Calculates effective cost basis, yield, and assignment risks.
+- **Directional Builder (`directional_builder.py`)**: Plans and scores debit spreads (bull call / bear put) and naked long options. Explicitly surfaces time-decay (theta) risk and max return capped by the spread.
+- **Mid-Week Planner (`mid_week_planner.py`)**: Supports short-dated (Monday/Wednesday) setups for protective hedges or quick post-news directional trades.
+
+## Portfolio Controls & Journal (Phase 2)
+
+- **Portfolio Risk (`portfolio_risk.py`)**: Aggregates open-option max loss, delta/theta exposure, assignment notional, and sector concentration across your linked accounts. Enforces configurable guardrails like maximum risk per trade or aggregate open risk.
+- **Plan-Aware Alerts (`alerting/plan_alerts.py`)**: Replaces generic reminders with thesis-aware notifications (e.g. entry trigger hit, profit target reached, max loss invalidation) linked to the trade plans you created.
+- **Strategy Journal (`journal.py`)**: The ultimate feedback loop. Links your original planned entries to the final FIFO P/L from your Google Sheet. Grades your execution discipline (e.g., stopping out correctly vs holding a loser).
 
 ## Safety boundary
 
