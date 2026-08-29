@@ -534,8 +534,8 @@ from analytics.options.payoff import (
 class DirectionalFilters:
     min_open_interest: int = 100
     max_spread_pct: Decimal = Decimal("0.15")
-    min_dte: int = 14
-    max_dte: int = 60
+    min_dte: int = 30
+    max_dte: int = 45
     long_delta_low: Decimal = Decimal("0.40")
     long_delta_high: Decimal = Decimal("0.70")
     min_width: Decimal = Decimal("1")
@@ -674,7 +674,7 @@ def build_long_puts(snapshot, expiry, *, today=None, filters=None, rsi=None):
 class WheelFilters:
     min_open_interest: int = 100
     max_spread_pct: Decimal = Decimal("0.15")
-    min_dte: int = 7
+    min_dte: int = 30
     max_dte: int = 45
     short_delta_low: Decimal = Decimal("0.20")
     short_delta_high: Decimal = Decimal("0.30")
@@ -682,6 +682,11 @@ class WheelFilters:
     def __post_init__(self) -> None:
         for name in ("max_spread_pct", "short_delta_low", "short_delta_high"):
             object.__setattr__(self, name, dec(getattr(self, name)))
+
+@dataclass(frozen=True)
+class WheelFiltersShortTerm(WheelFilters):
+    min_dte: int = 7
+    max_dte: int = 14
 
 @dataclass(frozen=True)
 class LeapsFilters:

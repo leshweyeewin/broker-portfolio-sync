@@ -234,6 +234,7 @@ def test_build_long_call():
 from analytics.options.strategies import (
     SpreadFiltersShortTerm,
     WheelFilters,
+    WheelFiltersShortTerm,
     LeapsFilters,
     build_cash_secured_puts,
     build_covered_calls,
@@ -245,6 +246,16 @@ def test_spread_filters_short_term():
     sf = SpreadFiltersShortTerm()
     assert sf.min_dte == 7
     assert sf.max_dte == 14
+
+def test_wheel_filters_standard():
+    wf = WheelFilters()
+    assert wf.min_dte == 30
+    assert wf.max_dte == 45
+
+def test_wheel_filters_short_term():
+    wf = WheelFiltersShortTerm()
+    assert wf.min_dte == 7
+    assert wf.max_dte == 14
 
 def _wheel_chain():
     return _snapshot([

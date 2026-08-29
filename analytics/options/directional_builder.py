@@ -14,7 +14,8 @@ from analytics.options.strategies import (
     build_cash_secured_puts,
     build_covered_calls,
     build_pmcc_leaps,
-    DirectionalFilters
+    DirectionalFilters,
+    WheelFiltersShortTerm
 )
 
 log = logging.getLogger(__name__)
@@ -128,12 +129,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  [Long Put]  {exp} {strikes}P | Debit:  | Max Loss:  | Breakeven: ")
                 
             csp = build_cash_secured_puts(snap, exp)
+            if not csp.candidates:
+                csp = build_cash_secured_puts(snap, exp, filters=WheelFiltersShortTerm())
             if csp.candidates:
                 c = csp.candidates[0]
                 strikes = str(c.legs[0].strike)
                 print(f"  [CSP]       {exp} {strikes}P | Credit: ${c.net_debit * -1:.2f} | Capital Required: ${c.legs[0].strike * 100:.2f}")
 
             cc = build_covered_calls(snap, exp)
+            if not cc.candidates:
+                cc = build_covered_calls(snap, exp, filters=WheelFiltersShortTerm())
             if cc.candidates:
                 c = cc.candidates[0]
                 strikes = str(c.legs[0].strike)
