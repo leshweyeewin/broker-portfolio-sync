@@ -124,6 +124,9 @@ weekly job downstream of it. Each has its own entrypoint and PowerShell task
 | Weekly (Sun) | pancherry export | `python -m core.ticker_names` then `python -m pancherry_export --pr` | refreshes ticker names, regenerates `.ts`, opens/updates a Draft PR |
 | On-demand | Standalone Market Analytics | `python -m analytics.report --notify` | runs strategy tagging, diagnostics, movers, earnings & option screener |
 | Intraday | Long-option take-profit | `python -m alerting.take_profit` | reads **live** broker positions → Telegram: long options at/above +50% unrealized (`--dry-run` prints instead) |
+| Intraday | Earnings IV Exit | `python -m alerting.earnings_iv_exit` | reads **live** broker positions → Telegram: alerts to close short premium options day before earnings |
+| Daily 16:30 | IV Logger | `python -m analytics.iv_logger` | fetches options chain → **writes** `iv_history.json` |
+| On-demand | Earnings Planner | `python -m analytics.earnings_planner` | reads `iv_history.json` → **writes** Earnings Plan sheet tab |
 | On-demand | Position sizing (2% rule) | `python -m analytics.position_sizing --equity 25000 --entry 180 --stop 174` | prints shares/contracts sized to a fixed % of equity (options: `--max-loss-per-contract`) |
 
 All weekly jobs are **fail-soft and read-only against the sheet** — a broker or

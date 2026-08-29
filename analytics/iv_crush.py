@@ -22,10 +22,12 @@ Read-only. Run:  python -m analytics.iv_crush NVDA CRM CRWD COST
 
 from __future__ import annotations
 
+import json
 import logging
 import statistics
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from analytics.earnings_move import historical_earnings_move, implied_vs_historical
@@ -69,6 +71,8 @@ class IVCrushCandidate:
     edge: Optional[str] = None                 # RICH / FAIR / CHEAP
     bias: str = "Neutral"                      # trend bias
     strategy: str = ""
+    current_iv: Optional[float] = None
+    iv_percentile: Optional[float] = None
 
     @property
     def signal(self) -> str:
@@ -81,8 +85,9 @@ class IVCrushCandidate:
                   if self.em_lower is not None else "")
         imp = f"±{self.implied_move_pct:.1f}%" if self.implied_move_pct is not None else "n/a"
         hist = f"±{self.hist_move_pct:.1f}%" if self.hist_move_pct is not None else "n/a"
+        ivp = f"IVP {self.iv_percentile:.0f}%" if self.iv_percentile is not None else "IVP n/a"
         return (f"{self.ticker} — {self.earnings_date} ({when}) · {self.signal}\n"
-                f"   implied {imp} vs hist {hist} {self.hist_bias} · "
+                f"   implied {imp} vs hist {hist} {self.hist_bias} · {ivp} · "
                 f"{self.bias} → {self.strategy}{bounds}")
 
 
@@ -112,6 +117,30 @@ def em_bounds(price: float, implied_move_pct: float) -> tuple[float, float]:
     """Lower/upper 1-SD Expected-Move price bounds for strike placement."""
     delta = price * implied_move_pct / 100.0
     return round(price - delta, 2), round(price + delta, 2)
+
+
+def _load_iv_history(ticker: str) -> dict[str, float]:
+    history_file = Path(__file__).parent / "iv_history.json"
+    if not history_file.exists():
+        return {}
+    try:
+        with open(history_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get(ticker.upper(), {})
+    except Exception:
+        return {}
+
+
+def compute_iv_percentile(current_iv: float, history: dict[str, float]) -> Optional[float]:
+    if not history:
+        return None
+    vals = list(history.values())
+    if current_iv not in vals:
+        vals.append(current_iv)
+    if len(vals) < 2:
+        return None
+    lower = sum(1 for v in vals if v < current_iv)
+    return (lower / len(vals)) * 100
 
 
 def _fetch_snapshot(tk, earnings_date: date) -> tuple[Optional[float], Optional[float], list[float]]:
@@ -173,6 +202,14 @@ def scan_iv_crush(
                 cand.hist_move_pct = study.avg_abs_reaction
                 cand.hist_bias = f"{study.bear_count}↓/{study.bull_count}↑"
                 cand.edge = implied_vs_historical(implied, study.avg_abs_reaction)
+                
+            iv_history = _load_iv_history(ev.ticker)
+            if iv_history:
+                from analytics.iv_logger import fetch_atm_iv
+                current_iv = fetch_atm_iv(ev.ticker)
+                if current_iv:
+                    cand.current_iv = current_iv
+                    cand.iv_percentile = compute_iv_percentile(current_iv, iv_history)
         except Exception as exc:
             log.debug("IV-crush scan failed for %s: %s", ev.ticker, exc)
         out.append(cand)

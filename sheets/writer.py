@@ -60,6 +60,7 @@ TAB_STOCKS       = "Stocks"
 TAB_OPTIONS      = "Options"
 TAB_DASHBOARD    = "Dashboard"
 TAB_RUN_LOG      = "Run Log"
+TAB_EARNINGS_PLAN = "Earnings Plan"
 
 # Column headers for each data tab. _dedup_key is a hidden internal key; on the
 # Stocks/Options tabs a manual "Reason" column trails it (see note below).
@@ -89,6 +90,10 @@ RUN_LOG_HEADERS = [
     "FX Rates Used", "Reconciliation", "Warnings",
 ]
 DASHBOARD_HEADERS = ["Metric", "Longbridge", "Tiger", "MooMoo", "Total (SGD)"]
+EARNINGS_PLAN_HEADERS = [
+    "Ticker", "Earnings Date", "Days Left", "Signal", 
+    "Implied Move", "Hist Move", "Trend Bias", "Strategy", "EM Lower", "EM Upper", "IV Percentile"
+]
 
 # How many header rows each data tab has before row data starts.
 # 1 = just the column header row. The summary block is placed off to the right.
@@ -97,9 +102,10 @@ DATA_HEADER_ROWS = {
     TAB_STOCKS: 3,   # rows 1-2 = Total P/L + Total Fees summary; row 3 = column headers
     TAB_OPTIONS: 3,
     TAB_RUN_LOG: 1,
+    TAB_EARNINGS_PLAN: 1,
 }
 
-ALL_TABS = [TAB_TRANSACTIONS, TAB_STOCKS, TAB_OPTIONS, TAB_DASHBOARD, TAB_RUN_LOG]
+ALL_TABS = [TAB_TRANSACTIONS, TAB_STOCKS, TAB_OPTIONS, TAB_DASHBOARD, TAB_RUN_LOG, TAB_EARNINGS_PLAN]
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -448,6 +454,15 @@ class PortfolioWriter:
                     "type": "CURRENCY", "pattern": "#,##0.00"}}},
                 "fields": "userEnteredFormat.numberFormat",
             }}])
+
+    def overwrite_earnings_plan(self, blocks: list[list[Any]]) -> None:
+        """Overwrite the Earnings Plan tab with the given rows."""
+        if not blocks:
+            return
+        self._client.clear_range(f"{TAB_EARNINGS_PLAN}!A1:Z1000")
+        self._client.batch_update_values([
+            {"range": f"{TAB_EARNINGS_PLAN}!A1", "values": blocks}
+        ])
 
     def read_net_capital_in_by_broker(self) -> dict[str, "Decimal"]:
         """Net external capital per broker = Σ Deposits − Σ Withdrawals, in SGD,

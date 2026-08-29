@@ -19,6 +19,7 @@ Run:  python -m alerting.take_profit
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional, Sequence
@@ -113,6 +114,11 @@ def _gather_live_positions() -> list[Position]:
 
 def main(argv=None) -> int:
     import argparse
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     ap = argparse.ArgumentParser(description="Live long-option take-profit alert (+50%).")
     ap.add_argument("--dry-run", action="store_true",
