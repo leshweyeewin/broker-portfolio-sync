@@ -195,20 +195,35 @@ def _signed_total(is_acquisition: bool, magnitude: Decimal) -> Decimal:
 
 
 _OPTION_SINGLE_RE = re.compile(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+(?:\.\d+)?)$")
+# General N-leg combo shorthand: UNDERLYING YYMMDD C|P STRIKE (/[C|P]STRIKE)+
+# Handles 2-leg verticals, 4-leg iron condors, etc.
 _OPTION_COMBO_RE = re.compile(
-    r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s1>\d+(?:\.\d+)?)/(?:(?P<cp2>[CP])?(?P<s2>\d+(?:\.\d+)?))$"
+    r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+(?:\.\d+)?)"
+    r"(?P<rest>(?:/(?:[CP])?\d+(?:\.\d+)?)+)$"
 )
 
 
 def _parse_strike(s: str) -> Decimal:
-    """Parse strike string from OCC 8-digit, MooMoo 1000x, or shorthand dollar values."""
+    """Parse strike string from OCC 8-digit, MooMoo 1000x, or shorthand dollar values.
+
+    OCC encodes strikes as ``price × 1000`` in 8 zero-padded digits.  Brokers
+    sometimes strip leading zeros, so the raw capture can be 5–8 digits.  The
+    rules:
+
+    * **5–8 digits** → always OCC-encoded → ÷1000
+      (``190000`` → 190, ``23500`` → 23.5, ``01390000`` → 1390).
+    * **4 digits ending in '000'** → OCC for $1–$9 (``1000`` → 1, ``5000`` → 5).
+    * **Everything else** (1–3 digits, or 4 digits not ending in '000') →
+      raw dollar value, kept as-is (``190`` → 190, ``1390`` → 1390).
+    """
     s = s.strip()
     if "." in s:
         return dec(s)
     ival = int(s)
-    if len(s) == 8 or (len(s) >= 4 and s.endswith("000")) or ival >= 1000:
+    if len(s) >= 5 or (len(s) == 4 and s.endswith("000")):
         return dec(ival) / Decimal("1000")
     return dec(ival)
+
 
 
 def _parse_single_leg(clean: str) -> Optional[tuple[str, OptionType, Decimal, date]]:
@@ -265,21 +280,26 @@ def parse_option_legs(code: str) -> Optional[list[tuple[str, OptionType, Decimal
     elif clean.endswith((".US", ".HK", ".SG", ".CN")):
         clean = clean[:-3]
 
-    # Check combo / spread shorthand: "SHOP260821P130/145", "SHOP260821P130000/145000"
+    # Check combo / spread shorthand (2+ legs):
+    #   "SHOP260821P130/145", "SHOP260821P130000/145000"
+    #   "DELL260904P400/430/C520/550" (4-leg iron condor)
     m_combo = _OPTION_COMBO_RE.match(clean)
     if m_combo:
         u = m_combo.group("u")
         d = m_combo.group("d")
         expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
-        cp1 = m_combo.group("cp")
-        otype1 = OptionType.CALL if cp1 == "C" else OptionType.PUT
-        s1 = _parse_strike(m_combo.group("s1"))
+        cp = m_combo.group("cp")
+        otype = OptionType.CALL if cp == "C" else OptionType.PUT
+        legs = [(u, otype, _parse_strike(m_combo.group("s")), expiry)]
 
-        cp2 = m_combo.group("cp2") or cp1
-        otype2 = OptionType.CALL if cp2 == "C" else OptionType.PUT
-        s2 = _parse_strike(m_combo.group("s2"))
-
-        return [(u, otype1, s1, expiry), (u, otype2, s2, expiry)]
+        for seg in m_combo.group("rest").split("/"):
+            if not seg:
+                continue
+            if seg[0] in "CP":
+                otype = OptionType.CALL if seg[0] == "C" else OptionType.PUT
+                seg = seg[1:]
+            legs.append((u, otype, _parse_strike(seg), expiry))
+        return legs
 
     # Check single option code: "SHOP260821C145000", "AAPL240119C00190000"
     single = _parse_single_leg(clean)

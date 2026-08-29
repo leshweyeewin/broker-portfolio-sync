@@ -87,22 +87,37 @@ def _combo_leg_buy_flags(legs, is_buy: bool) -> list[bool]:
     """Per-leg BUY(True)/SELL(False) for a decomposed combo order.
 
     MooMoo returns one row for the whole combo — the strikes, but not per-leg
-    direction — so an assumption is unavoidable. A 2-leg vertical (both legs the
-    same type) follows the standard debit-spread convention: *buying* the spread
-    is long the leg you pay up for — the LOWER strike for calls, the HIGHER
-    strike for puts — and short the other; *selling* flips both. This is the
-    reading that nets against the broker's reported position (a bought put
-    vertical closes a held one, rather than doubling it). Anything that isn't a
-    2-leg vertical keeps the old fallback: leg 0 takes the order side, the rest
-    oppose it.
+    direction — so an assumption is unavoidable.
+
+    For any combo where every option-type group has exactly 2 legs, we apply
+    the standard debit-spread convention *per group*:
+      * Calls: *buying* = long the lower strike, short the higher.
+      * Puts:  *buying* = long the higher strike, short the lower.
+    This covers 2-leg verticals AND 4-leg iron condors (two put legs + two
+    call legs). *Selling* flips all legs.
+
+    Anything that doesn't decompose neatly into 2-leg-per-type groups keeps
+    the old fallback: leg 0 takes the order side, the rest oppose it.
     """
-    if len(legs) == 2 and legs[0][1] == legs[1][1]:
-        otype = legs[0][1]
-        strikes = [leg[2] for leg in legs]
-        long_strike = min(strikes) if otype == OptionType.CALL else max(strikes)
-        long_idx = strikes.index(long_strike)
-        return [is_buy if i == long_idx else not is_buy for i in range(2)]
+    # Group leg indices by option type
+    by_type: dict[OptionType, list[int]] = {}
+    for i, leg in enumerate(legs):
+        by_type.setdefault(leg[1], []).append(i)
+
+    # If every type has exactly 2 legs, apply vertical-spread convention per type
+    if all(len(idxs) == 2 for idxs in by_type.values()):
+        flags = [False] * len(legs)
+        for otype, idxs in by_type.items():
+            strikes = [legs[i][2] for i in idxs]
+            long_strike = min(strikes) if otype == OptionType.CALL else max(strikes)
+            long_idx = idxs[strikes.index(long_strike)]
+            short_idx = idxs[1 - strikes.index(long_strike)]
+            flags[long_idx] = is_buy
+            flags[short_idx] = not is_buy
+        return flags
+
     return [is_buy if i == 0 else not is_buy for i in range(len(legs))]
+
 
 
 def _missing(value) -> bool:

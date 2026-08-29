@@ -146,13 +146,18 @@ class LongbridgeAdapter:
         """Fetch an order's full detail (fields + charge_detail), with a
         rate-limit retry. Returns None if it can't be read."""
         import time
+        import re
         for attempt in range(3):
             try:
                 time.sleep(0.1)  # small throttle to avoid bursting API limit
                 return self._client.order_detail(order_id)
             except Exception as e:  # noqa: BLE001
-                if ("429" in str(e) or "limited" in str(e).lower()) and attempt < 2:
-                    time.sleep(2.0 * (attempt + 1))
+                err_str = str(e).lower()
+                if ("429" in err_str or "limited" in err_str) and attempt < 2:
+                    # e.g. "rate limit of 30-second interval has been reached, please retry after: 19.5s"
+                    m = re.search(r"retry after:\s*([0-9.]+)", err_str)
+                    sleep_time = float(m.group(1)) + 0.5 if m else 2.0 * (attempt + 1)
+                    time.sleep(sleep_time)
                 else:
                     print(f"Warning: Could not fetch order_detail for {order_id}: {e}")
                     return None
@@ -189,6 +194,11 @@ class LongbridgeAdapter:
             code = str(order.symbol).split(".")[0]  # Longbridge uses AAPL.US
             if is_option_code(code) or self._has_option_fees(order):
                 continue  # option execution — handled by fetch_option_executions
+
+            if str(order.order_id) == "1277991007597641728":
+                # Workaround: This was a MRVL option combo close that Longbridge reported
+                # with 0 option fees and hid the legs, causing it to look exactly like a stock trade.
+                continue
 
             trades.append(
                 StockTrade(

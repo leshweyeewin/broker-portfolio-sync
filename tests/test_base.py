@@ -190,6 +190,18 @@ def test_parse_option_code_single_legs():
     assert u == "MARA" and otype is OptionType.CALL and strike == Decimal("23.5") and expiry == date(2026, 8, 21)
 
 
+def test_parse_option_code_high_dollar_strike():
+    """SNDK ~$1400: 4-digit OCC strike (1390) must NOT be divided by 1000."""
+    u, otype, strike, expiry = parse_option_code("US.SNDK260904P01390000")
+    assert (u, otype, strike) == ("SNDK", OptionType.PUT, Decimal("1390"))
+
+    u, otype, strike, expiry = parse_option_code("SNDK260904P1390")
+    assert (u, otype, strike) == ("SNDK", OptionType.PUT, Decimal("1390"))
+
+    u, otype, strike, expiry = parse_option_code("SNDK260904P1400")
+    assert (u, otype, strike) == ("SNDK", OptionType.PUT, Decimal("1400"))
+
+
 def test_parse_option_legs_combo_spread():
     legs = parse_option_legs("US.SHOP260821P130/145")
     assert legs is not None and len(legs) == 2
@@ -214,6 +226,31 @@ def test_parse_option_legs_combo_spread():
     assert legs_full[1] == ("SHOP", OptionType.PUT, Decimal("145"), date(2026, 8, 21))
 
 
+def test_parse_option_legs_iron_condor():
+    """4-leg iron condor: P400/430/C520/550 must decompose into 4 legs."""
+    legs = parse_option_legs("DELL260904P400/430/C520/550")
+    assert legs is not None and len(legs) == 4
+    assert legs[0] == ("DELL", OptionType.PUT, Decimal("400"), date(2026, 9, 4))
+    assert legs[1] == ("DELL", OptionType.PUT, Decimal("430"), date(2026, 9, 4))
+    assert legs[2] == ("DELL", OptionType.CALL, Decimal("520"), date(2026, 9, 4))
+    assert legs[3] == ("DELL", OptionType.CALL, Decimal("550"), date(2026, 9, 4))
+
+    # With explicit type on each leg
+    legs2 = parse_option_legs("DELL260904P400/P430/C520/C550")
+    assert legs2 == legs
+
+    # With x1000 strikes
+    legs3 = parse_option_legs("DELL260904P400000/P430000/C520000/C550000")
+    assert legs3 == legs
+
+    # Full slash-separated codes
+    legs4 = parse_option_legs(
+        "US.DELL260904P00400000/US.DELL260904P00430000"
+        "/US.DELL260904C00520000/US.DELL260904C00550000"
+    )
+    assert legs4 == legs
+
+
 def test_is_option_code():
     assert is_option_code("AAPL") is False
     assert is_option_code("US.AAPL") is False
@@ -221,3 +258,6 @@ def test_is_option_code():
     assert is_option_code("SHOP260821P130/145") is True
     assert is_option_code("US.SHOP260821P130000/145000") is True
     assert is_option_code("US.SHOP260821P130000/US.SHOP260821P145000") is True
+    # 4-leg iron condor
+    assert is_option_code("DELL260904P400/430/C520/550") is True
+
