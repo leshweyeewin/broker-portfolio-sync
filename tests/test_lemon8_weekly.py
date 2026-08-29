@@ -309,6 +309,7 @@ def test_commit_raises_on_put_error():
 # --------------------------------------------------------------------------- #
 
 def test_svg_to_png_produces_png_bytes():
+    pytest.importorskip("svglib", reason="svglib not installed — skipping PNG render test")
     from decimal import Decimal
     from datetime import date
     from lemon8.card import render_trade_table_pages

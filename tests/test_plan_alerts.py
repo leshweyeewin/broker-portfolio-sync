@@ -11,7 +11,7 @@ class DummyQuoteClient:
 
 def test_evaluate_plans():
     # This test will mock out the yfinance price fetch to avoid network calls.
-    import yfinance as yf
+    yf = pytest.importorskip("yfinance", reason="yfinance not installed")
     
     class DummyFastInfo:
         last_price = 195.0
