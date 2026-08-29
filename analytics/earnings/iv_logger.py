@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 
 HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "iv_history.json"
 
+# Fallback watchlist for a bare invocation or when --from-brokers finds nothing.
+DEFAULT_WATCHLIST = ["NVDA", "CRM", "CRWD", "COST", "TSLA", "AAPL"]
+
 def fetch_atm_iv(ticker: str) -> float | None:
     try:
         import yfinance as yf
@@ -93,15 +96,22 @@ def main(argv=None) -> int:
             
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description="Daily ATM-IV snapshot logger.")
-    ap.add_argument("tickers", nargs="*", default=["NVDA", "CRM", "CRWD", "COST", "TSLA", "AAPL"], 
-                    help="Watchlist ticker symbols.")
+    ap.add_argument("tickers", nargs="*", help="Watchlist ticker symbols.")
+    ap.add_argument("--from-brokers", action="store_true",
+                    help="Derive the watchlist from live MooMoo + Tiger holdings.")
     args = ap.parse_args(argv)
-    
-    if not args.tickers:
-        print("No tickers provided.")
-        return 1
-        
-    log_iv_snapshots(args.tickers)
+
+    tickers = [t.upper() for t in args.tickers]
+    if args.from_brokers:
+        from analytics.earnings.watchlist import live_watchlist
+        broker_tickers = live_watchlist()
+        log.info("Broker-derived watchlist (%d): %s", len(broker_tickers),
+                 ", ".join(broker_tickers) or "(none)")
+        tickers = sorted(set(tickers) | set(broker_tickers))
+    if not tickers:
+        tickers = DEFAULT_WATCHLIST  # bare invocation / brokers unreachable
+
+    log_iv_snapshots(tickers)
     return 0
 
 if __name__ == "__main__":

@@ -48,15 +48,22 @@ def main(argv=None) -> int:
             
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description="Earnings Planner Sheet Auto-filler.")
-    ap.add_argument("tickers", nargs="*", default=["NVDA", "CRM", "CRWD", "COST", "TSLA", "AAPL"], 
-                    help="Watchlist ticker symbols.")
+    ap.add_argument("tickers", nargs="*", help="Watchlist ticker symbols.")
+    ap.add_argument("--from-brokers", action="store_true",
+                    help="Derive the watchlist from live MooMoo + Tiger holdings.")
     args = ap.parse_args(argv)
-    
-    if not args.tickers:
-        log.error("No tickers provided.")
-        return 1
-        
-    cands = scan_iv_crush(args.tickers)
+
+    tickers = [t.upper() for t in args.tickers]
+    if args.from_brokers:
+        from analytics.earnings.watchlist import live_watchlist
+        broker_tickers = live_watchlist()
+        log.info("Broker-derived watchlist (%d): %s", len(broker_tickers),
+                 ", ".join(broker_tickers) or "(none)")
+        tickers = sorted(set(tickers) | set(broker_tickers))
+    if not tickers:
+        tickers = ["NVDA", "CRM", "CRWD", "COST", "TSLA", "AAPL"]  # bare/unreachable fallback
+
+    cands = scan_iv_crush(tickers)
     rows = [build_earnings_plan_row(c) for c in cands]
     
     if not rows:
