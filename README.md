@@ -189,6 +189,10 @@ broker-portfolio-sync/
 │  ├─ diagnostics.py      #    3 diagnostic calculators (IV crush, fee drag, alpha)
 │  ├─ risk_engine.py      #    1–14 DTE expiry risk engine + playbook signals
 │  ├─ screener.py         #    Live option screener via Tiger QuoteClient
+│  ├─ option_chain.py     #    Normalised option quotes, quality gates + snapshot store
+│  ├─ payoff.py           #    Pure Decimal expiry payoff / max-risk calculator
+│  ├─ market_context.py   #    Technical, earnings and expected-move context card
+│  ├─ trade_plans.py      #    Local read-only trade plans + lifecycle validation
 │  └─ report.py           #    Analytics orchestrator & Telegram report formatter
 ├─ sheets/writer.py       # ✅ service-account auth, idempotent upsert, Tag & Reason
 ├─ alerting/              # ✅ Telegram (stdlib urllib, best-effort)
@@ -208,6 +212,21 @@ broker-portfolio-sync/
 ├─ tests/                 # ✅ test suite (260 passing tests)
 └─ requirements.txt
 ```
+
+### Option-plan calculator (read-only)
+
+The P0 options-playbook foundation is local and read-only: it never sends broker
+orders. `analytics.payoff` provides a pure Python API for expiry payoff/risk.
+Use the small trade-plan CLI to save a plan with its evidence snapshot reference:
+
+```bash
+./.venv/Scripts/python.exe -m analytics.trade_plans create --ticker AAPL --strategy "Bull Call" --expiry 2026-09-18 --leg buy:call:200:5 --leg sell:call:210:2 --entry-trigger breakout --invalidation "close below 195" --exit-rule "take 50%" --risk-budget 400 --snapshot-id <snapshot-id> --approve
+./.venv/Scripts/python.exe -m analytics.trade_plans list
+```
+
+`--approve` rejects incomplete, mixed-expiry, over-budget, or unbounded-risk
+plans. The default local stores (`analytics/trade_plans.json` and
+`analytics/option_snapshots.json`) are user-owned evidence, not broker data.
 
 Downstream of the sync, the **Sheet is the single source of truth** for two weekly
 deliverables. Generation lives entirely in this repo (it needs the sheet schema,
