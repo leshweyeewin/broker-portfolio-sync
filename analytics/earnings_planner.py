@@ -34,6 +34,8 @@ def build_earnings_plan_row(cand: IVCrushCandidate) -> list[Any]:
         cand.em_lower if cand.em_lower is not None else "",
         cand.em_upper if cand.em_upper is not None else "",
         ivp,
+        cand.grade,
+        cand.verdict,
     ]
 
 def main(argv=None) -> int:

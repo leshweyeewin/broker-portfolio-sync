@@ -7,14 +7,20 @@ candidate line/sort — no yfinance / network.
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
+
+import pytest
 
 from analytics.iv_crush import (
     IVCrushCandidate,
+    compute_iv_percentile,
     em_bounds,
+    playbook_grade,
     scan_iv_crush,
     trend_bias,
     _STRATEGY_BY_BIAS,
 )
+from analytics.iv_crush_history import CrushStudy
 
 
 # --------------------------------------------------------------------------- #
@@ -99,3 +105,96 @@ def test_scan_returns_empty_when_no_earnings(monkeypatch):
     # No events -> function returns before touching yfinance.
     monkeypatch.setattr("analytics.iv_crush.get_upcoming_earnings", lambda *a, **k: [])
     assert scan_iv_crush(["NVDA"], today=date(2026, 8, 29)) == []
+
+
+# --------------------------------------------------------------------------- #
+# compute_iv_percentile (Step 1)
+# --------------------------------------------------------------------------- #
+
+def test_iv_percentile_fraction_below():
+    hist = {"2026-08-01": 0.2, "2026-08-02": 0.3, "2026-08-03": 0.9}
+    ivp = compute_iv_percentile(0.6, hist, today=date(2026, 8, 4))
+    assert ivp == pytest.approx(66.67, abs=0.1)  # 2 of 3 below 0.6
+
+
+def test_iv_percentile_none_when_insufficient():
+    assert compute_iv_percentile(0.5, {}) is None
+    assert compute_iv_percentile(0.5, {"2026-08-01": 0.4}, today=date(2026, 8, 2)) is None
+
+
+def test_iv_percentile_ignores_stale_window():
+    hist = {"2024-01-01": 0.9, "2026-08-01": 0.2, "2026-08-02": 0.3}
+    # The 2024 point is outside the 365d window, so only the two 2026 points count.
+    ivp = compute_iv_percentile(0.6, hist, today=date(2026, 8, 4))
+    assert ivp == pytest.approx(100.0)  # both remaining points below 0.6
+
+
+# --------------------------------------------------------------------------- #
+# playbook_grade (Step 1-4 composition)
+# --------------------------------------------------------------------------- #
+
+def _graded(**kw) -> IVCrushCandidate:
+    base = dict(ticker="X", earnings_date=date(2026, 9, 1), days_left=3)
+    base.update(kw)
+    return IVCrushCandidate(**base)
+
+
+def test_grade_all_green_is_focus():
+    c = _graded(iv_percentile=85.0, crush_consistency=0.8,
+                crush_magnitude_pct=12.0, edge="RICH")
+    assert playbook_grade(c) == (4, "FOCUS")
+    assert c.grade == 4 and c.verdict == "FOCUS"
+
+
+def test_grade_two_green_is_skip():
+    # IVP + RICH green, but crush unknown -> only 2 greens.
+    c = _graded(iv_percentile=85.0, edge="RICH")
+    assert playbook_grade(c) == (2, "SKIP")
+
+
+def test_grade_boundaries_resolve_to_amber():
+    # Exactly at the thresholds -> NOT green (spec uses >70, >=0.75, >10).
+    c = _graded(iv_percentile=70.0, crush_consistency=0.74,
+                crush_magnitude_pct=10.0, edge="FAIR")
+    assert playbook_grade(c) == (0, "SKIP")
+    c2 = _graded(iv_percentile=70.0, crush_consistency=0.75,
+                 crush_magnitude_pct=10.0, edge="FAIR")
+    assert playbook_grade(c2) == (1, "SKIP")  # only consistency>=0.75 flips green
+
+
+def test_grade_three_green_is_watch():
+    c = _graded(iv_percentile=85.0, crush_consistency=0.8,
+                crush_magnitude_pct=12.0, edge="FAIR")
+    assert playbook_grade(c) == (3, "WATCH")
+
+
+# --------------------------------------------------------------------------- #
+# scan_iv_crush wiring: IV percentile + crush populated (offline, patched)
+# --------------------------------------------------------------------------- #
+
+def test_scan_populates_ivp_and_crush(monkeypatch):
+    ev = SimpleNamespace(ticker="NVDA", earnings_date=date(2026, 9, 15), days_left=5)
+    monkeypatch.setattr("analytics.iv_crush.get_upcoming_earnings", lambda *a, **k: [ev])
+    # Avoid all network: stub the snapshot, history study, IV history + crush.
+    monkeypatch.setattr("analytics.iv_crush._fetch_snapshot",
+                        lambda tk, ed: (100.0, 8.0, [float(i) for i in range(1, 61)]))
+    monkeypatch.setattr("analytics.iv_crush.historical_earnings_move",
+                        lambda *a, **k: SimpleNamespace(
+                            avg_abs_reaction=5.0, bear_count=5, bull_count=3))
+    monkeypatch.setattr("analytics.iv_crush._load_iv_history",
+                        lambda t: {"2026-09-01": 0.2, "2026-09-10": 0.3})
+    monkeypatch.setattr("analytics.iv_logger.fetch_atm_iv", lambda t: 0.6)
+    monkeypatch.setattr("analytics.iv_crush.historical_iv_crush",
+                        lambda *a, **k: CrushStudy(
+                            n=3, consistency=0.67, avg_crush_pct=12.0, events=[]))
+
+    cands = scan_iv_crush(["NVDA"], today=date(2026, 9, 10))
+    assert len(cands) == 1
+    c = cands[0]
+    assert c.edge == "RICH"                       # implied 8.0 vs hist 5.0
+    assert c.iv_percentile == pytest.approx(100.0)
+    assert c.crush_magnitude_pct == 12.0
+    assert c.crush_consistency == 0.67
+    line = c.line()
+    assert "IVP 100%" in line
+    assert "crush 12.0%×67%" in line

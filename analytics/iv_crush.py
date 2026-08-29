@@ -26,11 +26,12 @@ import json
 import logging
 import statistics
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from analytics.earnings_move import historical_earnings_move, implied_vs_historical
+from analytics.iv_crush_history import historical_iv_crush
 from analytics.market_scan import (
     _annualized_realized_vol,
     _estimate_expected_move,
@@ -72,11 +73,23 @@ class IVCrushCandidate:
     bias: str = "Neutral"                      # trend bias
     strategy: str = ""
     current_iv: Optional[float] = None
-    iv_percentile: Optional[float] = None
+    iv_percentile: Optional[float] = None       # Step 1
+    crush_consistency: Optional[float] = None   # Step 2 — fraction 0..1 IV fell post-earnings
+    crush_magnitude_pct: Optional[float] = None # Step 3 — avg post-earnings IV drop %
 
     @property
     def signal(self) -> str:
         return _SIGNAL_BY_EDGE.get(self.edge or "", "NO DATA — need history")
+
+    @property
+    def grade(self) -> int:
+        """Count of GREEN playbook steps (0–4)."""
+        return playbook_grade(self)[0]
+
+    @property
+    def verdict(self) -> str:
+        """FOCUS / WATCH / SKIP from the green count."""
+        return playbook_grade(self)[1]
 
     def line(self) -> str:
         when = "Today!" if self.days_left == 0 else (
@@ -86,8 +99,13 @@ class IVCrushCandidate:
         imp = f"±{self.implied_move_pct:.1f}%" if self.implied_move_pct is not None else "n/a"
         hist = f"±{self.hist_move_pct:.1f}%" if self.hist_move_pct is not None else "n/a"
         ivp = f"IVP {self.iv_percentile:.0f}%" if self.iv_percentile is not None else "IVP n/a"
-        return (f"{self.ticker} — {self.earnings_date} ({when}) · {self.signal}\n"
-                f"   implied {imp} vs hist {hist} {self.hist_bias} · {ivp} · "
+        crush = (
+            f" · crush {self.crush_magnitude_pct:.1f}%×{self.crush_consistency * 100:.0f}%"
+            if self.crush_magnitude_pct is not None and self.crush_consistency is not None
+            else "")
+        return (f"[{self.grade}/4 {self.verdict}] {self.ticker} — "
+                f"{self.earnings_date} ({when}) · {self.signal}\n"
+                f"   implied {imp} vs hist {hist} {self.hist_bias} · {ivp}{crush} · "
                 f"{self.bias} → {self.strategy}{bounds}")
 
 
@@ -131,12 +149,32 @@ def _load_iv_history(ticker: str) -> dict[str, float]:
         return {}
 
 
-def compute_iv_percentile(current_iv: float, history: dict[str, float]) -> Optional[float]:
+def compute_iv_percentile(
+    current_iv: float,
+    history: dict[str, float],
+    *,
+    window_days: int = 365,
+    today: Optional[date] = None,
+) -> Optional[float]:
+    """% of the last ``window_days`` of IV snapshots that sat below ``current_iv``.
+
+    ``history`` maps ISO-date → IV fraction (as written by ``analytics.iv_logger``).
+    Snapshots older than the trailing window are ignored so a stale year can't skew
+    the rank — IV percentile is conventionally a 1-year measure. Returns ``None``
+    with fewer than two usable observations in the window.
+    """
     if not history:
         return None
-    vals = list(history.values())
-    if current_iv not in vals:
-        vals.append(current_iv)
+    today = today or date.today()
+    cutoff = today - timedelta(days=window_days)
+    vals: list[float] = []
+    for d, iv in history.items():
+        try:
+            snap = date.fromisoformat(d)
+        except (ValueError, TypeError):
+            continue
+        if snap >= cutoff:
+            vals.append(iv)
     if len(vals) < 2:
         return None
     lower = sum(1 for v in vals if v < current_iv)
@@ -209,15 +247,44 @@ def scan_iv_crush(
                 current_iv = fetch_atm_iv(ev.ticker)
                 if current_iv:
                     cand.current_iv = current_iv
-                    cand.iv_percentile = compute_iv_percentile(current_iv, iv_history)
+                    cand.iv_percentile = compute_iv_percentile(
+                        current_iv, iv_history, today=today)
+
+            crush = historical_iv_crush(ev.ticker, lookback=lookback, today=today)
+            if crush and crush.n:
+                cand.crush_consistency = crush.consistency
+                cand.crush_magnitude_pct = crush.avg_crush_pct
         except Exception as exc:
             log.debug("IV-crush scan failed for %s: %s", ev.ticker, exc)
         out.append(cand)
 
-    # RICH first, then soonest earnings.
+    # Highest playbook grade first, then RICH edge, then soonest earnings.
     edge_rank = {"RICH": 0, "FAIR": 1, "CHEAP": 2, None: 3}
-    out.sort(key=lambda c: (edge_rank.get(c.edge, 3), c.days_left, c.ticker))
+    out.sort(key=lambda c: (-c.grade, edge_rank.get(c.edge, 3), c.days_left, c.ticker))
     return out
+
+
+def playbook_grade(cand: "IVCrushCandidate") -> tuple[int, str]:
+    """Count of GREEN playbook steps → ``(green_count, verdict)``.
+
+    GREEN thresholds (a step whose input is unknown/``None`` counts as NOT green):
+      * Step 1 — IV Percentile > 70
+      * Step 2 — crush consistency ≥ 0.75
+      * Step 3 — average crush magnitude > 10%
+      * Step 4 — Step-4 edge is ``RICH``
+    Verdict: 4 → ``FOCUS``, 3 → ``WATCH``, ≤2 → ``SKIP``.
+    """
+    green = 0
+    if cand.iv_percentile is not None and cand.iv_percentile > 70:
+        green += 1
+    if cand.crush_consistency is not None and cand.crush_consistency >= 0.75:
+        green += 1
+    if cand.crush_magnitude_pct is not None and cand.crush_magnitude_pct > 10:
+        green += 1
+    if cand.edge == "RICH":
+        green += 1
+    verdict = "FOCUS" if green == 4 else ("WATCH" if green == 3 else "SKIP")
+    return green, verdict
 
 
 def format_message(candidates: list[IVCrushCandidate]) -> str:
