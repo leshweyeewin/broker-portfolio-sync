@@ -3,8 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from analytics.payoff import bull_call_spread, short_call
-from analytics.trade_plans import PlanStatus, TradePlan, TradePlanStore, transition, validate_plan
+from analytics.options.payoff import bull_call_spread, short_call
+from analytics.options.trade_plans import PlanStatus, TradePlan, TradePlanStore, transition, validate_plan
 
 
 def _complete_plan():

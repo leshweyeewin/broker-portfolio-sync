@@ -3,8 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from analytics.market_context import build_market_context
-from analytics.option_chain import OptionChainSnapshot, OptionContract, OptionQuote
+from analytics.options.market_context import build_market_context
+from analytics.options.option_chain import OptionChainSnapshot, OptionContract, OptionQuote
 
 
 def _snapshot():

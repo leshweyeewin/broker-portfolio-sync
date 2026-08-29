@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from analytics.payoff import (
+from analytics.options.payoff import (
     OptionLeg,
     bear_put_spread,
     bull_call_spread,

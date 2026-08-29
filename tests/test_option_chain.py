@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from analytics.option_chain import OptionChainSnapshot, OptionContract, OptionQuote, SnapshotStore, evaluate_quote_quality
+from analytics.options.option_chain import OptionChainSnapshot, OptionContract, OptionQuote, SnapshotStore, evaluate_quote_quality
 
 
 def _quote(*, right="call", bid="2", ask="2.20", last="2.10", oi=1000):

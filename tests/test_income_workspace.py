@@ -1,7 +1,7 @@
 import pytest
 from decimal import Decimal
 from datetime import date
-from analytics.income_workspace import (
+from analytics.options.income_workspace import (
     WheelState,
     CC_Candidate,
     CSP_Candidate,
