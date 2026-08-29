@@ -4,7 +4,7 @@ Scans live option chains for high-probability Short Put / Short Call setups
 using these filters:
 
 - **Volatility:** IV Percentile (IVP) >= 70%
-- **Probability:** Delta between 0.10 and 0.15 (85–90% OTM probability)
+- **Probability:** Delta between 0.30 and 0.40 (~60–70% OTM probability)
 - **Liquidity:** Open Interest > 500, Bid-Ask Spread <= $0.10
 
 Uses Tiger's ``QuoteClient.get_option_chain()`` and ``get_option_briefs()``
@@ -25,8 +25,8 @@ ZERO = Decimal("0")
 
 # Default filter thresholds (from the spec)
 DEFAULT_IVP_MIN = 70.0            # IV Percentile minimum (%)
-DEFAULT_DELTA_MIN = 0.10           # absolute delta lower bound
-DEFAULT_DELTA_MAX = 0.15           # absolute delta upper bound
+DEFAULT_DELTA_MIN = 0.30           # absolute delta lower bound
+DEFAULT_DELTA_MAX = 0.40           # absolute delta upper bound
 DEFAULT_OI_MIN = 500               # minimum open interest
 DEFAULT_SPREAD_MAX = Decimal("0.10")  # maximum bid-ask spread ($)
 

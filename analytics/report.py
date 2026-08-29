@@ -187,7 +187,7 @@ def format_telegram_report(report: AnalyticsReport, *, today: date | None = None
         puts = [p for p in report.screener_picks if p.option_type == "Put"]
         calls = [p for p in report.screener_picks if p.option_type == "Call"]
 
-        sections.append("🔎 Systematic Short Option Picks (Δ 0.10–0.15, OI>500):")
+        sections.append("🔎 Systematic Short Option Picks (Δ 0.30–0.40, OI>500):")
         if puts:
             sections.append("   🟢 Bullish Income (Short Put):")
             for p in puts[:3]:

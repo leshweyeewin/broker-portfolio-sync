@@ -123,6 +123,8 @@ weekly job downstream of it. Each has its own entrypoint and PowerShell task
 | Weekly (Sun) | Lemon8 journal | `python -m lemon8.weekly_job` | reads closed trades → caption + card + blog draft, commits blog draft |
 | Weekly (Sun) | pancherry export | `python -m core.ticker_names` then `python -m pancherry_export --pr` | refreshes ticker names, regenerates `.ts`, opens/updates a Draft PR |
 | On-demand | Standalone Market Analytics | `python -m analytics.report --notify` | runs strategy tagging, diagnostics, movers, earnings & option screener |
+| Intraday | Long-option take-profit | `python -m alerting.take_profit` | reads **live** broker positions → Telegram: long options at/above +50% unrealized (`--dry-run` prints instead) |
+| On-demand | Position sizing (2% rule) | `python -m analytics.position_sizing --equity 25000 --entry 180 --stop 174` | prints shares/contracts sized to a fixed % of equity (options: `--max-loss-per-contract`) |
 
 All weekly jobs are **fail-soft and read-only against the sheet** — a broker or
 GitHub being down degrades that leg without touching the sync or the others.
@@ -139,7 +141,7 @@ flowchart TD
     READ --> TAG["Strategy Tagger (tagger.py)<br/>• Earnings IV Crush (±1d of earnings)<br/>• Day Trades (same-day open & close)<br/>• Medium-Term (held ≥2 days)"]
     TAG --> DIAG["Diagnostic Calculators (diagnostics.py)<br/>1. IV Crush: win/loss asymmetry (loss > 2× win)<br/>2. Fee Drag: day trade fees > 15% of gross profit<br/>3. Medium-Term: total realized P/L"]
     TAG --> RISK["Expiry Risk Engine (risk_engine.py)<br/>Open options expiring in 1–14 days:<br/>• CLOSE POSITION (earnings IV capture)<br/>• ROLL SPREAD (overnight gap adjustment)<br/>• CUT TRADE (thesis invalidated)<br/>• ROLL TIMELINE (macro intact, roll monthly)<br/>• NEEDS REVIEW (technical check)"]
-    CHAIN["Tiger QuoteClient<br/>(Live option chains)"] --> SCR["Option Screener (screener.py)<br/>• IVP ≥ 70%<br/>• Delta 0.10–0.15<br/>• OI > 500<br/>• Spread ≤ $0.10"]
+    CHAIN["Tiger QuoteClient<br/>(Live option chains)"] --> SCR["Option Screener (screener.py)<br/>• IVP ≥ 70%<br/>• Delta 0.30–0.40<br/>• OI > 500<br/>• Spread ≤ $0.10"]
     DIAG --> REP["Report & Alerts (report.py)"]
     RISK --> REP
     SCR --> REP

@@ -5,7 +5,7 @@ Features:
 2. **Next-Day Earnings Alerts** — alerts for earnings releases in the next 1–2 days
    so pre-earnings IV crush setups can be prepared before the market closes.
 3. **Systematic Short Put / Short Call Picks** — runs high-probability screener
-   (IVP >= 70%, Delta 0.10–0.15, OI > 500, Spread <= $0.10) across tickers.
+   (IVP >= 70%, Delta 0.30–0.40, OI > 500, Spread <= $0.10) across tickers.
 """
 
 from __future__ import annotations
