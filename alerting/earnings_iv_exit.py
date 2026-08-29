@@ -29,7 +29,7 @@ from typing import Optional, Sequence
 
 from adapters.base import AssetType, Position
 from alerting.notify import notify_safe
-from analytics.earnings import get_earnings_dates
+from analytics.earnings.earnings import get_earnings_dates
 
 log = logging.getLogger(__name__)
 

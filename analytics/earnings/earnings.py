@@ -18,7 +18,7 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-_CACHE_PATH = Path(__file__).parent / "earnings_dates.json"
+_CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "earnings_dates.json"
 
 # In-memory cache for the process lifetime — avoids re-reading the JSON file
 # and re-fetching from the API on every call within a single run.
@@ -146,7 +146,7 @@ def refresh_earnings_cache(tickers: Optional[list[str]] = None) -> dict[str, int
 
 
 def main(argv=None) -> int:
-    """CLI: ``python -m analytics.earnings --refresh [TICKER ...]``."""
+    """CLI: ``python -m analytics.earnings.earnings --refresh [TICKER ...]``."""
     import argparse
     import sys
     if hasattr(sys.stdout, "reconfigure"):

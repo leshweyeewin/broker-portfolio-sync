@@ -1,6 +1,6 @@
 """Post-earnings IV-crush history — playbook Steps 2 & 3.
 
-Turns the daily ATM-IV snapshots accumulated by ``analytics.iv_logger`` into the
+Turns the daily ATM-IV snapshots accumulated by ``analytics.earnings.iv_logger`` into the
 two middle steps of the moomoo IV-Crush grade:
 
   * **Step 2 — Consistent Crush**: how reliably ATM IV *fell* right after past
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional, Sequence
 
-from analytics.earnings import get_earnings_dates
+from analytics.earnings.earnings import get_earnings_dates
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ def historical_iv_crush(
     Returns ``None`` when there is no logged IV history or no past earnings dates.
     The pure work is in :func:`measure_iv_crush`.
     """
-    from analytics.iv_crush import _load_iv_history  # lazy: avoids an import cycle
+    from analytics.earnings.iv_crush import _load_iv_history  # lazy: avoids an import cycle
 
     hist = _load_iv_history(ticker)
     if not hist:

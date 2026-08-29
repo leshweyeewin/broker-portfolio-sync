@@ -22,7 +22,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Any
 
-from analytics.earnings import is_near_earnings
+from analytics.earnings.earnings import is_near_earnings
 
 # Tag constants — these are the values written to the sheet's Tag column.
 TAG_EARNINGS_IV_CRUSH = "Earnings IV Crush"

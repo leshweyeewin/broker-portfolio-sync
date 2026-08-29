@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
-from analytics.earnings import get_earnings_dates
+from analytics.earnings.earnings import get_earnings_dates
 
 log = logging.getLogger(__name__)
 

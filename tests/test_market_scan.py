@@ -1,4 +1,4 @@
-"""Unit tests for the plugin-free volatility signals in ``analytics.market_scan``.
+"""Unit tests for the plugin-free volatility signals in ``analytics.screening.market_scan``.
 
 These cover the pure helpers only (no yfinance / network): realized-vol,
 the ATM-mid picker, and the straddle-implied expected-move conversion.
@@ -9,13 +9,13 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from analytics.market_scan import (
+from analytics.screening.market_scan import (
     UpcomingEarnings,
     _annualized_realized_vol,
     _atm_mid,
     _expected_move_pct,
 )
-from analytics.screener import ScreenerResult
+from analytics.screening.screener import ScreenerResult
 
 
 # --------------------------------------------------------------------------- #

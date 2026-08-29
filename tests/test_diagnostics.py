@@ -1,4 +1,4 @@
-"""Tests for analytics.diagnostics — the three diagnostic calculators."""
+"""Tests for analytics.risk.diagnostics — the three diagnostic calculators."""
 
 from datetime import date
 from decimal import Decimal
@@ -6,12 +6,12 @@ from decimal import Decimal
 import pytest
 
 from adapters.base import Broker, StockAction, StockTrade
-from analytics.diagnostics import (
+from analytics.risk.diagnostics import (
     earnings_iv_crush_analysis,
     intraday_fee_drag,
     medium_term_performance,
 )
-from analytics.tagger import TAG_DAY_TRADE, TAG_EARNINGS_IV_CRUSH, TAG_MEDIUM_TERM
+from analytics.screening.tagger import TAG_DAY_TRADE, TAG_EARNINGS_IV_CRUSH, TAG_MEDIUM_TERM
 
 
 def _stock(ticker="AAPL", action="Sell", d="2025-06-15", fill_id="s1", fee="1.00"):

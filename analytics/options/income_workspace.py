@@ -4,7 +4,7 @@ Workflow for covered calls, cash-secured puts, the Wheel, and PMCC.
 Detects eligible shares/cash from the synced portfolio, queries option chains,
 and outputs candidates.
 
-Run: python -m analytics.income_workspace [--cash 10000] [TICKERS...]
+Run: python -m analytics.options.income_workspace [--cash 10000] [TICKERS...]
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from adapters.base import OptionType, StockTrade, OptionTrade
 from core.fifo_pl import Holding, compute_stock_pl, compute_option_pl
 from sheets.writer import PortfolioWriter, SheetClient
 from config.settings import get_service_account_info, get_spreadsheet_id
-from analytics.screener import _build_quote_client, _get
+from analytics.screening.screener import _build_quote_client, _get
 
 log = logging.getLogger(__name__)
 ZERO = Decimal("0")

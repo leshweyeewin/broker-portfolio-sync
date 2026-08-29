@@ -25,7 +25,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Optional
 
-from analytics.earnings import is_near_earnings
+from analytics.earnings.earnings import is_near_earnings
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ def generate_risk_alerts(
 
 def _determine_signal(pos: dict, today: date) -> tuple[Signal, str]:
     """Pick the right playbook signal based on available data."""
-    from analytics.earnings import get_earnings_dates
+    from analytics.earnings.earnings import get_earnings_dates
     dte = pos["dte"]
     tag = pos["tag"]
     underlying = pos["underlying"]

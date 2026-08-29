@@ -34,8 +34,8 @@ from typing import Callable, Optional
 from urllib.parse import urlencode
 
 from alerting.notify import send_telegram
-from analytics.market_scan import get_upcoming_earnings
-from analytics.swing import SwingSetup, scan_swing_setups
+from analytics.screening.market_scan import get_upcoming_earnings
+from analytics.screening.swing import SwingSetup, scan_swing_setups
 from config.settings import get_telegram_bot_token
 
 log = logging.getLogger(__name__)

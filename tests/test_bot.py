@@ -14,7 +14,7 @@ from alerting.bot import (
     parse_ticker,
     run_bot,
 )
-from analytics.swing import SwingSetup
+from analytics.screening.swing import SwingSetup
 
 
 # --------------------------------------------------------------------------- #

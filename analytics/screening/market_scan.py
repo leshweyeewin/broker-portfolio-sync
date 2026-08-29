@@ -18,8 +18,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
-from analytics.earnings import get_earnings_dates
-from analytics.screener import ScreenerFilter, ScreenerResult, screen_options
+from analytics.earnings.earnings import get_earnings_dates
+from analytics.screening.screener import ScreenerFilter, ScreenerResult, screen_options
 
 log = logging.getLogger(__name__)
 

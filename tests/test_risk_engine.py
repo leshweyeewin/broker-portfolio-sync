@@ -1,4 +1,4 @@
-"""Tests for analytics.risk_engine — expiry risk engine with playbook signals."""
+"""Tests for analytics.risk.risk_engine — expiry risk engine with playbook signals."""
 
 from datetime import date
 from decimal import Decimal
@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from adapters.base import Broker, OptionAction, OptionTrade, OptionType
-from analytics.risk_engine import (
+from analytics.risk.risk_engine import (
     Signal,
     format_risk_alert_message,
     generate_risk_alerts,
@@ -52,7 +52,7 @@ class TestRiskAlerts:
         trades = [_td(opt)]
         tags = {opt.dedup_key: "Earnings IV Crush"}
 
-        with patch("analytics.earnings.get_earnings_dates", return_value=[date(2025, 6, 16)]):
+        with patch("analytics.earnings.earnings.get_earnings_dates", return_value=[date(2025, 6, 16)]):
             alerts = generate_risk_alerts(trades, tags, today=date(2025, 6, 15))
         assert len(alerts) == 1
         assert alerts[0].signal == Signal.CLOSE_POSITION
@@ -64,7 +64,7 @@ class TestRiskAlerts:
         trades = [_td(opt, pl=-100)]
         tags = {opt.dedup_key: "Earnings IV Crush"}
 
-        with patch("analytics.earnings.get_earnings_dates", return_value=[date(2025, 6, 16)]):
+        with patch("analytics.earnings.earnings.get_earnings_dates", return_value=[date(2025, 6, 16)]):
             alerts = generate_risk_alerts(trades, tags, today=date(2025, 6, 15))
         assert len(alerts) == 1
         assert alerts[0].signal == Signal.ROLL_SPREAD

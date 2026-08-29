@@ -125,9 +125,9 @@ weekly job downstream of it. Each has its own entrypoint and PowerShell task
 | On-demand | Standalone Market Analytics | `python -m analytics.report --notify` | runs strategy tagging, diagnostics, movers, earnings & option screener |
 | Intraday | Long-option take-profit | `python -m alerting.take_profit` | reads **live** broker positions → Telegram: long options at/above +50% unrealized (`--dry-run` prints instead) |
 | Intraday | Earnings IV Exit | `python -m alerting.earnings_iv_exit` | reads **live** broker positions → Telegram: alerts to close short premium options day before earnings |
-| Daily 16:30 | IV Logger | `python -m analytics.iv_logger` | fetches options chain → **writes** `iv_history.json` |
-| On-demand | Earnings Planner | `python -m analytics.earnings_planner` | reads `iv_history.json` → **writes** Earnings Plan sheet tab |
-| On-demand | Position sizing (2% rule) | `python -m analytics.position_sizing --equity 25000 --entry 180 --stop 174` | prints shares/contracts sized to a fixed % of equity (options: `--max-loss-per-contract`) |
+| Daily 16:30 | IV Logger | `python -m analytics.earnings.iv_logger` | fetches options chain → **writes** `iv_history.json` |
+| On-demand | Earnings Planner | `python -m analytics.earnings.earnings_planner` | reads `iv_history.json` → **writes** Earnings Plan sheet tab |
+| On-demand | Position sizing (2% rule) | `python -m analytics.risk.position_sizing --equity 25000 --entry 180 --stop 174` | prints shares/contracts sized to a fixed % of equity (options: `--max-loss-per-contract`) |
 
 All weekly jobs are **fail-soft and read-only against the sheet** — a broker or
 GitHub being down degrades that leg without touching the sync or the others.
@@ -183,19 +183,30 @@ broker-portfolio-sync/
 │  ├─ reconcile.py        # ✅ seeding + post-write qty check
 │  └─ ticker_names.py     # ✅ broker → {ticker: company name} cache (blog)
 ├─ analytics/             # ✅ Portfolio analytics & option screener
-│  ├─ tagger.py           #    Strategy tagging (IV Crush, Day Trade, Medium-Term)
-│  ├─ earnings.py         #    Earnings date lookup (yfinance API + JSON cache)
-│  ├─ earnings_dates.json #    Local cache of quarterly earnings dates
-│  ├─ diagnostics.py      #    3 diagnostic calculators (IV crush, fee drag, alpha)
-│  ├─ risk_engine.py      #    1–14 DTE expiry risk engine + playbook signals
-│  ├─ screener.py         #    Live option screener via Tiger QuoteClient
-│  ├─ options/            #    Options-playbook domain package (see below)
-│  │  ├─ option_chain.py  #      Normalised quotes, quality gates + snapshots
-│  │  ├─ payoff.py        #      Pure Decimal expiry payoff / max-risk calculator
-│  │  ├─ market_context.py#      Technical, earnings and expected-move context card
-│  │  ├─ trade_plans.py   #      Local read-only plans + lifecycle validation
-│  │  └─ income_workspace.py #   Wheel, CC, CSP and PMCC research workspace
-│  └─ report.py           #    Analytics orchestrator & Telegram report formatter
+│  ├─ report.py           #    Analytics orchestrator & Telegram report formatter
+│  ├─ data/               #    Local JSON caches (earnings dates, IV history)
+│  ├─ earnings/           #    Earnings & IV-crush domain
+│  │  ├─ earnings.py         # Earnings date lookup (yfinance API + JSON cache)
+│  │  ├─ earnings_move.py    # Historical earnings-move study (Step-4 edge)
+│  │  ├─ iv_logger.py        # Daily ATM-IV snapshot → data/iv_history.json
+│  │  ├─ iv_crush.py         # IV-crush screener (4-step playbook grade)
+│  │  ├─ iv_crush_history.py # Crush consistency + magnitude (Steps 2 & 3)
+│  │  └─ earnings_planner.py # Writes the "Earnings Plan" sheet tab
+│  ├─ screening/          #    Signal scanners
+│  │  ├─ screener.py         # Live option screener via Tiger QuoteClient
+│  │  ├─ market_scan.py      # Plugin-free volatility / expected-move signals
+│  │  ├─ swing.py            # Swing-setup scanner
+│  │  └─ tagger.py           # Strategy tagging (IV Crush, Day Trade, Medium-Term)
+│  ├─ risk/               #    Risk & sizing
+│  │  ├─ risk_engine.py      # 1–14 DTE expiry risk engine + playbook signals
+│  │  ├─ position_sizing.py  # Fixed-fractional 2% position sizing
+│  │  └─ diagnostics.py      # 3 diagnostic calculators (IV crush, fee drag, alpha)
+│  └─ options/            #    Options-playbook domain package (see below)
+│     ├─ option_chain.py     # Normalised quotes, quality gates + snapshots
+│     ├─ payoff.py           # Pure Decimal expiry payoff / max-risk calculator
+│     ├─ market_context.py   # Technical, earnings and expected-move context card
+│     ├─ trade_plans.py      # Local read-only plans + lifecycle validation
+│     └─ income_workspace.py # Wheel, CC, CSP and PMCC research workspace
 ├─ sheets/writer.py       # ✅ service-account auth, idempotent upsert, Tag & Reason
 ├─ alerting/              # ✅ Telegram (stdlib urllib, best-effort)
 │  ├─ notify.py           #    core send
@@ -211,7 +222,7 @@ broker-portfolio-sync/
 ├─ Dockerfile             # ✅ job container (+ .dockerignore)
 ├─ DEPLOY.md              # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
 ├─ opend/                 # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
-├─ tests/                 # ✅ test suite (260 passing tests)
+├─ tests/                 # ✅ test suite (395 passing tests)
 └─ requirements.txt
 ```
 

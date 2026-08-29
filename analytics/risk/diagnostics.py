@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from analytics.tagger import TAG_DAY_TRADE, TAG_EARNINGS_IV_CRUSH, TAG_MEDIUM_TERM
+from analytics.screening.tagger import TAG_DAY_TRADE, TAG_EARNINGS_IV_CRUSH, TAG_MEDIUM_TERM
 
 ZERO = Decimal("0")
 FEE_DRAG_THRESHOLD = Decimal("0.15")  # 15%

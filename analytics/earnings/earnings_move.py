@@ -16,11 +16,11 @@ Options-Playbook earnings watchlist:
   * **pre**  — drift *into* earnings over the prior ``pre_window`` trading days.
   * **post** — drift *after* the reaction over the next ``post_window`` days.
 
-Design mirrors ``analytics.market_scan``: the measurement core is pure and
+Design mirrors ``analytics.screening.market_scan``: the measurement core is pure and
 offline-testable (feed it a price series + earnings dates); yfinance is only
 touched in the best-effort fetch wrapper.
 
-Run:  python -m analytics.earnings_move NVDA CRM CRWD
+Run:  python -m analytics.earnings.earnings_move NVDA CRM CRWD
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional, Sequence
 
-from analytics.earnings import get_earnings_dates
+from analytics.earnings.earnings import get_earnings_dates
 
 log = logging.getLogger(__name__)
 
@@ -258,7 +258,7 @@ def format_study(study: EarningsMoveStudy) -> str:
 
 
 def main(argv=None) -> int:
-    """CLI: ``python -m analytics.earnings_move NVDA CRM [...]``."""
+    """CLI: ``python -m analytics.earnings.earnings_move NVDA CRM [...]``."""
     import argparse
     import sys
     if hasattr(sys.stdout, "reconfigure"):

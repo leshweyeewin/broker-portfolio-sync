@@ -17,6 +17,9 @@ opend/vendor/
 BUILD_SPEC.md
 HANDOFF.md
 
+# Local scratch scripts — kept on disk, not tracked
+scratch/
+
 # Local run logs (Windows Task Scheduler daily sync)
 logs/
 

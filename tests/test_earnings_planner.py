@@ -1,8 +1,8 @@
 from datetime import date
 
-import analytics.earnings_planner as planner
-from analytics.iv_crush import IVCrushCandidate
-from analytics.earnings_planner import build_earnings_plan_row
+import analytics.earnings.earnings_planner as planner
+from analytics.earnings.iv_crush import IVCrushCandidate
+from analytics.earnings.earnings_planner import build_earnings_plan_row
 from sheets.writer import EARNINGS_PLAN_HEADERS
 
 def test_build_earnings_plan_row():

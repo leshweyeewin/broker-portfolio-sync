@@ -1,4 +1,4 @@
-"""Offline unit tests for ``analytics.iv_crush`` pure helpers.
+"""Offline unit tests for ``analytics.earnings.iv_crush`` pure helpers.
 
 Cover the trend-bias classifier, Expected-Move bounds, strategy mapping, and the
 candidate line/sort — no yfinance / network.
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from analytics.iv_crush import (
+from analytics.earnings.iv_crush import (
     IVCrushCandidate,
     compute_iv_percentile,
     em_bounds,
@@ -20,7 +20,7 @@ from analytics.iv_crush import (
     trend_bias,
     _STRATEGY_BY_BIAS,
 )
-from analytics.iv_crush_history import CrushStudy
+from analytics.earnings.iv_crush_history import CrushStudy
 
 
 # --------------------------------------------------------------------------- #
@@ -103,7 +103,7 @@ def test_candidate_line_contains_key_fields():
 
 def test_scan_returns_empty_when_no_earnings(monkeypatch):
     # No events -> function returns before touching yfinance.
-    monkeypatch.setattr("analytics.iv_crush.get_upcoming_earnings", lambda *a, **k: [])
+    monkeypatch.setattr("analytics.earnings.iv_crush.get_upcoming_earnings", lambda *a, **k: [])
     assert scan_iv_crush(["NVDA"], today=date(2026, 8, 29)) == []
 
 
@@ -174,17 +174,17 @@ def test_grade_three_green_is_watch():
 
 def test_scan_populates_ivp_and_crush(monkeypatch):
     ev = SimpleNamespace(ticker="NVDA", earnings_date=date(2026, 9, 15), days_left=5)
-    monkeypatch.setattr("analytics.iv_crush.get_upcoming_earnings", lambda *a, **k: [ev])
+    monkeypatch.setattr("analytics.earnings.iv_crush.get_upcoming_earnings", lambda *a, **k: [ev])
     # Avoid all network: stub the snapshot, history study, IV history + crush.
-    monkeypatch.setattr("analytics.iv_crush._fetch_snapshot",
+    monkeypatch.setattr("analytics.earnings.iv_crush._fetch_snapshot",
                         lambda tk, ed: (100.0, 8.0, [float(i) for i in range(1, 61)]))
-    monkeypatch.setattr("analytics.iv_crush.historical_earnings_move",
+    monkeypatch.setattr("analytics.earnings.iv_crush.historical_earnings_move",
                         lambda *a, **k: SimpleNamespace(
                             avg_abs_reaction=5.0, bear_count=5, bull_count=3))
-    monkeypatch.setattr("analytics.iv_crush._load_iv_history",
+    monkeypatch.setattr("analytics.earnings.iv_crush._load_iv_history",
                         lambda t: {"2026-09-01": 0.2, "2026-09-10": 0.3})
-    monkeypatch.setattr("analytics.iv_logger.fetch_atm_iv", lambda t: 0.6)
-    monkeypatch.setattr("analytics.iv_crush.historical_iv_crush",
+    monkeypatch.setattr("analytics.earnings.iv_logger.fetch_atm_iv", lambda t: 0.6)
+    monkeypatch.setattr("analytics.earnings.iv_crush.historical_iv_crush",
                         lambda *a, **k: CrushStudy(
                             n=3, consistency=0.67, avg_crush_pct=12.0, events=[]))
 

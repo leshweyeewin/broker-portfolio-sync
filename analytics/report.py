@@ -16,16 +16,16 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
-from analytics.market_scan import (
+from analytics.screening.market_scan import (
     TickerMover,
     UpcomingEarnings,
     get_daily_movers,
     get_upcoming_earnings,
     scan_short_option_picks,
 )
-from analytics.screener import ScreenerResult
-from analytics.swing import SwingSetup, scan_swing_setups, format_swing_message
-from analytics.diagnostics import (
+from analytics.screening.screener import ScreenerResult
+from analytics.screening.swing import SwingSetup, scan_swing_setups, format_swing_message
+from analytics.risk.diagnostics import (
     IVCrushResult,
     FeeDragResult,
     MediumTermResult,
@@ -33,12 +33,12 @@ from analytics.diagnostics import (
     intraday_fee_drag,
     medium_term_performance,
 )
-from analytics.risk_engine import (
+from analytics.risk.risk_engine import (
     RiskAlert,
     format_risk_alert_message,
     generate_risk_alerts,
 )
-from analytics.tagger import (
+from analytics.screening.tagger import (
     tag_option_trades,
     tag_stock_trades,
 )
@@ -120,7 +120,7 @@ def run_analytics(
         ticker_list = sorted(t for t in tickers if t and len(t) <= 6)
 
         # Combine sheet tickers + all monitored watchlist tickers from earnings cache
-        from analytics.earnings import _load_static_cache
+        from analytics.earnings.earnings import _load_static_cache
         watchlist_tickers = list(_load_static_cache().keys())
         full_universe = sorted(set(ticker_list + watchlist_tickers))
 

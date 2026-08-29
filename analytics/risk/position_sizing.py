@@ -10,8 +10,8 @@ Money is ``Decimal`` throughout (§4) — every numeric input is coerced via
 only; it does not recommend a risk level or whether to take a trade.
 
 Usage:
-    python -m analytics.position_sizing --equity 25000 --entry 180 --stop 174
-    python -m analytics.position_sizing --equity 30000 --max-loss-per-contract 350
+    python -m analytics.risk.position_sizing --equity 25000 --entry 180 --stop 174
+    python -m analytics.risk.position_sizing --equity 30000 --max-loss-per-contract 350
 """
 
 from __future__ import annotations

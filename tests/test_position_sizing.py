@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from analytics.position_sizing import (
+from analytics.risk.position_sizing import (
     DEFAULT_RISK_PCT,
     size_shares,
     size_contracts,

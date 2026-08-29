@@ -8,9 +8,9 @@ from decimal import Decimal
 from typing import Sequence
 
 from adapters.base import dec
-from analytics.market_scan import UpcomingEarnings
+from analytics.screening.market_scan import UpcomingEarnings
 from analytics.options.option_chain import OptionChainSnapshot, OptionQuote, evaluate_quote_quality, quotes_for_expiry
-from analytics.swing import SwingSetup
+from analytics.screening.swing import SwingSetup
 
 ZERO = Decimal("0")
 

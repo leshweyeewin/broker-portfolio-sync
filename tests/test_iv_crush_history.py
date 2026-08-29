@@ -1,4 +1,4 @@
-"""Offline unit tests for ``analytics.iv_crush_history`` — Steps 2 & 3.
+"""Offline unit tests for ``analytics.earnings.iv_crush_history`` — Steps 2 & 3.
 
 Feed the pure ``measure_iv_crush`` synthetic IV histories + earnings dates; no
 snapshot file, earnings API, or network involved.
@@ -10,7 +10,7 @@ from datetime import date
 
 import pytest
 
-from analytics.iv_crush_history import CrushStudy, measure_iv_crush
+from analytics.earnings.iv_crush_history import CrushStudy, measure_iv_crush
 
 
 def test_consistent_double_digit_crush():

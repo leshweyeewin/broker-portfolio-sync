@@ -5,7 +5,7 @@ This provides the historical context needed for IV Percentile (IVP) and
 Crush consistency grades (Steps 1-3) in the IV-Crush earnings screener,
 because free data sources do not provide historical IV.
 
-Run: python -m analytics.iv_logger NVDA CRM CRWD COST
+Run: python -m analytics.earnings.iv_logger NVDA CRM CRWD COST
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-HISTORY_FILE = Path(__file__).parent / "iv_history.json"
+HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "iv_history.json"
 
 def fetch_atm_iv(ticker: str) -> float | None:
     try:

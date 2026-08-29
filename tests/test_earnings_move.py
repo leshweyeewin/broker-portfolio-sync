@@ -1,4 +1,4 @@
-"""Offline unit tests for ``analytics.earnings_move``.
+"""Offline unit tests for ``analytics.earnings.earnings_move``.
 
 Cover the pure measurement core (``measure_earnings_moves``), the Step-4 edge
 verdict (``implied_vs_historical``), and the study aggregation — all with
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from analytics.earnings_move import (
+from analytics.earnings.earnings_move import (
     EarningsMove,
     EarningsMoveStudy,
     implied_vs_historical,

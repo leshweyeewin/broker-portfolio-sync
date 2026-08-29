@@ -3,7 +3,7 @@
 Runs the IV-Crush screener for a watchlist, formats the results, and 
 writes them to the 'Earnings Plan' tab in the Google Sheet.
 
-Run: python -m analytics.earnings_planner NVDA CRM CRWD COST
+Run: python -m analytics.earnings.earnings_planner NVDA CRM CRWD COST
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import logging
 import argparse
 from typing import Any
 
-from analytics.iv_crush import scan_iv_crush, IVCrushCandidate
+from analytics.earnings.iv_crush import scan_iv_crush, IVCrushCandidate
 from config.settings import get_service_account_info, get_spreadsheet_id
 from sheets.writer import PortfolioWriter, SheetClient, EARNINGS_PLAN_HEADERS
 

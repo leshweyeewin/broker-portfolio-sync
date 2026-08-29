@@ -5,7 +5,7 @@ watchlist. For each name with earnings inside the horizon it computes:
 
   * **Step 4 — Implied vs Historical move** (the headline edge): compares the
     option market's implied Expected Move to how far the stock *actually* moves
-    on earnings (``analytics.earnings_move``). ``RICH`` = market pricing more
+    on earnings (``analytics.earnings.earnings_move``). ``RICH`` = market pricing more
     than history → premium worth selling; ``CHEAP`` = selling cheap → skip.
   * **Directional bias** from the trend (SMA-20 vs SMA-50 stack) → the credit
     strategy the playbook pairs with that bias.
@@ -17,7 +17,7 @@ crush magnitude) need an IV history that free data doesn't retain — those ligh
 up once the IV logger (tool #3) has accumulated snapshots. Each candidate says
 so rather than inventing a letter grade from one step.
 
-Read-only. Run:  python -m analytics.iv_crush NVDA CRM CRWD COST
+Read-only. Run:  python -m analytics.earnings.iv_crush NVDA CRM CRWD COST
 """
 
 from __future__ import annotations
@@ -30,9 +30,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
-from analytics.earnings_move import historical_earnings_move, implied_vs_historical
-from analytics.iv_crush_history import historical_iv_crush
-from analytics.market_scan import (
+from analytics.earnings.earnings_move import historical_earnings_move, implied_vs_historical
+from analytics.earnings.iv_crush_history import historical_iv_crush
+from analytics.screening.market_scan import (
     _annualized_realized_vol,
     _estimate_expected_move,
     get_upcoming_earnings,
@@ -138,7 +138,7 @@ def em_bounds(price: float, implied_move_pct: float) -> tuple[float, float]:
 
 
 def _load_iv_history(ticker: str) -> dict[str, float]:
-    history_file = Path(__file__).parent / "iv_history.json"
+    history_file = Path(__file__).resolve().parent.parent / "data" / "iv_history.json"
     if not history_file.exists():
         return {}
     try:
@@ -158,7 +158,7 @@ def compute_iv_percentile(
 ) -> Optional[float]:
     """% of the last ``window_days`` of IV snapshots that sat below ``current_iv``.
 
-    ``history`` maps ISO-date → IV fraction (as written by ``analytics.iv_logger``).
+    ``history`` maps ISO-date → IV fraction (as written by ``analytics.earnings.iv_logger``).
     Snapshots older than the trailing window are ignored so a stale year can't skew
     the rank — IV percentile is conventionally a 1-year measure. Returns ``None``
     with fewer than two usable observations in the window.
@@ -243,7 +243,7 @@ def scan_iv_crush(
                 
             iv_history = _load_iv_history(ev.ticker)
             if iv_history:
-                from analytics.iv_logger import fetch_atm_iv
+                from analytics.earnings.iv_logger import fetch_atm_iv
                 current_iv = fetch_atm_iv(ev.ticker)
                 if current_iv:
                     cand.current_iv = current_iv
@@ -294,7 +294,7 @@ def format_message(candidates: list[IVCrushCandidate]) -> str:
 
 
 def main(argv=None) -> int:
-    """CLI: ``python -m analytics.iv_crush NVDA CRM [...] [--days-ahead N]``."""
+    """CLI: ``python -m analytics.earnings.iv_crush NVDA CRM [...] [--days-ahead N]``."""
     import argparse
     import sys
     if hasattr(sys.stdout, "reconfigure"):

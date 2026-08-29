@@ -1,4 +1,4 @@
-"""Tests for analytics.tagger — strategy tagging engine."""
+"""Tests for analytics.screening.tagger — strategy tagging engine."""
 
 from datetime import date
 from decimal import Decimal
@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from adapters.base import Broker, OptionAction, OptionTrade, OptionType, StockAction, StockTrade
-from analytics.tagger import (
+from analytics.screening.tagger import (
     TAG_DAY_TRADE,
     TAG_EARNINGS_IV_CRUSH,
     TAG_MEDIUM_TERM,
@@ -65,7 +65,7 @@ class TestStockTagging:
         sell = _stock(action="Sell", d="2025-06-15", fill_id="s1")
         trades = [_td(buy), _td(sell, "Closed")]
 
-        with patch("analytics.tagger.is_near_earnings", return_value=False):
+        with patch("analytics.screening.tagger.is_near_earnings", return_value=False):
             tags = tag_stock_trades(trades)
 
         assert tags[buy.dedup_key] == TAG_DAY_TRADE
@@ -77,12 +77,12 @@ class TestStockTagging:
         sell = _stock(action="Sell", d="2025-06-15", fill_id="s1")
         trades = [_td(buy), _td(sell, "Closed")]
 
-        with patch("analytics.tagger.is_near_earnings", return_value=False):
+        with patch("analytics.screening.tagger.is_near_earnings", return_value=False):
             tags = tag_stock_trades(trades)
 
         assert tags[sell.dedup_key] == TAG_MEDIUM_TERM
 
-    @patch("analytics.tagger.is_near_earnings", return_value=True)
+    @patch("analytics.screening.tagger.is_near_earnings", return_value=True)
     def test_earnings_iv_crush(self, mock_earnings):
         """Trade near earnings date → earnings IV crush."""
         buy = _stock(action="Buy", d="2025-06-15", fill_id="b1")
@@ -97,7 +97,7 @@ class TestStockTagging:
         sell = _stock(action="Sell", d="2025-06-15", fill_id="s1")
         trades = [_td(buy), _td(sell, "Closed")]
 
-        with patch("analytics.tagger.is_near_earnings", return_value=True):
+        with patch("analytics.screening.tagger.is_near_earnings", return_value=True):
             tags = tag_stock_trades(trades)
 
         assert tags[buy.dedup_key] == TAG_EARNINGS_IV_CRUSH
@@ -108,7 +108,7 @@ class TestStockTagging:
         buy = _stock(action="Buy", d="2025-06-15", fill_id="b1")
         trades = [_td(buy)]
 
-        with patch("analytics.tagger.is_near_earnings", return_value=False):
+        with patch("analytics.screening.tagger.is_near_earnings", return_value=False):
             tags = tag_stock_trades(trades)
 
         assert tags[buy.dedup_key] == TAG_UNTAGGED
@@ -124,7 +124,7 @@ class TestOptionTagging:
         opt = _option(strategy="IV Crush Short Put", fill_id="o1")
         trades = [_td(opt)]
 
-        with patch("analytics.tagger.is_near_earnings", return_value=False):
+        with patch("analytics.screening.tagger.is_near_earnings", return_value=False):
             tags = tag_option_trades(trades)
 
         assert tags[opt.dedup_key] == TAG_EARNINGS_IV_CRUSH
@@ -135,7 +135,7 @@ class TestOptionTagging:
         buy = _option(action="Buy", d="2025-06-15", fill_id="o2")
         trades = [_td(sell), _td(buy, "Closed")]
 
-        with patch("analytics.tagger.is_near_earnings", return_value=False):
+        with patch("analytics.screening.tagger.is_near_earnings", return_value=False):
             tags = tag_option_trades(trades)
 
         assert tags[sell.dedup_key] == TAG_DAY_TRADE

@@ -713,7 +713,7 @@ def _compute_tags(
     installed), tags are empty strings and the Tag column stays blank.
     """
     try:
-        from analytics.tagger import tag_stock_trades, tag_option_trades
+        from analytics.screening.tagger import tag_stock_trades, tag_option_trades
     except ImportError:
         return {}, {}
 
