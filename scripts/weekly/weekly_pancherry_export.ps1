@@ -12,7 +12,7 @@
 # narrative, flip published:true, merge.
 #
 # Requires GITHUB_TOKEN (repo scope) + PANCHERRY_REPO_SLUG in .env.
-# Register with scripts/weekly_pancherry_export_register.ps1. Logs to logs/.
+# Register with scripts/setup/weekly_pancherry_export_register.ps1. Logs to logs/.
 
 # Same PS 5.1 gotcha as daily_sync.ps1 — do NOT set ErrorActionPreference 'Stop'.
 $ErrorActionPreference = "Continue"

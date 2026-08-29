@@ -8,7 +8,7 @@
 # Runs Sunday evening, after the expiry alert. It does NOT sync brokers or post
 # to Lemon8/TikTok (no posting API) — you upload the generated files manually.
 #
-# Register with scripts/weekly_lemon8_register.ps1. Logs to logs/.
+# Register with scripts/setup/weekly_lemon8_register.ps1. Logs to logs/.
 
 # Same PS 5.1 gotcha as daily_sync.ps1 — do NOT set ErrorActionPreference 'Stop'.
 $ErrorActionPreference = "Continue"
