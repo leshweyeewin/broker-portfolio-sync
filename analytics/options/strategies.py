@@ -72,10 +72,10 @@ class SpreadFilters:
 
     min_open_interest: int = 100
     max_spread_pct: Decimal = Decimal("0.15")
-    min_dte: int = 21
+    min_dte: int = 30
     max_dte: int = 45
-    short_delta_low: Decimal = Decimal("0.30")
-    short_delta_high: Decimal = Decimal("0.40")
+    short_delta_low: Decimal = Decimal("0.15")
+    short_delta_high: Decimal = Decimal("0.30")
     min_width: Decimal = Decimal("1")
     max_width: Decimal = Decimal("5")
     min_credit: Decimal = Decimal("0")          # per share, must be > this
@@ -94,6 +94,11 @@ class SpreadFilters:
             raise ValueError("require 0 < min_width <= max_width")
         if self.min_dte > self.max_dte:
             raise ValueError("min_dte must be <= max_dte")
+
+@dataclass(frozen=True)
+class SpreadFiltersShortTerm(SpreadFilters):
+    min_dte: int = 7
+    max_dte: int = 14
 
 
 @dataclass(frozen=True)
@@ -520,6 +525,8 @@ from analytics.options.payoff import (
     bear_put_spread,
     long_call,
     long_put,
+    short_call,
+    short_put,
     summarize_expiry,
 )
 
@@ -574,7 +581,7 @@ def _build_directional(
 ) -> DirectionalScan:
     filt = filters or DirectionalFilters()
     today = today or date.today()
-    right = "put" if strategy in ("bear_put", "long_put") else "call"
+    right = "put" if strategy in ("bear_put", "long_put", "short_put") else "call"
     
     scan_warnings = []
     rejections = []
@@ -600,9 +607,12 @@ def _build_directional(
         delta = abs(float(long_q.delta)) if long_q.delta else 0
         if delta < float(filt.long_delta_low) or delta > float(filt.long_delta_high): continue
         
-        # If long option
-        if strategy in ("long_call", "long_put"):
-            legs = (long_call(long_strike, quality.price) if right == "call" else long_put(long_strike, quality.price),)
+        # Single leg options
+        if strategy in ("long_call", "long_put", "short_call", "short_put"):
+            if strategy == "long_call": legs = (long_call(long_strike, quality.price),)
+            elif strategy == "long_put": legs = (long_put(long_strike, quality.price),)
+            elif strategy == "short_call": legs = (short_call(long_strike, quality.price),)
+            elif strategy == "short_put": legs = (short_put(long_strike, quality.price),)
             summary = summarize_expiry(legs)
             
             candidates.append(DirectionalCandidate(
@@ -660,3 +670,130 @@ def build_long_calls(snapshot, expiry, *, today=None, filters=None, rsi=None):
 def build_long_puts(snapshot, expiry, *, today=None, filters=None, rsi=None):
     return _build_directional("long_put", snapshot, expiry, today=today, filters=filters, rsi=rsi)
 
+@dataclass(frozen=True)
+class WheelFilters:
+    min_open_interest: int = 100
+    max_spread_pct: Decimal = Decimal("0.15")
+    min_dte: int = 7
+    max_dte: int = 45
+    short_delta_low: Decimal = Decimal("0.20")
+    short_delta_high: Decimal = Decimal("0.30")
+
+    def __post_init__(self) -> None:
+        for name in ("max_spread_pct", "short_delta_low", "short_delta_high"):
+            object.__setattr__(self, name, dec(getattr(self, name)))
+
+@dataclass(frozen=True)
+class LeapsFilters:
+    min_open_interest: int = 100
+    max_spread_pct: Decimal = Decimal("0.15")
+    min_dte: int = 365
+    max_dte: int = 730
+    long_delta_low: Decimal = Decimal("0.70")
+    long_delta_high: Decimal = Decimal("0.90")
+
+    def __post_init__(self) -> None:
+        for name in ("max_spread_pct", "long_delta_low", "long_delta_high"):
+            object.__setattr__(self, name, dec(getattr(self, name)))
+
+def build_cash_secured_puts(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    filt = filters or WheelFilters()
+    return _build_directional("short_put", snapshot, expiry, today=today, filters=DirectionalFilters(
+        min_open_interest=filt.min_open_interest, max_spread_pct=filt.max_spread_pct,
+        min_dte=filt.min_dte, max_dte=filt.max_dte,
+        long_delta_low=filt.short_delta_low, long_delta_high=filt.short_delta_high
+    ), rsi=rsi)
+
+def build_covered_calls(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    filt = filters or WheelFilters()
+    return _build_directional("short_call", snapshot, expiry, today=today, filters=DirectionalFilters(
+        min_open_interest=filt.min_open_interest, max_spread_pct=filt.max_spread_pct,
+        min_dte=filt.min_dte, max_dte=filt.max_dte,
+        long_delta_low=filt.short_delta_low, long_delta_high=filt.short_delta_high
+    ), rsi=rsi)
+
+def build_pmcc_leaps(snapshot, expiry, *, today=None, filters=None, rsi=None):
+    filt = filters or LeapsFilters()
+    return _build_directional("long_call", snapshot, expiry, today=today, filters=DirectionalFilters(
+        min_open_interest=filt.min_open_interest, max_spread_pct=filt.max_spread_pct,
+        min_dte=filt.min_dte, max_dte=filt.max_dte,
+        long_delta_low=filt.long_delta_low, long_delta_high=filt.long_delta_high
+    ), rsi=rsi)
+
+
+@dataclass(frozen=True)
+class PMCCCandidate:
+    underlying: str
+    leaps_expiry: date
+    short_expiry: date
+    leaps_strike: Decimal
+    short_strike: Decimal
+    leaps_premium: Decimal
+    short_premium: Decimal
+    net_debit: Decimal
+    max_risk: Decimal
+    approx_max_profit: Decimal
+    leaps_delta: Decimal
+    short_delta: Decimal
+
+@dataclass(frozen=True)
+class PMCCScan:
+    underlying: str
+    candidates: tuple[PMCCCandidate, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+def build_full_pmcc(
+    snapshot: OptionChainSnapshot, 
+    leaps_expiry: date, 
+    short_expiry: date, 
+    *,
+    leaps_filters: LeapsFilters | None = None,
+    short_filters: SpreadFilters | None = None
+) -> PMCCScan:
+    l_filt = leaps_filters or LeapsFilters()
+    s_filt = short_filters or SpreadFilters()
+    
+    leaps_quotes = [q for q in quotes_for_expiry(snapshot, leaps_expiry) if q.contract.right == "call"]
+    short_quotes = [q for q in quotes_for_expiry(snapshot, short_expiry) if q.contract.right == "call"]
+    
+    candidates = []
+    
+    for lq in leaps_quotes:
+        l_delta = abs(float(lq.delta)) if lq.delta else 0
+        if not (float(l_filt.long_delta_low) <= l_delta <= float(l_filt.long_delta_high)): continue
+        
+        l_qual = evaluate_quote_quality(lq, min_open_interest=l_filt.min_open_interest, max_spread_pct=l_filt.max_spread_pct)
+        if not l_qual.tradable or not l_qual.price: continue
+        
+        for sq in short_quotes:
+            if sq.contract.strike <= lq.contract.strike: continue # Short call must be ABOVE LEAPS strike
+            
+            s_delta = abs(float(sq.delta)) if sq.delta else 0
+            if not (float(s_filt.short_delta_low) <= s_delta <= float(s_filt.short_delta_high)): continue
+            
+            s_qual = evaluate_quote_quality(sq, min_open_interest=s_filt.min_open_interest, max_spread_pct=s_filt.max_spread_pct)
+            if not s_qual.tradable or not s_qual.price: continue
+            
+            net_debit = l_qual.price - s_qual.price
+            approx_max_profit = (sq.contract.strike - lq.contract.strike) - net_debit
+            
+            if approx_max_profit <= 0: continue
+            
+            candidates.append(PMCCCandidate(
+                underlying=snapshot.underlying,
+                leaps_expiry=leaps_expiry,
+                short_expiry=short_expiry,
+                leaps_strike=lq.contract.strike,
+                short_strike=sq.contract.strike,
+                leaps_premium=l_qual.price,
+                short_premium=s_qual.price,
+                net_debit=net_debit,
+                max_risk=net_debit,
+                approx_max_profit=approx_max_profit,
+                leaps_delta=Decimal(str(round(l_delta, 2))),
+                short_delta=Decimal(str(round(s_delta, 2)))
+            ))
+            
+    # Sort by cheapest debit
+    candidates.sort(key=lambda c: c.net_debit)
+    return PMCCScan(snapshot.underlying, tuple(candidates))

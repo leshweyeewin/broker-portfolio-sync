@@ -30,13 +30,13 @@ def _snapshot(quotes, price="100"):
 
 
 def _base_chain():
-    # Puts: 95 short-able (|delta| 0.35), 90 protective; a 90 short is off-band.
-    # Calls: 105 short-able (delta 0.35), 110 protective.
+    # Puts: 95 short-able (|delta| 0.25), 90 protective; a 90 short is off-band.
+    # Calls: 105 short-able (delta 0.25), 110 protective.
     return _snapshot([
-        _quote(Decimal("95"), "put", "2.0", "2.2", "-0.35"),
-        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.20"),
-        _quote(Decimal("105"), "call", "2.0", "2.2", "0.35"),
-        _quote(Decimal("110"), "call", "1.0", "1.1", "0.20"),
+        _quote(Decimal("95"), "put", "2.0", "2.2", "-0.25"),
+        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.10"),
+        _quote(Decimal("105"), "call", "2.0", "2.2", "0.25"),
+        _quote(Decimal("110"), "call", "1.0", "1.1", "0.10"),
     ])
 
 
@@ -81,8 +81,8 @@ def test_iron_condor_combines_both_wings():
 def test_iron_condor_needs_both_wings():
     # Only puts present -> no call wing -> no condor, explicit rejection.
     chain = _snapshot([
-        _quote(Decimal("95"), "put", "2.0", "2.2", "-0.35"),
-        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.32"),
+        _quote(Decimal("95"), "put", "2.0", "2.2", "-0.25"),
+        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.22"),
     ])
     scan = build_iron_condors(chain, EXPIRY, today=TODAY)
     assert scan.candidates == ()
@@ -118,8 +118,8 @@ def test_missing_delta_fails_safe_rather_than_guessing():
 def test_low_liquidity_short_leg_is_rejected():
     # Very wide bid-ask on the short blows the spread limit -> not tradable.
     chain = _snapshot([
-        _quote(Decimal("95"), "put", "1.0", "3.0", "-0.35"),
-        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.35"),
+        _quote(Decimal("95"), "put", "1.0", "3.0", "-0.25"),
+        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.25"),
     ])
     scan = build_put_credit_spreads(chain, EXPIRY, today=TODAY)
     assert scan.candidates == ()
@@ -129,7 +129,7 @@ def test_low_liquidity_short_leg_is_rejected():
 def test_no_long_within_width_is_rejected_geometry():
     # Short 95, protective put only 20 points away -> outside max_width.
     chain = _snapshot([
-        _quote(Decimal("95"), "put", "2.0", "2.2", "-0.35"),
+        _quote(Decimal("95"), "put", "2.0", "2.2", "-0.25"),
         _quote(Decimal("75"), "put", "0.5", "0.6", "-0.10"),
     ])
     scan = build_put_credit_spreads(chain, EXPIRY, today=TODAY)
@@ -231,3 +231,70 @@ def test_build_long_call():
     assert c.net_debit > 0
     assert c.max_loss == c.net_debit
     
+from analytics.options.strategies import (
+    SpreadFiltersShortTerm,
+    WheelFilters,
+    LeapsFilters,
+    build_cash_secured_puts,
+    build_covered_calls,
+    build_pmcc_leaps,
+    build_full_pmcc,
+)
+
+def test_spread_filters_short_term():
+    sf = SpreadFiltersShortTerm()
+    assert sf.min_dte == 7
+    assert sf.max_dte == 14
+
+def _wheel_chain():
+    return _snapshot([
+        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.25"),
+        _quote(Decimal("110"), "call", "1.0", "1.1", "0.25"),
+    ])
+
+def test_build_cash_secured_puts():
+    scan = build_cash_secured_puts(_wheel_chain(), EXPIRY, today=TODAY)
+    assert len(scan.candidates) == 1
+    c = scan.candidates[0]
+    assert c.strategy == "short_put"
+    assert c.net_debit < 0  # It's a credit
+
+def test_build_covered_calls():
+    scan = build_covered_calls(_wheel_chain(), EXPIRY, today=TODAY)
+    assert len(scan.candidates) == 1
+    c = scan.candidates[0]
+    assert c.strategy == "short_call"
+    assert c.net_debit < 0
+
+def test_build_pmcc_leaps():
+    leaps_expiry = date(2027, 2, 5)
+    # create a custom quote with a different expiry
+    c = OptionContract("XYZ50C", "XYZ", leaps_expiry, Decimal("50"), "call")
+    q = OptionQuote(c, AS_OF, "broker_live", bid="40.0", ask="41.0", last=None, volume=500, open_interest=500, implied_volatility="0.35", delta="0.85")
+    chain = _snapshot([q])
+    scan = build_pmcc_leaps(chain, leaps_expiry, today=TODAY)
+    assert len(scan.candidates) == 1
+    c = scan.candidates[0]
+    assert c.strategy == "long_call"
+    assert c.net_debit > 0
+
+def test_build_full_pmcc():
+    leaps_expiry = date(2027, 2, 5)
+    short_expiry = EXPIRY
+    
+    # LEAPS
+    c_l = OptionContract("XYZ50C", "XYZ", leaps_expiry, Decimal("50"), "call")
+    q_l = OptionQuote(c_l, AS_OF, "broker_live", bid="40.0", ask="41.0", last=None, volume=500, open_interest=500, implied_volatility="0.35", delta="0.85")
+    
+    # Short
+    c_s = OptionContract("XYZ110C", "XYZ", short_expiry, Decimal("110"), "call")
+    q_s = OptionQuote(c_s, AS_OF, "broker_live", bid="1.0", ask="1.1", last=None, volume=500, open_interest=500, implied_volatility="0.35", delta="0.25")
+    
+    scan = build_full_pmcc(_snapshot([q_l, q_s]), leaps_expiry, short_expiry)
+    assert len(scan.candidates) == 1
+    c = scan.candidates[0]
+    assert c.leaps_strike == Decimal("50")
+    assert c.short_strike == Decimal("110")
+    assert c.net_debit == Decimal("39.45")
+    assert c.approx_max_profit == (Decimal("110") - Decimal("50")) - c.net_debit
+

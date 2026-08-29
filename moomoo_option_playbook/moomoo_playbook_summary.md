@@ -177,7 +177,7 @@ Based on the [Masterclass Guide](https://www.moomoo.com/community/feed/the-compl
   - **A (Action):** Executing income strategies (like Cash-Secured Puts) on these defensive names to capture elevated premiums.
   - **T (Track & Tune):** Managing the trade and taking profits at predefined targets (e.g., +50%).
 
-### 📍 [Bonus Chapter: Ultimate Guide to Earnings & IV Crush](https://www.moomoo.com/community/feed/ultimate-guide-trading-options-before-during-after-earnings-options-earnings-115417291882502)
+### 📍 [Bonus Chapter: Ultimate Guide to Earnings & IV Crush](https://www.moomoo.com/community/feed/ultimate-guide-trading-options-before-during-after-earnings-options-earnings-115417291882502) | [Recap](https://www.moomoo.com/community/feed/earnings-options-playbook-webinar-recap-iv-crush-in-4-simple-116284422684678)
 
 ![Earnings Option Play](./Earnings_OptionPlay.webp)
 - **Strategy:** A structured playbook to trade volatility (IV) expansions and contractions around corporate earnings.

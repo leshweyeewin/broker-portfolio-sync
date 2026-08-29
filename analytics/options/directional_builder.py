@@ -11,6 +11,9 @@ from analytics.options.strategies import (
     build_bear_put_spreads,
     build_long_calls,
     build_long_puts,
+    build_cash_secured_puts,
+    build_covered_calls,
+    build_pmcc_leaps,
     DirectionalFilters
 )
 
@@ -32,8 +35,17 @@ def _get_snapshot(client, ticker: str) -> OptionChainSnapshot | None:
         exps = tk.options
         if not exps: return None
         
+        target_exps = list(exps[:5])
+        today = date.today()
+        for exp in exps:
+            exp_date = date.fromisoformat(exp.replace("/", "-"))
+            if (exp_date - today).days > 365:
+                if exp not in target_exps:
+                    target_exps.append(exp)
+                break
+                
         quotes = []
-        for exp in exps[:5]:
+        for exp in target_exps:
             chain = fetch_option_chain(ticker, exp, quote_client=client)
             for c in chain:
                 right = str(c.get("right", c.get("option_type", c.get("type", "")))).lower()
@@ -48,7 +60,7 @@ def _get_snapshot(client, ticker: str) -> OptionChainSnapshot | None:
                 
                 contract = OptionContract(ticker, ticker, date.fromisoformat(exp.replace("/", "-")), strike, right)
                 # OptionQuote signature: OptionQuote(contract, as_of, source, bid, ask, last, volume, open_interest, implied_volatility, delta, theta, gamma, vega)
-                quotes.append(OptionQuote(contract, datetime.now(timezone.utc), "tiger" if client else "yfinance", bid=bid, ask=ask, last=None, volume=0, open_interest=oi, implied_volatility=None, delta=delta))
+                quotes.append(OptionQuote(contract, datetime.now(timezone.utc), "broker_live" if client else "delayed", bid=bid, ask=ask, last=None, volume=0, open_interest=oi, implied_volatility=None, delta=delta))
                 
         return OptionChainSnapshot(
             snapshot_id=f"dir_bld_{ticker}_{date.today().isoformat()}",
@@ -56,7 +68,7 @@ def _get_snapshot(client, ticker: str) -> OptionChainSnapshot | None:
             underlying_price=price,
             quotes=tuple(quotes),
             as_of=datetime.now(timezone.utc),
-            source="tiger" if client else "yfinance"
+            source="broker_live" if client else "delayed"
         )
     except Exception as e:
         log.warning(f"Failed to build snapshot for {ticker}: {e}")
@@ -114,6 +126,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                 c = lp.candidates[0]
                 strikes = str(c.legs[0].strike)
                 print(f"  [Long Put]  {exp} {strikes}P | Debit:  | Max Loss:  | Breakeven: ")
+                
+            csp = build_cash_secured_puts(snap, exp)
+            if csp.candidates:
+                c = csp.candidates[0]
+                strikes = str(c.legs[0].strike)
+                print(f"  [CSP]       {exp} {strikes}P | Credit: ${c.net_debit * -1:.2f} | Capital Required: ${c.legs[0].strike * 100:.2f}")
+
+            cc = build_covered_calls(snap, exp)
+            if cc.candidates:
+                c = cc.candidates[0]
+                strikes = str(c.legs[0].strike)
+                print(f"  [Cov Call]  {exp} {strikes}C | Credit: ${c.net_debit * -1:.2f}")
+                
+            leaps = build_pmcc_leaps(snap, exp)
+            if leaps.candidates:
+                c = leaps.candidates[0]
+                strikes = str(c.legs[0].strike)
+                print(f"  [PMCC Buy]  {exp} {strikes}C | Debit: ${c.net_debit:.2f} | Delta: >0.70")
+                
+        leaps_expiries = [e for e in expiries if (e - date.today()).days > 365]
+        near_term_expiries = [e for e in expiries if 21 <= (e - date.today()).days <= 45]
+        
+        if leaps_expiries and near_term_expiries:
+            from analytics.options.strategies import build_full_pmcc
+            pmcc = build_full_pmcc(snap, leaps_expiries[0], near_term_expiries[0])
+            if pmcc.candidates:
+                c = pmcc.candidates[0]
+                print(f"  [PMCC Full] Buy {c.leaps_expiry} {c.leaps_strike}C / Sell {c.short_expiry} {c.short_strike}C | Debit: ${c.net_debit:.2f} | Approx Max Profit: ${c.approx_max_profit:.2f}")
+
     return 0
 
 if __name__ == "__main__":
