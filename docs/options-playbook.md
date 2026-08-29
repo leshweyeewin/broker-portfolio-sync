@@ -3,8 +3,8 @@
 `analytics/options/` is a **read-only decision-support layer** built from the
 Moomoo options-playbook material. It plans, scores and journals option
 strategies; it never fetches a chain into strategy logic, submits an order, or
-gives personalised advice. Its full backlog and delivery slices live in
-[`moomoo_option_playbook/FEATURES_TO_BUILD.md`](../moomoo_option_playbook/FEATURES_TO_BUILD.md).
+gives personalised advice. It is built slice-by-slice from the Moomoo
+options-playbook source material (kept locally, not tracked in this repo).
 
 ```
 analytics/options/

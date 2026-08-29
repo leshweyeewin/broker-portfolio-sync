@@ -6,7 +6,7 @@ it never fetches a chain, hits the network, or sends a notification — a caller
 (``iv_crush``, ``report``, a future provider adapter) supplies the snapshot and
 consumes the result.
 
-Design rules (mirrors FEATURES_TO_BUILD.md "Data and Calculation Rules"):
+Design rules (from the options-playbook data & calculation rules):
 
 * ``Decimal`` throughout; premiums come from the strict quote midpoint only.
 * Nothing is a buy/sell instruction — RSI is exposed as *signal context*.
@@ -483,7 +483,7 @@ def _iv_component(iv_rank) -> Decimal | None:
     """Optional IV-rank signal in 0..1; ``None`` when no rank was supplied.
 
     IV rank must be a measured value from the caller — this module never
-    fabricates one from current IV (see FEATURES_TO_BUILD.md rule 2).
+    fabricates one from current IV (IV rank must be measured, never proxied).
     """
     if iv_rank is None:
         return None
