@@ -1,0 +1,30 @@
+[
+  {
+    "bias": "bullish",
+    "catalyst_date": null,
+    "created_at": "2026-08-29T12:02:40.081478+00:00",
+    "entry_trigger": "Price hits 190 target",
+    "exit_rule": "Take profit at 50%",
+    "invalidation": "",
+    "legs": [
+      {
+        "expiry": "2026-09-18",
+        "multiplier": "100",
+        "premium": "5",
+        "quantity": "1",
+        "right": "call",
+        "side": "buy",
+        "strike": "200"
+      }
+    ],
+    "lesson": "",
+    "plan_id": "70ee8ad01ced4a13aa033773574654f3",
+    "risk_budget": "500",
+    "snapshot_id": "",
+    "status": "approved",
+    "strategy": "Long Call",
+    "thesis": "",
+    "ticker": "AAPL",
+    "updated_at": "2026-08-29T12:02:40.081478+00:00"
+  }
+]
