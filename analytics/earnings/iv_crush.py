@@ -27,11 +27,17 @@ import logging
 import statistics
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
 from analytics.earnings.earnings_move import historical_earnings_move, implied_vs_historical
 from analytics.earnings.iv_crush_history import historical_iv_crush
+
+from analytics.options.strategies import build_put_credit_spreads, build_call_credit_spreads, build_iron_condors
+from analytics.screening.screener import _build_quote_client, fetch_option_chain
+from analytics.options.option_chain import OptionChainSnapshot, OptionQuote, OptionContract
+from datetime import timezone, datetime
 from analytics.screening.market_scan import (
     _annualized_realized_vol,
     _estimate_expected_move,
@@ -250,10 +256,63 @@ def scan_iv_crush(
                     cand.iv_percentile = compute_iv_percentile(
                         current_iv, iv_history, today=today)
 
+
             crush = historical_iv_crush(ev.ticker, lookback=lookback, today=today)
             if crush and crush.n:
                 cand.crush_consistency = crush.consistency
                 cand.crush_magnitude_pct = crush.avg_crush_pct
+                
+            # Slice 3: Wire into live provider for Credit Spreads
+            if cand.edge in ("RICH", "FAIR") and cand.em_lower and cand.em_upper:
+                client = _build_quote_client()
+                exps = tk.options
+                if exps:
+                    # Find first expiry after or on earnings date
+                    target_exp = None
+                    for exp in exps:
+                        exp_dt = date.fromisoformat(exp.replace("/", "-"))
+                        if exp_dt >= ev.earnings_date:
+                            target_exp = exp
+                            break
+                            
+                    if target_exp:
+                        chain = fetch_option_chain(ev.ticker, target_exp, quote_client=client)
+                        quotes = []
+                        for c in chain:
+                            right = str(c.get("right", c.get("option_type", c.get("type", "")))).lower()
+                            if right not in ("call", "put"): continue
+                            strike = float(c.get("strike", c.get("strike_price", 0)))
+                            bid = float(c.get("bid_price", c.get("bid", 0)))
+                            ask = float(c.get("ask_price", c.get("ask", 0)))
+                            contract = OptionContract(ev.ticker, ev.ticker, date.fromisoformat(target_exp.replace("/", "-")), strike, right)
+                            quotes.append(OptionQuote(contract, datetime.now(timezone.utc), "broker_live" if client else "delayed", bid=bid, ask=ask))
+                            
+                        snap = OptionChainSnapshot(
+                            snapshot_id="iv_crush",
+                            underlying=ev.ticker,
+                            underlying_price=price,
+                            quotes=tuple(quotes),
+                            as_of=datetime.now(timezone.utc),
+                            source="broker_live" if client else "delayed"
+                        )
+                        
+                        # Build strategies
+                        if cand.bias == "Bullish":
+                            res = build_put_credit_spreads(snap, exp_dt, min_credit=Decimal("0.20"))
+                            if res.candidates:
+                                c = res.candidates[0]
+                                cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} | Cr: ${c.net_credit:.2f}]"
+                        elif cand.bias == "Bearish":
+                            res = build_call_credit_spreads(snap, exp_dt, min_credit=Decimal("0.20"))
+                            if res.candidates:
+                                c = res.candidates[0]
+                                cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} | Cr: ${c.net_credit:.2f}]"
+                        else:
+                            res = build_iron_condors(snap, exp_dt, min_credit=Decimal("0.50"))
+                            if res.candidates:
+                                c = res.candidates[0]
+                                cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} & {c.legs[2].strike}/{c.legs[3].strike} | Cr: ${c.net_credit:.2f}]"
+
         except Exception as exc:
             log.debug("IV-crush scan failed for %s: %s", ev.ticker, exc)
         out.append(cand)

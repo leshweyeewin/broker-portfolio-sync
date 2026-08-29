@@ -198,3 +198,56 @@ def test_scan_populates_ivp_and_crush(monkeypatch):
     line = c.line()
     assert "IVP 100%" in line
     assert "crush 12.0%×67%" in line
+
+
+# --------------------------------------------------------------------------- #
+# Slice 3: Wiring credit spreads
+# --------------------------------------------------------------------------- #
+
+def test_scan_wires_credit_spreads(monkeypatch):
+    from analytics.options.strategies import SpreadScan, CreditSpreadCandidate
+    from analytics.options.payoff import OptionLeg
+    from decimal import Decimal
+    
+    ev = SimpleNamespace(ticker="NVDA", earnings_date=date(2026, 9, 15), days_left=5)
+    monkeypatch.setattr("analytics.earnings.iv_crush.get_upcoming_earnings", lambda *a, **k: [ev])
+    
+    # Force a Bullish trend and RICH edge so it builds a Put Credit Spread
+    monkeypatch.setattr("analytics.earnings.iv_crush._fetch_snapshot",
+                        lambda tk, ed: (100.0, 8.0, [float(i) for i in range(1, 61)]))  # 1..60 is Bullish
+    
+    monkeypatch.setattr("analytics.earnings.iv_crush.historical_earnings_move",
+                        lambda *a, **k: SimpleNamespace(
+                            avg_abs_reaction=5.0, bear_count=5, bull_count=3))
+                            
+    class DummyYF:
+        options = ("2026-09-18",)
+    monkeypatch.setattr("yfinance.Ticker", lambda t: DummyYF())
+    
+    monkeypatch.setattr("analytics.earnings.iv_crush._build_quote_client", lambda: None)
+    monkeypatch.setattr("analytics.earnings.iv_crush.fetch_option_chain", lambda *a, **k: [
+        {"strike": 90, "type": "put", "bid": 1.0, "ask": 1.2},
+        {"strike": 85, "type": "put", "bid": 0.5, "ask": 0.7},
+    ])
+    
+    def dummy_builder(snap, exp, min_credit):
+        return SimpleNamespace(candidates=[
+            SimpleNamespace(
+                legs=[
+                    OptionLeg(right="put", side="sell", strike=Decimal("90"), premium=Decimal("1.0")),
+                    OptionLeg(right="put", side="buy", strike=Decimal("85"), premium=Decimal("0.7")),
+                ],
+                net_credit=Decimal("0.30")
+            )
+        ])
+        
+    monkeypatch.setattr("analytics.earnings.iv_crush.build_put_credit_spreads", dummy_builder)
+    
+    cands = scan_iv_crush(["NVDA"], today=date(2026, 9, 10))
+    assert len(cands) == 1
+    c = cands[0]
+    
+    assert c.edge == "RICH"
+    assert c.bias == "Bullish"
+    assert "[Live: 2026-09-18 90/85 | Cr: $0.30]" in c.strategy
+
