@@ -503,9 +503,16 @@ class MooMooAdapter:
             return []
         out: list[tuple[Decimal, str]] = []
         for _, row in data.iterrows():
-            cash_amt = row.get("cash") if row.get("cash") is not None else row.get("power")
-            if cash_amt is not None:
-                out.append((Decimal(str(cash_amt)), str(row.get("currency", "USD") or "USD")))
+            found = False
+            for ccy_prefix, ccy in [("us", "USD"), ("hk", "HKD"), ("sg", "SGD")]:
+                c_val = row.get(f"{ccy_prefix}_cash")
+                if c_val is not None and float(c_val) > 0:
+                    out.append((Decimal(str(c_val)), ccy))
+                    found = True
+            if not found:
+                cash_amt = row.get("cash") if row.get("cash") is not None else row.get("power")
+                if cash_amt is not None and float(cash_amt) > 0:
+                    out.append((Decimal(str(cash_amt)), str(row.get("currency", "USD") or "USD")))
         return out
 
     # -- field helpers ------------------------------------------------------ #

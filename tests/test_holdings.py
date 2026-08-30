@@ -132,8 +132,14 @@ def test_update_holdings_in_portfolio_writer():
     assert holdings_sheet[0] == HOLDINGS_HEADERS
     assert len(holdings_sheet) == 4  # header + 3 rows
 
+    # Verify cash row (at top of data)
+    cash_row = holdings_sheet[1]
+    assert cash_row[0] == "cash"
+    assert cash_row[11] == "USD"
+    assert cash_row[12] == 5000.0
+
     # Verify stock row
-    stock_row = holdings_sheet[1]
+    stock_row = holdings_sheet[2]
     assert stock_row[0] == "position"
     assert stock_row[1] == "MooMoo"
     assert stock_row[2] == "AAPL"
@@ -141,16 +147,10 @@ def test_update_holdings_in_portfolio_writer():
     assert stock_row[5] == 175.5
 
     # Verify option row
-    opt_row = holdings_sheet[2]
+    opt_row = holdings_sheet[3]
     assert opt_row[0] == "option"
     assert opt_row[1] == "Tiger"
     assert opt_row[2] == "CRWV"
     assert opt_row[3] == "CALL"
     assert opt_row[4] == 2
     assert opt_row[7] == 98.0
-
-    # Verify cash row
-    cash_row = holdings_sheet[3]
-    assert cash_row[0] == "cash"
-    assert cash_row[11] == "USD"
-    assert cash_row[12] == 5000.0

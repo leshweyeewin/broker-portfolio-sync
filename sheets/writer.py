@@ -179,6 +179,11 @@ def build_holdings(
     """Aggregate Status=Open rows into Deskpilot Holdings rows (pure/testable)."""
     out: list[list[Any]] = []
 
+    # --- Cash: supplied from actual brokers / environment (placed at top) ---
+    for currency, amount in sorted((cash or {}).items()):
+        if amount is not None:
+            out.append(["cash", "", "", "", "", "", "", "", "", "", "", currency.upper(), _fmt_qty(amount)])
+
     # --- Stocks: net qty + weighted-average cost per (broker, ticker, currency) ---
     stock_agg: dict[tuple, dict[str, float]] = defaultdict(lambda: {"qty": 0.0, "cost": 0.0})
     for r in stock_rows:
@@ -239,10 +244,6 @@ def build_holdings(
             "option", broker, underlying, otype, _fmt_qty(a["qty"]), "", "",
             _money(strike) if strike else "", expiry, action, premium, currency, "",
         ])
-
-    # --- Cash: supplied explicitly (not derivable from the trade tabs) ---
-    for currency, amount in (cash or {}).items():
-        out.append(["cash", "", "", "", "", "", "", "", "", "", "", currency.upper(), amount])
 
     return out
 
@@ -620,7 +621,7 @@ class PortfolioWriter:
         Holdings format, and overwrite the Holdings tab. Returns the generated rows."""
         import os
         if cash is None:
-            spec = os.getenv("DESKPILOT_CASH", "SGD=12450,USD=3120")
+            spec = os.getenv("DESKPILOT_CASH", "")
             cash = {}
             for part in (spec or "").split(","):
                 part = part.strip()

@@ -531,6 +531,7 @@ class TigerAdapter:
 
     def fetch_cash_balances(self) -> list[tuple[Decimal, str]]:
         """Free uninvested cash / available buying power per live account, as (amount, currency)."""
+        import math
         out: list[tuple[Decimal, str]] = []
         for account in self._account_ids():
             try:
@@ -540,12 +541,21 @@ class TigerAdapter:
                 log.warning("Tiger get_assets for cash failed for %s: %s", account, exc)
                 continue
             for a in (res or []):
-                s = getattr(a, "summary", None)
-                cash_val = getattr(s, "cash", None)
-                if cash_val is None:
-                    cash_val = getattr(s, "available_funds", None)
-                if cash_val is not None:
-                    out.append((dec(cash_val), str(getattr(s, "currency", "USD") or "USD")))
+                val = None
+                seg = getattr(a, "segments", None)
+                if seg and "S" in seg:
+                    s_seg = seg["S"]
+                    val = getattr(s_seg, "available_funds", None)
+                    if val is None or math.isinf(float(val)) or float(val) < 0:
+                        val = getattr(s_seg, "excess_liquidity", None)
+                if val is None or math.isinf(float(val)):
+                    s = getattr(a, "summary", None)
+                    if s:
+                        val = getattr(s, "buying_power", None)
+                        if val is None or math.isinf(float(val)):
+                            val = getattr(s, "cash", None)
+                if val is not None and not math.isinf(float(val)) and float(val) > 0:
+                    out.append((dec(val), "USD"))
         return out
 
     def _fetch_positions(self, sec_type: SecurityType) -> list[Position]:

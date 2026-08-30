@@ -485,10 +485,12 @@ class LongbridgeAdapter:
             print(f"Warning: Longbridge account_balance failed: {e}")
             return out
         for b in (balances or []):
-            cash_amt = getattr(b, "cash", None)
+            cash_amt = getattr(b, "buy_power", None)
+            if cash_amt is None:
+                cash_amt = getattr(b, "cash", None)
             if cash_amt is None:
                 cash_amt = getattr(b, "settled_cash", None)
-            if cash_amt is not None:
+            if cash_amt is not None and float(cash_amt) > 0:
                 out.append((dec(cash_amt), str(getattr(b, "currency", "SGD") or "SGD")))
         return out
 
