@@ -115,6 +115,35 @@ def test_short_option_opening_balance_negative_qty_seeds_short():
     assert res.holdings == []
 
 
+# --- fx_date: zero-proceeds close valued at the opening premium date --------- #
+def test_worthless_expiry_fx_date_is_opening_date():
+    # Short put opened 18 Aug; closed by a premium-0 fill on 28 Aug (worthless
+    # expiry / assignment synthesized upstream). The whole P/L is the premium, so
+    # its FX date is the OPENING date; the realization date stays the expiry date.
+    trades = [
+        _opt(OptionAction.SELL, 1, "2.68", d=(2026, 8, 18)),  # premium collected
+        _opt(OptionAction.BUY, 1, "0", d=(2026, 8, 28)),      # worthless close
+    ]
+    res = compute_option_pl(trades)
+    (r,) = res.realizations
+    assert r.realized_pl == Decimal("268")        # 2.68 * 100 premium kept
+    assert r.date == date(2026, 8, 28)            # P/L timed at expiry
+    assert r.fx_date == date(2026, 8, 18)         # but valued at the premium date
+    assert res.holdings == []
+
+
+def test_real_close_fx_date_stays_close_date():
+    # A genuine buy-to-close (non-zero price) keeps the close-date FX rate.
+    trades = [
+        _opt(OptionAction.SELL, 1, "2.68", d=(2026, 8, 18)),
+        _opt(OptionAction.BUY, 1, "0.50", d=(2026, 8, 25)),  # real close
+    ]
+    res = compute_option_pl(trades)
+    (r,) = res.realizations
+    assert r.date == date(2026, 8, 25)
+    assert r.fx_date == date(2026, 8, 25)         # unchanged: close date
+
+
 # --- position flip --------------------------------------------------------- #
 def test_sell_overshoot_flips_long_to_short():
     trades = [

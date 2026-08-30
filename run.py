@@ -188,9 +188,14 @@ def collect_broker_data(
 # --------------------------------------------------------------------------- #
 def _realized_sgd_by_key(result: FifoResult, fx: FxRates) -> dict[str, Decimal]:
     """Map each closing execution's dedup_key -> realized P/L converted to SGD
-    at the *trade-date* rate (so historical rows never drift, §7)."""
+    at the *trade-date* rate (so historical rows never drift, §7).
+
+    ``fx_date`` is normally the close date, but for a zero-proceeds close
+    (worthless expiry / assignment) it is the opening-premium date, so that P/L —
+    which is just the premium — is valued when the premium was actually
+    transacted, not on the synthetic expiry date."""
     return {
-        r.key: fx.to_sgd(r.realized_pl, r.currency, on=r.date)
+        r.key: fx.to_sgd(r.realized_pl, r.currency, on=(r.fx_date or r.date))
         for r in result.realizations
     }
 

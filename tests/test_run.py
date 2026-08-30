@@ -28,12 +28,14 @@ from adapters.base import (
     CashMovement,
     CashType,
     OptionAction,
+    OptionTrade,
     OptionType,
     Position,
     StockAction,
     StockTrade,
 )
 from sheets.writer import (
+    OPTIONS_HEADERS,
     STOCKS_HEADERS,
     TRANSACTIONS_HEADERS,
     UpsertResult,
@@ -196,6 +198,50 @@ def test_realized_pl_joined_and_converted():
     assert _col(sell_row, STOCKS_HEADERS, "Realized P/L") == 200.0
     # SGD: 200 * 1.35 = 270
     assert _col(sell_row, STOCKS_HEADERS, "Realized P/L (SGD)") == 270.0
+
+
+class DateAwareFx:
+    """FX that differs by date, so we can tell which date drove the conversion."""
+
+    def __init__(self, rates):
+        self._rates = rates  # {date: Decimal}
+
+    def to_sgd(self, amount, currency, on):
+        return amount * self._rates[on]
+
+    def cached_pairs_for_date(self, on):
+        return {"USDSGD": self._rates.get(on, Decimal("1"))}
+
+
+def test_worthless_expiry_pl_converted_at_opening_date_rate():
+    # Short put opened 18 Aug, expiring 28 Aug, that the broker no longer reports
+    # (expired/assigned) -> synthesized worthless close. Its realized premium P/L
+    # must be FX-converted at the 18 Aug (premium) rate, not the 28 Aug rate.
+    short_put = OptionTrade(
+        date=date(2026, 8, 18), broker=Broker.TIGER, underlying="CRWV",
+        option_type=OptionType.PUT, strike="100", qty=1, expiry=date(2026, 8, 28),
+        action=OptionAction.SELL, premium="2.68", fee="0", currency="USD",
+    )
+    adapter = FakeAdapter(Broker.TIGER.value, options=[short_put], positions=[])
+    writer = FakeWriter()
+    fx = DateAwareFx({date(2026, 8, 18): Decimal("1.2764"),
+                      date(2026, 8, 28): Decimal("1.3000")})
+
+    run_sync([adapter], writer, fx, today=date(2026, 8, 30),
+             notifier=RecordingNotifier())
+
+    # The realized P/L lands on the closing row — here the synthesized worthless
+    # buy-to-close, dated on the expiry (28 Aug).
+    close_row = next(
+        r for r in writer.option_rows
+        if _col(r, OPTIONS_HEADERS, "Action") == "Buy"
+    )
+    assert _col(close_row, OPTIONS_HEADERS, "Status") == "Closed"
+    assert _col(close_row, OPTIONS_HEADERS, "Expiry") == "2026-08-28"
+    # Native premium kept: 2.68 * 100 = 268
+    assert _col(close_row, OPTIONS_HEADERS, "P/L") == 268.0
+    # SGD at the 18 Aug rate (1.2764), NOT 28 Aug (1.30): 268 * 1.2764 = 342.0752
+    assert _col(close_row, OPTIONS_HEADERS, "P/L (SGD)") == 342.0752
 
 
 def test_only_external_cash_reaches_transactions():

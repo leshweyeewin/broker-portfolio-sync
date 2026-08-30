@@ -100,6 +100,12 @@ class Realization:
     currency: str
     multiplier: Decimal
     components: list[MatchedLot] = field(default_factory=list)
+    # Date whose FX rate values this realized P/L. Normally the close date
+    # (``date``). For a zero-proceeds close (worthless expiry / assignment: the
+    # broker books no closing cash), the whole P/L is the opening premium, which
+    # was transacted on the opening date — so it's set to that lot's date. ``None``
+    # falls back to ``date`` for callers that construct Realizations directly.
+    fx_date: Optional[date] = None
 
 
 @dataclass(frozen=True)
@@ -211,10 +217,13 @@ def _process_instrument(
             cost_basis = ZERO
             open_fees_closed = ZERO
             components = []
+            open_date_first: Optional[date] = None
             while remaining > 0 and lots:
                 lot = lots[0]
                 take = min(remaining, lot.qty)
-                
+                if open_date_first is None:
+                    open_date_first = lot.date
+
                 # Record the matched lot for Google Sheets formulas
                 components.append(MatchedLot(
                     opening_key=lot.key,
@@ -241,6 +250,15 @@ def _process_instrument(
             cost_basis *= multiplier
             close_value = fill.price * closed_qty * multiplier
             realized_pl = gross - open_fees_closed - close_fee_alloc
+            # A zero-price close means the broker booked no closing cash (a
+            # worthless expiry or an assignment, synthesized upstream): the P/L is
+            # entirely the opening premium, so value it at the opening-lot date.
+            # Any real close keeps the close-date rate.
+            fx_date = (
+                open_date_first
+                if fill.price == 0 and open_date_first is not None
+                else fill.date
+            )
             realizations.append(
                 Realization(
                     key=fill.key,
@@ -256,6 +274,7 @@ def _process_instrument(
                     currency=currency,
                     multiplier=multiplier,
                     components=components,
+                    fx_date=fx_date,
                 )
             )
             if not lots:
