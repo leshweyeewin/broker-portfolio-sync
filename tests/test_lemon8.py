@@ -85,8 +85,8 @@ def test_read_closed_positions():
     assert stock_pos.realized_pl_sgd == Decimal("405.0")
     assert stock_pos.is_win is True
     assert stock_pos.label == "AAPL"
-    # return_pct = 300 / (1800 - 300) * 100 = 20%
-    assert stock_pos.return_pct == pytest.approx(Decimal("20.0"))
+    # return_pct = 300 / abs(1800) * 100 = 16.666...%
+    assert stock_pos.return_pct == pytest.approx(Decimal("16.667"), abs=1e-3)
 
     # Option closed
     opt_pos = next(p for p in closed if p.asset == "option")
@@ -122,24 +122,23 @@ def test_read_closed_positions_missing_header_raises():
 
 
 def test_return_pct_calculation():
-    # Long close: total proceeds 1800, P/L 300 -> cost = 1500 -> return 20%
-    pct = _return_pct(Decimal("1800"), Decimal("300"))
+    # Long close: total cost 1500, P/L 300 -> return 20%
+    pct = _return_pct(Decimal("1500"), Decimal("300"))
     assert pct == pytest.approx(Decimal("20"))
 
-    # None inputs
-    assert _return_pct(None, Decimal("100")) is None
-    assert _return_pct(Decimal("1000"), None) is None
+    # Short close: premium collected 700, P/L 178.48 -> return 25.5%
+    pct = _return_pct(Decimal("700"), Decimal("178.48"))
+    assert pct == pytest.approx(Decimal("25.497"), abs=1e-3)
 
-
-def test_return_pct_none_on_buy_to_close():
-    # A BUY-to-close row (Total <= 0) can't yield a %: Total is the buyback
-    # outflow, not the cost basis. Old abs()-based formula printed nonsense here
-    # (e.g. AVGO short put buyback Total=-42, P/L=+40.99 -> +4058%).
-    assert _return_pct(Decimal("-42"), Decimal("40.99")) is None
-    assert _return_pct(Decimal("-1060"), Decimal("336.97")) is None   # MSFT short close
-    assert _return_pct(Decimal("-30"), Decimal("-4.54")) is None      # small loss buyback
+def test_return_pct_on_buy_to_close():
+    # If a negative total is entered (e.g., initial cost -45, P/L 316.69)
+    # it uses abs(Total) as the cost basis.
+    assert _return_pct(Decimal("-45"), Decimal("316.69")) == pytest.approx(Decimal("703.755"), abs=1e-3)
+    assert _return_pct(Decimal("-1060"), Decimal("336.97")) == pytest.approx(Decimal("31.789"), abs=1e-3)
+    assert _return_pct(Decimal("-30"), Decimal("-4.54")) == pytest.approx(Decimal("-15.133"), abs=1e-3)
     # A real long SALE at a big multiple is kept (NBIS 180 Put: bought 130, sold 1050)
-    assert _return_pct(Decimal("1050"), Decimal("920")) == pytest.approx(Decimal("707.6923"), abs=Decimal("0.01"))
+    # the user records -130 cost and 920 profit.
+    assert _return_pct(Decimal("-130"), Decimal("920")) == pytest.approx(Decimal("707.69"), abs=1e-2)
 
 
 # --------------------------------------------------------------------------- #

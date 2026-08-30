@@ -188,31 +188,20 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
 
 
 def _return_pct(total: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:
-    """Realized P/L as a % of the capital at risk on a *long* close.
+    """Realized P/L as a % of the initial capital at risk.
 
-    The single trustworthy case is a **long position closed by a SALE**: that
-    row's ``Total`` is the (positive) sale proceeds, so ``cost = proceeds - P/L``
-    is the real cost basis and ``return = P/L / cost``.
-
-    Any other closing row can't yield a % from one row, so we return ``None``:
-    - ``Total``/``P/L`` missing.
-    - ``Total <= 0`` — a BUY-to-close (short cover / short-option buyback). Here
-      ``Total`` is the buyback *outflow*, not the cost basis; the opening premium
-      that WAS the capital at risk isn't on this row. (Using ``abs(Total)`` here
-      was the old bug: it manufactured a denominator and printed nonsense like a
-      short put buyback showing +4058%.)
-    - Derived ``cost <= 0``.
-
-    Callers must not fabricate a percentage when this returns ``None``.
+    The user's spreadsheet records the INITIAL cost or premium in the `Total`
+    column on the closing row (e.g., -45 for a long option bought, 700 for a
+    short option sold). 
+    
+    Therefore, the absolute value of `Total` is the exact capital at risk or 
+    premium collected, and return is simply `P/L / abs(Total)`.
     """
     if total is None or realized_pl is None:
         return None
-    if total <= 0:                       # buy-to-close: cost basis not on this row
+    if total == 0:
         return None
-    cost = total - realized_pl
-    if cost <= 0:
-        return None
-    return (realized_pl / cost) * Decimal(100)
+    return (realized_pl / abs(total)) * Decimal(100)
 
 
 def _cell(row: list[Any], i: int) -> Any:
