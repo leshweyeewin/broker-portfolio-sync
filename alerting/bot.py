@@ -42,11 +42,22 @@ log = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
 _COMMANDS = ("quote", "q", "quicktake", "qt")
+
+# Options commands: each alias maps to a builder key resolved in ``run_bot``.
+_OPTION_COMMANDS = {
+    "directional": "directional", "dir": "directional",
+    "options": "directional", "opt": "directional",
+    "midweek": "midweek", "mid": "midweek", "mw": "midweek",
+}
+
 _USAGE = (
     "📊 Send me a ticker for a quick-take.\n"
     "Try: /quote NVDA  (or just: NVDA)\n"
     "You get price, trend/RSI/ATR, 52w position, and the next earnings date "
-    "with its expected move."
+    "with its expected move.\n\n"
+    "📈 Options (read-only plans, no orders):\n"
+    "/directional NVDA — bull-call / long / CSP / covered-call / PMCC board\n"
+    "/midweek SPY — short-dated (0–5 DTE) expiry templates"
 )
 
 # A transport takes (url, timeout seconds) and returns the parsed JSON payload.
@@ -81,6 +92,25 @@ def parse_ticker(text: str) -> Optional[str]:
         cand = parts[0]
     cand = cand.upper()
     return cand if (cand.isalpha() and 1 <= len(cand) <= 5) else None
+
+
+def parse_options_command(text: str):
+    """Extract ``(builder_key, ticker)`` for an options command, or None.
+
+    Accepts ``/directional NVDA``, ``/dir nvda``, ``/midweek@Bot spy`` etc.
+    ``builder_key`` is one of the values in ``_OPTION_COMMANDS`` (e.g.
+    ``"directional"``) that ``run_bot`` resolves against its builder registry.
+    """
+    t = (text or "").strip()
+    if not t.startswith("/"):
+        return None
+    parts = t.split()
+    cmd = parts[0].lstrip("/").split("@")[0].lower()  # strip @botname suffix
+    key = _OPTION_COMMANDS.get(cmd)
+    if key is None or len(parts) < 2:
+        return None
+    cand = parts[1].upper()
+    return (key, cand) if (cand.isalpha() and 1 <= len(cand) <= 5) else None
 
 
 def is_help(text: str) -> bool:
@@ -156,6 +186,52 @@ def build_quote(ticker: str, *, today: Optional[date] = None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Options builders (reuse the existing CLIs in-process by capturing stdout)
+# --------------------------------------------------------------------------- #
+
+def _capture_cli(cli_main: Callable[[list], int], ticker: str) -> str:
+    """Run an ``analytics.options`` CLI ``main([ticker])`` and capture its stdout."""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        cli_main([ticker])
+    return buf.getvalue()
+
+
+def _trim_for_telegram(text: str, limit: int = 3500) -> str:
+    """Strip and cap CLI output so it fits a single Telegram message (< 4096)."""
+    text = (text or "").strip()
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "\n…(truncated)"
+    return text
+
+
+def build_directional(ticker: str, *, today: Optional[date] = None) -> str:
+    """Directional/income options board for ``ticker`` (bull-call, long, CSP, CC, PMCC)."""
+    from analytics.options.directional_builder import main as directional_main
+
+    out = _trim_for_telegram(_capture_cli(directional_main, ticker))
+    return out or f"⚠️ No directional setups for {ticker} right now."
+
+
+def build_midweek(ticker: str, *, today: Optional[date] = None) -> str:
+    """Short-dated (0–5 DTE) expiry planner templates for ``ticker``."""
+    from analytics.options.mid_week_planner import main as midweek_main
+
+    out = _trim_for_telegram(_capture_cli(midweek_main, ticker))
+    return out or f"⚠️ No short-dated expiries for {ticker} right now."
+
+
+# Builder registry resolved by ``parse_options_command`` keys. Injectable in tests.
+_DEFAULT_OPTION_BUILDERS: dict[str, Callable[..., str]] = {
+    "directional": build_directional,
+    "midweek": build_midweek,
+}
+
+
+# --------------------------------------------------------------------------- #
 # Telegram long-polling
 # --------------------------------------------------------------------------- #
 
@@ -181,17 +257,19 @@ def run_bot(
     transport: Optional[Transport] = None,
     reply: Optional[Reply] = None,
     quote_builder: Callable[..., str] = build_quote,
+    option_builders: Optional[dict] = None,
     today: Optional[date] = None,
     once: bool = False,
 ) -> None:
     """Long-poll Telegram and answer quote requests until interrupted.
 
-    ``transport``/``reply``/``quote_builder`` are injectable for tests; ``once``
-    processes a single ``getUpdates`` batch and returns (used by tests).
+    ``transport``/``reply``/``quote_builder``/``option_builders`` are injectable
+    for tests; ``once`` processes a single ``getUpdates`` batch and returns.
     """
     token = token or get_telegram_bot_token()
     transport = transport or _http_get_json
     reply = reply or (lambda chat_id, text: send_telegram(text, chat_id=chat_id))
+    option_builders = option_builders or _DEFAULT_OPTION_BUILDERS
 
     offset: Optional[int] = None
     while True:
@@ -213,17 +291,30 @@ def run_bot(
                 continue
 
             ticker = parse_ticker(text)
-            if ticker is None:
-                if is_help(text):
-                    reply(str(chat_id), _USAGE)
+            if ticker is not None:
+                try:
+                    out = quote_builder(ticker, today=today)
+                except Exception as exc:
+                    log.warning("quote build failed for %s: %s", ticker, exc)
+                    out = f"⚠️ Couldn't build a quote for {ticker} right now."
+                reply(str(chat_id), out)
                 continue
 
-            try:
-                out = quote_builder(ticker, today=today)
-            except Exception as exc:
-                log.warning("quote build failed for %s: %s", ticker, exc)
-                out = f"⚠️ Couldn't build a quote for {ticker} right now."
-            reply(str(chat_id), out)
+            opt = parse_options_command(text)
+            if opt is not None:
+                key, tk = opt
+                builder = option_builders.get(key)
+                if builder is not None:
+                    try:
+                        out = builder(tk, today=today)
+                    except Exception as exc:
+                        log.warning("%s build failed for %s: %s", key, tk, exc)
+                        out = f"⚠️ Couldn't build {key} for {tk} right now."
+                    reply(str(chat_id), out)
+                continue
+
+            if is_help(text):
+                reply(str(chat_id), _USAGE)
 
         if once:
             break

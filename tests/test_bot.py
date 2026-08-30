@@ -9,8 +9,11 @@ from __future__ import annotations
 from datetime import date
 
 from alerting.bot import (
+    _capture_cli,
+    _trim_for_telegram,
     format_quote,
     is_help,
+    parse_options_command,
     parse_ticker,
     run_bot,
 )
@@ -43,6 +46,22 @@ def test_parse_ticker_rejects_noise():
     assert parse_ticker("/quote") is None           # missing symbol
     assert parse_ticker("/quote 12345") is None      # not alphabetic
     assert parse_ticker("TOOLONGNAME") is None       # > 5 chars
+
+
+def test_parse_options_command():
+    assert parse_options_command("/directional NVDA") == ("directional", "NVDA")
+    assert parse_options_command("/dir nvda") == ("directional", "NVDA")
+    assert parse_options_command("/options tsla") == ("directional", "TSLA")
+    assert parse_options_command("/midweek spy") == ("midweek", "SPY")
+    assert parse_options_command("/mw@MyBot qqq") == ("midweek", "QQQ")
+
+
+def test_parse_options_command_rejects_noise():
+    assert parse_options_command("/directional") is None      # missing symbol
+    assert parse_options_command("/dir 12345") is None         # not alphabetic
+    assert parse_options_command("/quote NVDA") is None        # not an options cmd
+    assert parse_options_command("NVDA") is None               # bare word
+    assert parse_options_command("") is None
 
 
 def test_is_help():
@@ -160,6 +179,45 @@ def test_run_bot_survives_builder_error():
     )
     assert len(sent) == 1
     assert "Couldn't build a quote for NVDA" in sent[0][1]
+
+
+def test_run_bot_routes_options_command():
+    sent: list[tuple[str, str]] = []
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _one_update("/directional NVDA"),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        option_builders={"directional": lambda t, today=None: f"DIR {t}"},
+        once=True,
+    )
+    assert sent == [("123", "DIR NVDA")]
+
+
+def test_run_bot_survives_options_builder_error():
+    sent: list[tuple[str, str]] = []
+
+    def boom(ticker, today=None):
+        raise RuntimeError("yfinance down")
+
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _one_update("/midweek SPY"),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        option_builders={"midweek": boom},
+        once=True,
+    )
+    assert len(sent) == 1
+    assert "Couldn't build midweek for SPY" in sent[0][1]
+
+
+def test_capture_cli_and_trim():
+    def fake_main(argv):
+        print(f"scan {argv[0]}")
+        return 0
+
+    assert "scan NVDA" in _capture_cli(fake_main, "NVDA")
+    assert _trim_for_telegram("  hi  ") == "hi"
+    assert _trim_for_telegram("x" * 5000).endswith("(truncated)")
 
 
 def test_run_bot_survives_transport_error():
