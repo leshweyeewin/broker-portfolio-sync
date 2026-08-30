@@ -476,6 +476,22 @@ class LongbridgeAdapter:
                 out.append((dec(na), str(getattr(b, "currency", "SGD") or "SGD")))
         return out
 
+    def fetch_cash_balances(self) -> list[tuple[Decimal, str]]:
+        """Free uninvested cash / settled buying power as (amount, currency)."""
+        out: list[tuple[Decimal, str]] = []
+        try:
+            balances = self._call_with_retry(self._client.account_balance)
+        except Exception as e:  # noqa: BLE001
+            print(f"Warning: Longbridge account_balance failed: {e}")
+            return out
+        for b in (balances or []):
+            cash_amt = getattr(b, "cash", None)
+            if cash_amt is None:
+                cash_amt = getattr(b, "settled_cash", None)
+            if cash_amt is not None:
+                out.append((dec(cash_amt), str(getattr(b, "currency", "SGD") or "SGD")))
+        return out
+
     # -- cash movements (§8, best-effort per §14) --------------------------- #
     def fetch_cash_movements(self, since: date | None) -> list[CashMovement]:
         if not self._cash_enabled:

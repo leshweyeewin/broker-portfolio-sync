@@ -495,6 +495,19 @@ class MooMooAdapter:
                 out.append((Decimal(str(total)), str(row.get("currency", "HKD") or "HKD")))
         return out
 
+    def fetch_cash_balances(self) -> list[tuple[Decimal, str]]:
+        """Free uninvested cash / settled buying power as (amount, currency)."""
+        ctx = self._context(self._markets[0])
+        ret, data = ctx.accinfo_query(refresh_cache=True)
+        if ret != 0 or not hasattr(data, "iterrows"):
+            return []
+        out: list[tuple[Decimal, str]] = []
+        for _, row in data.iterrows():
+            cash_amt = row.get("cash") if row.get("cash") is not None else row.get("power")
+            if cash_amt is not None:
+                out.append((Decimal(str(cash_amt)), str(row.get("currency", "USD") or "USD")))
+        return out
+
     # -- field helpers ------------------------------------------------------ #
     @staticmethod
     def _parse_code(code: str):

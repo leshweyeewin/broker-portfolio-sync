@@ -529,6 +529,25 @@ class TigerAdapter:
                     out.append((dec(nl), str(getattr(s, "currency", "USD") or "USD")))
         return out
 
+    def fetch_cash_balances(self) -> list[tuple[Decimal, str]]:
+        """Free uninvested cash / available buying power per live account, as (amount, currency)."""
+        out: list[tuple[Decimal, str]] = []
+        for account in self._account_ids():
+            try:
+                res = (self._client.get_assets(account=account)
+                       if account is not None else self._client.get_assets())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Tiger get_assets for cash failed for %s: %s", account, exc)
+                continue
+            for a in (res or []):
+                s = getattr(a, "summary", None)
+                cash_val = getattr(s, "cash", None)
+                if cash_val is None:
+                    cash_val = getattr(s, "available_funds", None)
+                if cash_val is not None:
+                    out.append((dec(cash_val), str(getattr(s, "currency", "USD") or "USD")))
+        return out
+
     def _fetch_positions(self, sec_type: SecurityType) -> list[Position]:
         result = []
         for account in self._account_ids():

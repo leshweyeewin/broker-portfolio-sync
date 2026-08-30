@@ -613,9 +613,17 @@ def run_sync(
         )
     )
 
-    # 8b. Auto-generate Holdings snapshot tab for Deskpilot.
+    # 8b. Auto-generate Holdings snapshot tab for Deskpilot with live broker cash.
     try:
-        writer.update_holdings()
+        cash_by_currency: dict[str, float] = defaultdict(float)
+        for broker, adapter in adapters:
+            if hasattr(adapter, "fetch_cash_balances"):
+                try:
+                    for amt, ccy in adapter.fetch_cash_balances():
+                        cash_by_currency[ccy.upper()] += float(amt)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Could not fetch cash balances for %s: %s", broker, exc)
+        writer.update_holdings(cash=dict(cash_by_currency) if cash_by_currency else None)
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not update Holdings tab: %s", exc)
 
