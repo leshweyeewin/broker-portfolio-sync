@@ -218,14 +218,14 @@ def test_journal_stats_and_highlights():
 
     # Grouped alphabetically by ticker, then by P/L desc.
     assert j["highlights"][0]["ticker"] == "BE"
-    assert j["highlights"][0]["direction"] == "loss"
-    assert j["highlights"][0]["returnPct"] == -38.3
+    assert j["highlights"][0]["trades"][0]["direction"] == "loss"
+    assert j["highlights"][0]["trades"][0]["returnPct"] == -38.3
     
     # SNDK will be the last one alphabetically in this set
     assert j["highlights"][2]["ticker"] == "SNDK"
-    assert j["highlights"][2]["direction"] == "win"
-    assert j["highlights"][2]["contract"] == "$1,405 Call"
-    assert j["highlights"][2]["returnPct"] == 230.6
+    assert j["highlights"][2]["trades"][0]["direction"] == "win"
+    assert j["highlights"][2]["trades"][0]["contract"] == "$1,405 Call"
+    assert j["highlights"][2]["trades"][0]["returnPct"] == 230.6
 
 
 def test_journal_handles_empty_week():
@@ -320,8 +320,12 @@ _HANDWRITTEN = """export const journal_2026_w33: WeeklyJournal = {
     'if the tile refreshes to 57. The stats below are the machine fields.'
   ],
   highlights: [
-    { ticker: 'SNDK', asset: 'option', strategy: 'Long Call', contract: '$1,405 Call', direction: 'win', returnPct: 230.6, note: 'Storage-cycle breakout.' },
-    { ticker: 'BE', asset: 'option', strategy: 'Long Call', contract: '$240 Call', direction: 'loss', returnPct: -38.3, note: 'Cut per risk rules.' }
+    { ticker: 'SNDK', trades: [
+        { asset: 'option', strategy: 'Long Call', contract: '$1,405 Call', direction: 'win', returnPct: 230.6, note: 'Storage-cycle breakout.' }
+    ] },
+    { ticker: 'BE', trades: [
+        { asset: 'option', strategy: 'Long Call', contract: '$240 Call', direction: 'loss', returnPct: -38.3, note: 'Cut per risk rules.' }
+    ] }
   ],
   published: false,
 };

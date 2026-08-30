@@ -292,8 +292,13 @@ def build_weekly_journal(
         trades = grouped[ticker]
         # Sort trades within ticker by P/L descending (winners first)
         trades.sort(key=lambda x: x.realized_pl if x.realized_pl is not None else -999999, reverse=True)
+        trades_list = []
         for p in trades:
-            highlights.append(_to_highlight(p))
+            trades_list.append(_to_highlight(p))
+        highlights.append({
+            "ticker": ticker,
+            "trades": trades_list
+        })
 
     return {
         "slug": f"{iso_year}-w{iso_week}",
@@ -509,17 +514,20 @@ def render_journal_entry(entry: dict) -> str:
 
 
 def _render_highlight(h: dict) -> str:
-    parts = [
-        f"ticker: {_ts_str(h['ticker'])}",
-        f"asset: {_ts_str(h['asset'])}",
-        f"strategy: {_ts_str(h['strategy'])}",
-    ]
-    if h.get("contract"):
-        parts.append(f"contract: {_ts_str(h['contract'])}")
-    parts.append(f"direction: {_ts_str(h['direction'])}")
-    parts.append(f"returnPct: {h['returnPct'] if h['returnPct'] is not None else 'null'}")
-    parts.append(f"note: {_ts_str(h.get('note', ''))}")
-    return "{ " + ", ".join(parts) + " }"
+    lines = [f"{{ ticker: {_ts_str(h['ticker'])}, trades: ["]
+    for t in h["trades"]:
+        parts = [
+            f"asset: {_ts_str(t['asset'])}",
+            f"strategy: {_ts_str(t['strategy'])}",
+        ]
+        if t.get("contract"):
+            parts.append(f"contract: {_ts_str(t['contract'])}")
+        parts.append(f"direction: {_ts_str(t['direction'])}")
+        parts.append(f"returnPct: {t['returnPct'] if t['returnPct'] is not None else 'null'}")
+        parts.append(f"note: {_ts_str(t.get('note', ''))}")
+        lines.append("        { " + ", ".join(parts) + " },")
+    lines.append("      ] }")
+    return "\n".join(lines)
 
 
 def upsert_journal_entry(entry: dict, path: Path) -> bool:
