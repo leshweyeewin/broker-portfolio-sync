@@ -20,7 +20,7 @@ from typing import Literal, Sequence
 from adapters.base import dec
 from analytics.options.payoff import OptionLeg, PayoffSummary, summarize_expiry
 
-PLAN_STORE = Path("analytics") / "trade_plans.json"
+PLAN_STORE = Path("analytics") / "data" / "trade_plans.json"
 
 
 class PlanStatus(str, Enum):
