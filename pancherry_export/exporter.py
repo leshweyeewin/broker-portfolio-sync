@@ -7,7 +7,7 @@ weekly update stops being a hand-edit:
   **fully regenerated** every run. The one thing that survives a regen is a
   ``hidden: true`` flag: curation the user set stays set.
 * ``weeklyJournals.ts`` — a new week's entry **appended** as ``published:
-  false``, pre-filled with real stats + auto-picked highlights + a factual
+  true``, pre-filled with real stats + auto-picked highlights + a factual
   first-draft narrative. Existing (hand-edited) entries are never touched, and a
   re-run for a week already present is a no-op.
 
@@ -254,7 +254,7 @@ def build_weekly_journal(
     """Build one ``WeeklyJournal`` entry (as a dict) from the week's closed rows.
 
     Stats and highlights are real; the narrative is a plain factual first draft
-    for the user to rewrite. Emitted with ``published: false``.
+    for the user to rewrite. Emitted with ``published: true``.
     """
     recent = select_recent_closes(closed, today=today, window_days=window_days)
 
@@ -287,7 +287,7 @@ def build_weekly_journal(
         "losses": len(losers),
         "winRatePct": win_rate,
         "highlights": highlights,
-        "published": False,
+        "published": True,
     }
 
 

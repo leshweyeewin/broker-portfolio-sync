@@ -5,7 +5,7 @@
     python -m pancherry_export --pr       # ...then commit + open a Draft PR
 
 Regenerates ``openPositions.ts`` and appends this week's journal draft
-(``published: false``); a re-run refreshes only the stat tiles in place. Without
+(``published: true``); a re-run refreshes only the stat tiles in place. Without
 ``--pr`` it just writes the local clone (review + push by hand). With ``--pr`` it
 commits the local files to a drafts branch and opens/updates a Draft PR — the
 review gate — so the weekly flow is push-free. Never merges: publishing is the
