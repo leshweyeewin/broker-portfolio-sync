@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any, Optional
 
 from sheets.writer import (
@@ -117,10 +118,10 @@ def _read_tab(client, tab: str, headers: list[str], *, asset: str) -> list[Close
 
     idx = _index_map(tab, values[header_idx])
     positions: list[ClosedPosition] = []
-    for row in values[header_idx + 1:]:
+    for r_i, row in enumerate(values[header_idx + 1:], start=header_idx + 1):
         if _cell(row, idx["Status"]) != CLOSED_STATUS:
             continue
-        positions.append(_build_position(row, idx, asset=asset))
+        positions.append(_build_position(row, r_i, values, header_idx, idx, asset=asset))
     return positions
 
 
@@ -145,29 +146,34 @@ def _index_map(tab: str, header_row: list[Any]) -> dict[str, int]:
     return present
 
 
-def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> ClosedPosition:
+def _build_position(
+    row: list[Any],
+    row_idx: int,
+    values: list[list[Any]],
+    header_idx: int,
+    idx: dict[str, int],
+    *,
+    asset: str,
+) -> ClosedPosition:
     if asset == "option":
         symbol = str(_cell(row, idx["Stock"]))
-        pl = _dec(_cell(row, idx["P/L"]))
+        pl = _evaluate_pl_cell(_cell(row, idx["P/L"]), values, header_idx)
         pl_sgd = _dec(_cell(row, idx["P/L (SGD)"]))
         option_type = str(_cell(row, idx["Type"]))
         strike = str(_cell(row, idx["Strike"]))
         expiry = sheet_date_to_iso(_cell(row, idx["Expiry"]))
-        # Strategy is always in OPTIONS_HEADERS, but read defensively so a future
-        # column drop degrades to an empty label rather than a KeyError.
         strategy = str(_cell(row, idx["Strategy"])) if "Strategy" in idx else ""
     else:
         symbol = str(_cell(row, idx["Ticker"]))
-        pl = _dec(_cell(row, idx["Realized P/L"]))
+        pl = _evaluate_pl_cell(_cell(row, idx["Realized P/L"]), values, header_idx)
         pl_sgd = _dec(_cell(row, idx["Realized P/L (SGD)"]))
         option_type = strike = expiry = ""
         strategy = "Stock"
 
     # The closing execution's Buy/Sell (read defensively — not in the required set).
     action = str(_cell(row, idx["Action"])) if "Action" in idx else ""
-    # Manual thesis, if the user filled the Reason cell (optional column).
     reason = str(_cell(row, idx["Reason"])).strip() if "Reason" in idx else ""
-    total = _dec(_cell(row, idx["Total"]))
+    cost_basis = _find_cost_basis(row, row_idx, values, header_idx, idx, asset=asset)
     return ClosedPosition(
         broker=str(_cell(row, idx["Broker"])),
         symbol=symbol,
@@ -176,7 +182,7 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
         currency=str(_cell(row, idx["Currency"])),
         realized_pl=pl,
         realized_pl_sgd=pl_sgd,
-        return_pct=_return_pct(total, pl),
+        return_pct=_return_pct(cost_basis, pl),
         option_type=option_type,
         strike=strike,
         expiry=expiry,
@@ -186,22 +192,105 @@ def _build_position(row: list[Any], idx: dict[str, int], *, asset: str) -> Close
     )
 
 
-
-def _return_pct(total: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:
-    """Realized P/L as a % of the initial capital at risk.
-
-    The user's spreadsheet records the INITIAL cost or premium in the `Total`
-    column on the closing row (e.g., -45 for a long option bought, 700 for a
-    short option sold). 
+def _evaluate_pl_cell(raw_pl: Any, values: list[list[Any]], header_idx: int) -> Optional[Decimal]:
+    """Coerce P/L to Decimal; if a formula like `=K327+K207-L207-L327`, evaluate referenced cells."""
+    if raw_pl is None or raw_pl == "":
+        return None
+    s = str(raw_pl).strip()
+    if not s.startswith("="):
+        return _dec(raw_pl)
     
-    Therefore, the absolute value of `Total` is the exact capital at risk or 
-    premium collected, and return is simply `P/L / abs(Total)`.
+    expr = s[1:].strip()
+    terms = re.findall(r"([+-]?)\s*([A-Za-z]+)(\d+)", expr)
+    if not terms:
+        return _dec(raw_pl)
+    
+    total = Decimal(0)
+    for sign, col_str, row_str in terms:
+        col_idx = 0
+        for c in col_str.upper():
+            col_idx = col_idx * 26 + (ord(c) - ord("A") + 1)
+        col_idx -= 1
+        r_num = int(row_str)
+        if 1 <= r_num <= len(values):
+            val = _dec(_cell(values[r_num - 1], col_idx)) or Decimal(0)
+            total += -val if sign == "-" else val
+    return total
+
+
+def _find_cost_basis(
+    row: list[Any],
+    row_idx: int,
+    values: list[list[Any]],
+    header_idx: int,
+    idx: dict[str, int],
+    *,
+    asset: str,
+) -> Optional[Decimal]:
+    """Find the initial capital at risk (cost/premium basis) for a closed position.
+
+    1. Formula check: If P/L formula references an opening row (e.g. K207), use its Total.
+    2. Backward match: Look back for the matching opening transaction of the same instrument.
+    3. Fallback: Use current row Total if non-zero.
     """
-    if total is None or realized_pl is None:
+    pl_col = idx.get("P/L" if asset == "option" else "Realized P/L", 0)
+    raw_pl = _cell(row, pl_col)
+
+    # 1. Formula reference
+    if str(raw_pl).startswith("="):
+        ref_rows = [int(m[1]) for m in re.findall(r"([A-Za-z]+)(\d+)", str(raw_pl))]
+        open_rows = [r for r in ref_rows if r != (row_idx + 1) and 1 <= r <= len(values)]
+        if open_rows:
+            open_tot = _dec(_cell(values[open_rows[0] - 1], idx.get("Total", 0)))
+            if open_tot and open_tot != 0:
+                return abs(open_tot)
+
+    stock_col = idx.get("Stock" if asset == "option" else "Ticker")
+    symbol = str(_cell(row, stock_col)).strip()
+    action = str(_cell(row, idx.get("Action", 0))).strip().lower()
+
+    # 2. Backward search for matching opening trade
+    if asset == "option":
+        opt_type = str(_cell(row, idx.get("Type", 0))).strip().lower()
+        strike = str(_cell(row, idx.get("Strike", 0))).strip()
+        expiry = str(_cell(row, idx.get("Expiry", 0))).strip()
+        open_action = "sell" if action.startswith("b") else "buy"
+
+        for r_i in range(row_idx - 1, header_idx, -1):
+            r = values[r_i]
+            if str(_cell(r, stock_col)).strip() == symbol:
+                r_typ = str(_cell(r, idx.get("Type", 0))).strip().lower()
+                r_stk = str(_cell(r, idx.get("Strike", 0))).strip()
+                r_exp = str(_cell(r, idx.get("Expiry", 0))).strip()
+                r_act = str(_cell(r, idx.get("Action", 0))).strip().lower()
+                if r_typ == opt_type and r_stk == strike and r_exp == expiry:
+                    if r_act.startswith(open_action[:1]):
+                        tot = _dec(_cell(r, idx.get("Total", 0)))
+                        if tot and tot != 0:
+                            return abs(tot)
+    else:
+        open_action = "buy" if action.startswith("s") else "sell"
+        for r_i in range(row_idx - 1, header_idx, -1):
+            r = values[r_i]
+            if str(_cell(r, stock_col)).strip() == symbol:
+                r_act = str(_cell(r, idx.get("Action", 0))).strip().lower()
+                if r_act.startswith(open_action[:1]):
+                    tot = _dec(_cell(r, idx.get("Total", 0)))
+                    if tot and tot != 0:
+                        return abs(tot)
+
+    # 3. Fallback to current row total
+    cur_tot = _dec(_cell(row, idx.get("Total", 0)))
+    if cur_tot and cur_tot != 0:
+        return abs(cur_tot)
+    return None
+
+
+def _return_pct(cost_basis: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:
+    """Realized P/L as a % of the initial capital at risk."""
+    if cost_basis is None or realized_pl is None or cost_basis == 0:
         return None
-    if total == 0:
-        return None
-    return (realized_pl / abs(total)) * Decimal(100)
+    return (realized_pl / abs(cost_basis)) * Decimal(100)
 
 
 def _cell(row: list[Any], i: int) -> Any:

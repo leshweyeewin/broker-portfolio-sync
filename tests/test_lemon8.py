@@ -85,8 +85,8 @@ def test_read_closed_positions():
     assert stock_pos.realized_pl_sgd == Decimal("405.0")
     assert stock_pos.is_win is True
     assert stock_pos.label == "AAPL"
-    # return_pct = 300 / abs(1800) * 100 = 16.666...%
-    assert stock_pos.return_pct == pytest.approx(Decimal("16.667"), abs=1e-3)
+    # return_pct = 300 / 1500 (matched opening buy) * 100 = 20%
+    assert stock_pos.return_pct == pytest.approx(Decimal("20.0"))
 
     # Option closed
     opt_pos = next(p for p in closed if p.asset == "option")
@@ -290,3 +290,48 @@ def test_show_dollar_amounts_opt_in():
     assert "+300.00 USD" in journal.caption
     # The table images stay percentages-only even when the post opts into dollars.
     assert all("300.00" not in p for p in journal.table_pages)
+
+
+def test_reader_evaluates_pl_formula_and_opening_cost():
+    """If P/L is a formula like '=K5+K4-L4-L5', reader evaluates P/L and uses opening row cost."""
+    client = FakeSheetClient([TAB_OPTIONS])
+    options = _SUMMARY_BLOCK + [
+        [str(h) for h in OPTIONS_HEADERS],
+        # Row 4 (open): Long Put CRWV Strike 98, Total -212, Fee 1.66
+        ["2026-08-20", "Longbridge", "Long Put", "CRWV", "PUT", 98.0, 1,
+         "2026-08-28", "BUY", 2.12, -212.0, 1.66, "USD", "Closed", "", "", "k1"],
+        # Row 5 (close): Short Put CRWV Strike 98, Total 1260, Fee 0, Formula =K5+K4-L4-L5
+        ["2026-08-28", "Longbridge", "Short Put", "CRWV", "PUT", 98.0, 1,
+         "2026-08-28", "SELL", 12.6, 1260.0, 0.0, "USD", "Closed", "=K5+K4-L4-L5", 1330.21, "k2"],
+    ]
+    client.batch_update_values([{"range": f"{TAB_OPTIONS}!A1", "values": options}])
+
+    closed = read_closed_positions(client)
+    crwv = next(p for p in closed if p.symbol == "CRWV" and p.realized_pl is not None)
+
+    # Formula evaluated: 1260 + (-212) - 1.66 - 0 = 1046.34
+    assert crwv.realized_pl == pytest.approx(Decimal("1046.34"))
+    # Return % = 1046.34 / 212 * 100 = 493.55%
+    assert crwv.return_pct == pytest.approx(Decimal("493.556"), abs=1e-2)
+
+
+def test_reader_backward_matches_open_cost():
+    """If P/L is a literal number on a Buy-to-Close row, reader matches opening Sell row for cost."""
+    client = FakeSheetClient([TAB_OPTIONS])
+    options = _SUMMARY_BLOCK + [
+        [str(h) for h in OPTIONS_HEADERS],
+        # Row 4 (open): Short Call MRVL Strike 280, Total 250
+        ["2026-08-27", "Tiger", "Short Call", "MRVL", "CALL", 280.0, 1,
+         "2026-08-28", "SELL", 2.5, 250.0, 0.77, "USD", "Closed", "", "", "k1"],
+        # Row 5 (close): Long Call MRVL Strike 280, Total -1, P/L 236.71
+        ["2026-08-28", "Tiger", "Long Call", "MRVL", "CALL", 280.0, 1,
+         "2026-08-28", "BUY", 0.01, -1.0, 1.52, "USD", "Closed", 236.71, 300.93, "k2"],
+    ]
+    client.batch_update_values([{"range": f"{TAB_OPTIONS}!A1", "values": options}])
+
+    closed = read_closed_positions(client)
+    mrvl = next(p for p in closed if p.symbol == "MRVL" and p.realized_pl is not None)
+
+    assert mrvl.realized_pl == pytest.approx(Decimal("236.71"))
+    # Cost basis matched from Row 4 is 250 -> Return = 236.71 / 250 * 100 = 94.684%
+    assert mrvl.return_pct == pytest.approx(Decimal("94.684"), abs=1e-2)
