@@ -93,7 +93,7 @@ DASHBOARD_HEADERS = ["Metric", "Longbridge", "Tiger", "MooMoo", "Total (SGD)"]
 EARNINGS_PLAN_HEADERS = [
     "Ticker", "Earnings Date", "Days Left", "Signal",
     "Implied Move", "Hist Move", "Trend Bias", "Strategy", "EM Lower", "EM Upper",
-    "IV Percentile", "Grade", "Verdict",
+    "IV Percentile", "Grade", "Verdict", "Reason",
 ]
 
 # How many header rows each data tab has before row data starts.

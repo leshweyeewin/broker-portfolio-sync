@@ -36,6 +36,7 @@ def build_earnings_plan_row(cand: IVCrushCandidate) -> list[Any]:
         ivp,
         cand.grade,
         cand.verdict,
+        cand.verdict_reason,
     ]
 
 def main(argv=None) -> int:

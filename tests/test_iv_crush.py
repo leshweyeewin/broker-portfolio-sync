@@ -172,12 +172,15 @@ def test_grade_all_green_is_focus():
                 crush_magnitude_pct=12.0, edge="RICH")
     assert playbook_grade(c) == (4, "FOCUS")
     assert c.grade == 4 and c.verdict == "FOCUS"
+    assert "All 4 criteria met" in c.verdict_reason
 
 
 def test_grade_two_green_is_skip():
     # IVP + RICH green, but crush unknown -> only 2 greens.
     c = _graded(iv_percentile=85.0, edge="RICH")
     assert playbook_grade(c) == (2, "SKIP")
+    assert "2/4 criteria met" in c.verdict_reason
+    assert "Missing: Crush consistency n/a, Crush magnitude n/a" in c.verdict_reason
 
 
 def test_grade_boundaries_resolve_to_amber():
@@ -194,6 +197,8 @@ def test_grade_three_green_is_watch():
     c = _graded(iv_percentile=85.0, crush_consistency=0.8,
                 crush_magnitude_pct=12.0, edge="FAIR")
     assert playbook_grade(c) == (3, "WATCH")
+    assert "3/4 criteria met" in c.verdict_reason
+    assert "Edge FAIR" in c.verdict_reason
 
 
 # --------------------------------------------------------------------------- #

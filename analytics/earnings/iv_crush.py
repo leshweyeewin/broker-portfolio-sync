@@ -97,6 +97,11 @@ class IVCrushCandidate:
         """FOCUS / WATCH / SKIP from the green count."""
         return playbook_grade(self)[1]
 
+    @property
+    def verdict_reason(self) -> str:
+        """Clear explanation of why the candidate was graded FOCUS, WATCH, or SKIP."""
+        return playbook_grade_details(self)[2]
+
     def line(self) -> str:
         when = "Today!" if self.days_left == 0 else (
             "Tomorrow!" if self.days_left == 1 else f"in {self.days_left}d")
@@ -360,7 +365,13 @@ def scan_iv_crush(
 
 
 def playbook_grade(cand: "IVCrushCandidate") -> tuple[int, str]:
-    """Count of GREEN playbook steps → ``(green_count, verdict)``.
+    """Count of GREEN playbook steps → ``(green_count, verdict)``."""
+    grade, verdict, _ = playbook_grade_details(cand)
+    return grade, verdict
+
+
+def playbook_grade_details(cand: "IVCrushCandidate") -> tuple[int, str, str]:
+    """Count of GREEN playbook steps and explanation → ``(green_count, verdict, reason)``.
 
     GREEN thresholds (a step whose input is unknown/``None`` counts as NOT green):
       * Step 1 — IV Percentile > 70
@@ -370,16 +381,56 @@ def playbook_grade(cand: "IVCrushCandidate") -> tuple[int, str]:
     Verdict: 4 → ``FOCUS``, 3 → ``WATCH``, ≤2 → ``SKIP``.
     """
     green = 0
+    passed: list[str] = []
+    failed: list[str] = []
+
+    # Step 1: IVP > 70
     if cand.iv_percentile is not None and cand.iv_percentile > 70:
         green += 1
+        passed.append(f"IVP {cand.iv_percentile:.0f}% > 70%")
+    else:
+        ivp_str = f"IVP {cand.iv_percentile:.0f}% <= 70%" if cand.iv_percentile is not None else "IVP n/a"
+        failed.append(ivp_str)
+
+    # Step 2: Crush consistency >= 75%
     if cand.crush_consistency is not None and cand.crush_consistency >= 0.75:
         green += 1
+        passed.append(f"Crush rate {cand.crush_consistency * 100:.0f}% >= 75%")
+    else:
+        cr_str = f"Crush rate {cand.crush_consistency * 100:.0f}% < 75%" if cand.crush_consistency is not None else "Crush consistency n/a"
+        failed.append(cr_str)
+
+    # Step 3: Crush magnitude > 10%
     if cand.crush_magnitude_pct is not None and cand.crush_magnitude_pct > 10:
         green += 1
+        passed.append(f"Crush size {cand.crush_magnitude_pct:.1f}% > 10%")
+    else:
+        cm_str = f"Crush size {cand.crush_magnitude_pct:.1f}% <= 10%" if cand.crush_magnitude_pct is not None else "Crush magnitude n/a"
+        failed.append(cm_str)
+
+    # Step 4: Step-4 Edge is RICH
+    imp_str = f"Implied {cand.implied_move_pct:.1f}%" if cand.implied_move_pct is not None else "Implied n/a"
+    hist_str = f"Hist {cand.hist_move_pct:.1f}%" if cand.hist_move_pct is not None else "Hist n/a"
     if cand.edge == "RICH":
         green += 1
+        passed.append(f"Edge RICH ({imp_str} > {hist_str})")
+    elif cand.edge == "CHEAP":
+        failed.append(f"Selling cheap: Edge CHEAP ({imp_str} < {hist_str})")
+    elif cand.edge == "FAIR":
+        failed.append(f"Edge FAIR ({imp_str} ~= {hist_str})")
+    else:
+        failed.append("Edge unknown (no history)")
+
     verdict = "FOCUS" if green == 4 else ("WATCH" if green == 3 else "SKIP")
-    return green, verdict
+    
+    if verdict == "FOCUS":
+        reason = f"All 4 criteria met ({'; '.join(passed)})"
+    elif verdict == "WATCH":
+        reason = f"3/4 criteria met. Passed: {', '.join(passed)}. Missing: {', '.join(failed)}"
+    else:
+        reason = f"{green}/4 criteria met. Missing: {', '.join(failed)}"
+
+    return green, verdict, reason
 
 
 def format_message(candidates: list[IVCrushCandidate]) -> str:

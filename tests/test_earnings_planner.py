@@ -35,6 +35,9 @@ def test_build_earnings_plan_row():
     assert row[8] == 110.0
     assert row[9] == 130.0
     assert row[10] == 85.5
+    assert row[11] == 2 # grade
+    assert row[12] == "SKIP" # verdict
+    assert "2/4 criteria met" in row[13] # reason
 
 def test_build_earnings_plan_row_empty():
     cand = IVCrushCandidate(

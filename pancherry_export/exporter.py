@@ -540,6 +540,7 @@ def upsert_journal_entry(entry: dict, path: Path) -> bool:
     slug = entry['slug']
     var_name = f"journal_{slug.replace('-', '_')}"
     journal_path = path.parent / "journals" / f"{slug}.ts"
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
 
     if journal_path.exists():
         return False

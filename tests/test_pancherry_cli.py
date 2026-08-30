@@ -107,7 +107,7 @@ def test_refresh_skipped_when_trade_count_drops(tmp_path):
     msgs = []
     cli.run(_client_n(1), repo, today=_TODAY, notifier=lambda m: msgs.append(m) or True)
 
-    text = (repo / "src" / "data" / "weeklyJournals.ts").read_text(encoding="utf-8")
+    text = (repo / "src" / "data" / "journals" / "2026-w33.ts").read_text(encoding="utf-8")
     assert "trades: 3," in text          # kept — not clobbered to 1
     assert "trades: 1," not in text
     assert "SKIPPED" in msgs[0]
