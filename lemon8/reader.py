@@ -173,7 +173,9 @@ def _build_position(
     # The closing execution's Buy/Sell (read defensively — not in the required set).
     action = str(_cell(row, idx["Action"])) if "Action" in idx else ""
     reason = str(_cell(row, idx["Reason"])).strip() if "Reason" in idx else ""
-    cost_basis = _find_cost_basis(row, row_idx, values, header_idx, idx, asset=asset)
+    cost_basis, open_strategy = _find_cost_basis_and_strategy(row, row_idx, values, header_idx, idx, asset=asset)
+    if open_strategy:
+        strategy = open_strategy
     return ClosedPosition(
         broker=str(_cell(row, idx["Broker"])),
         symbol=symbol,
@@ -218,7 +220,7 @@ def _evaluate_pl_cell(raw_pl: Any, values: list[list[Any]], header_idx: int) -> 
     return total
 
 
-def _find_cost_basis(
+def _find_cost_basis_and_strategy(
     row: list[Any],
     row_idx: int,
     values: list[list[Any]],
@@ -226,12 +228,12 @@ def _find_cost_basis(
     idx: dict[str, int],
     *,
     asset: str,
-) -> Optional[Decimal]:
-    """Find the initial capital at risk (cost/premium basis) for a closed position.
+) -> tuple[Optional[Decimal], str]:
+    """Find the initial capital at risk and true opening strategy for a closed position.
 
-    1. Formula check: If P/L formula references an opening row (e.g. K207), use its Total.
+    1. Formula check: If P/L formula references an opening row (e.g. K207), use its Total and Strategy.
     2. Backward match: Look back for the matching opening transaction of the same instrument.
-    3. Fallback: Use current row Total if non-zero.
+    3. Fallback: Use current row Total.
     """
     pl_col = idx.get("P/L" if asset == "option" else "Realized P/L", 0)
     raw_pl = _cell(row, pl_col)
@@ -241,9 +243,11 @@ def _find_cost_basis(
         ref_rows = [int(m[1]) for m in re.findall(r"([A-Za-z]+)(\d+)", str(raw_pl))]
         open_rows = [r for r in ref_rows if r != (row_idx + 1) and 1 <= r <= len(values)]
         if open_rows:
-            open_tot = _dec(_cell(values[open_rows[0] - 1], idx.get("Total", 0)))
+            open_row = values[open_rows[0] - 1]
+            open_tot = _dec(_cell(open_row, idx.get("Total", 0)))
+            open_strat = str(_cell(open_row, idx.get("Strategy", 0))).strip() if "Strategy" in idx else ""
             if open_tot and open_tot != 0:
-                return abs(open_tot)
+                return abs(open_tot), open_strat
 
     stock_col = idx.get("Stock" if asset == "option" else "Ticker")
     symbol = str(_cell(row, stock_col)).strip()
@@ -266,8 +270,8 @@ def _find_cost_basis(
                 if r_typ == opt_type and r_stk == strike and r_exp == expiry:
                     if r_act.startswith(open_action[:1]):
                         tot = _dec(_cell(r, idx.get("Total", 0)))
-                        if tot and tot != 0:
-                            return abs(tot)
+                        open_strat = str(_cell(r, idx.get("Strategy", 0))).strip() if "Strategy" in idx else ""
+                        return abs(tot) if (tot and tot != 0) else None, open_strat
     else:
         open_action = "buy" if action.startswith("s") else "sell"
         for r_i in range(row_idx - 1, header_idx, -1):
@@ -276,19 +280,20 @@ def _find_cost_basis(
                 r_act = str(_cell(r, idx.get("Action", 0))).strip().lower()
                 if r_act.startswith(open_action[:1]):
                     tot = _dec(_cell(r, idx.get("Total", 0)))
-                    if tot and tot != 0:
-                        return abs(tot)
+                    return abs(tot) if (tot and tot != 0) else None, ""
 
     # 3. Fallback to current row total
     cur_tot = _dec(_cell(row, idx.get("Total", 0)))
-    if cur_tot and cur_tot != 0:
-        return abs(cur_tot)
-    return None
+    return (abs(cur_tot) if (cur_tot and cur_tot != 0) else None), ""
 
 
 def _return_pct(cost_basis: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:
     """Realized P/L as a % of the initial capital at risk."""
-    if cost_basis is None or realized_pl is None or cost_basis == 0:
+    if realized_pl is None:
+        return None
+    if realized_pl == 0:
+        return Decimal(0)
+    if cost_basis is None or cost_basis == 0:
         return None
     return (realized_pl / abs(cost_basis)) * Decimal(100)
 
