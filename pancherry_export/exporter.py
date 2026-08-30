@@ -523,23 +523,38 @@ def _render_highlight(h: dict) -> str:
 
 
 def upsert_journal_entry(entry: dict, path: Path) -> bool:
-    """Insert ``entry`` at the top of the ``weeklyJournals`` array in ``path``.
+    """Insert ``entry`` as a new file in ``src/data/journals/`` and add to index.
 
     Returns True if inserted, False if an entry with the same slug already
-    exists (idempotent — a re-run for the same week is a no-op). Newest-first
-    insert; the site sorts by date anyway.
+    exists (idempotent — a re-run for the same week is a no-op).
     """
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
+    slug = entry['slug']
+    var_name = f"journal_{slug.replace('-', '_')}"
+    journal_path = path.parent / "journals" / f"{slug}.ts"
 
-    if re.search(rf"slug:\s*['\"]{re.escape(entry['slug'])}['\"]", text):
+    if journal_path.exists():
         return False
-    if _JOURNAL_ARRAY_OPEN not in text:
-        raise ValueError(f"Could not find the journals array opener in {path}")
 
-    block = render_journal_entry(entry) + "\n"
-    text = text.replace(_JOURNAL_ARRAY_OPEN + "\n", _JOURNAL_ARRAY_OPEN + "\n" + block, 1)
-    path.write_text(text, encoding="utf-8")
+    block = render_journal_entry(entry)
+    file_content = f"import {{ type WeeklyJournal }} from '../weeklyJournals';\n\nexport const {var_name}: WeeklyJournal = {block};\n"
+    journal_path.write_text(file_content, encoding="utf-8")
+
+    text = path.read_text(encoding="utf-8")
+    if f"from './journals/{slug}'" not in text:
+        import_stmt = f"import {{ {var_name} }} from './journals/{slug}';\n"
+        
+        m = re.search(r'export const weeklyJournals', text)
+        if m:
+            text = text[:m.start()] + import_stmt + "\n" + text[m.start():]
+        
+        m_array = re.search(r'(export const weeklyJournals:\s*WeeklyJournal\[\]\s*=\s*\[)', text)
+        if m_array:
+            idx = m_array.end()
+            text = text[:idx] + f"\n  {var_name}," + text[idx:]
+            
+        path.write_text(text, encoding="utf-8")
+
     return True
 
 
@@ -550,68 +565,31 @@ _STAT_FIELDS = ("weekOf", "startDate", "endDate", "trades", "wins", "losses", "w
 
 
 def refresh_journal_stats(entry: dict, path: Path) -> bool:
-    """Update only the stat fields on an already-present week's entry in ``path``.
+    """Update only the stat fields on an already-present week's file.
 
     A mid-week re-run refreshes the tiles (trades/win-rate/dates) as more trades
     close, while the reviewer's narrative and curated highlights survive. Returns
     True if the file changed, False if the slug isn't present *or* the stats
     already match (so a self-updating PR doesn't churn on a no-op run).
-
-    CAVEAT: only the structured fields refresh — numbers the writer hard-codes
-    into prose (e.g. "70 positions closed" in ``body``) are NOT rewritten. Keep
-    prose qualitative and let the stat tiles carry the exact figures.
     """
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
-    span = _find_entry_block(text, entry["slug"])
-    if span is None:
+    slug = entry['slug']
+    journal_path = path.parent / "journals" / f"{slug}.ts"
+
+    if not journal_path.exists():
         return False
 
-    start, end = span
-    original = text[start:end]
-    updated = original
+    text = journal_path.read_text(encoding="utf-8")
+    original = text
     for field in _STAT_FIELDS:
-        updated = _replace_stat_field(updated, field, entry[field])
-    if updated == original:
+        text = _replace_stat_field(text, field, entry[field])
+    
+    if text == original:
         return False
 
-    path.write_text(text[:start] + updated + text[end:], encoding="utf-8")
+    journal_path.write_text(text, encoding="utf-8")
     return True
 
-
-def _find_entry_block(text: str, slug: str) -> Optional[tuple[int, int]]:
-    """Char span ``[open_brace, close_brace+1)`` of the object literal that holds
-    ``slug: '<slug>'`` — brace-matched so nested ``highlights`` objects are
-    included. ``None`` if the slug isn't in the file."""
-    m = re.search(rf"slug:\s*['\"]{re.escape(slug)}['\"]", text)
-    if not m:
-        return None
-
-    # Walk back to the '{' that opens this entry (skip balanced inner braces).
-    depth, open_idx, j = 0, None, m.start()
-    while j >= 0:
-        c = text[j]
-        if c == "}":
-            depth += 1
-        elif c == "{":
-            if depth == 0:
-                open_idx = j
-                break
-            depth -= 1
-        j -= 1
-    if open_idx is None:
-        return None
-
-    # Walk forward to its matching close.
-    depth = 0
-    for k in range(open_idx, len(text)):
-        if text[k] == "{":
-            depth += 1
-        elif text[k] == "}":
-            depth -= 1
-            if depth == 0:
-                return open_idx, k + 1
-    return None
 
 
 def _replace_stat_field(block: str, field: str, value) -> str:
@@ -657,16 +635,16 @@ class JournalDrift:
 
 
 def assess_journal_drift(entry: dict, path: Path) -> Optional[JournalDrift]:
-    """Compare the live entry against the one already in ``path`` (read BEFORE a
-    refresh writes). ``None`` when the slug isn't present yet (a fresh insert has
-    nothing to drift from)."""
+    """Compare the live entry against the one already in ``journals/`` (read BEFORE a
+    refresh writes). ``None`` when the slug isn't present yet."""
     path = Path(path)
-    if not path.exists():
+    slug = entry['slug']
+    journal_path = path.parent / "journals" / f"{slug}.ts"
+
+    if not journal_path.exists():
         return None
-    span = _find_entry_block(path.read_text(encoding="utf-8"), entry["slug"])
-    if span is None:
-        return None
-    block = path.read_text(encoding="utf-8")[span[0]:span[1]]
+
+    block = journal_path.read_text(encoding="utf-8")
     m = re.search(r"\btrades:\s*(\d+)", block)
     return JournalDrift(
         prev_trades=int(m.group(1)) if m else 0,

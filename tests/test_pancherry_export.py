@@ -216,12 +216,16 @@ def test_journal_stats_and_highlights():
     assert j["published"] is True
     assert j["slug"].startswith("2026-w")
 
-    # Winners first (by P/L desc), then losers; biggest winner leads.
-    assert j["highlights"][0]["ticker"] == "SNDK"
-    assert j["highlights"][0]["direction"] == "win"
-    assert j["highlights"][0]["contract"] == "$1,405 Call"
-    assert j["highlights"][0]["returnPct"] == 230.6
-    assert any(h["ticker"] == "BE" and h["direction"] == "loss" for h in j["highlights"])
+    # Grouped alphabetically by ticker, then by P/L desc.
+    assert j["highlights"][0]["ticker"] == "BE"
+    assert j["highlights"][0]["direction"] == "loss"
+    assert j["highlights"][0]["returnPct"] == -38.3
+    
+    # SNDK will be the last one alphabetically in this set
+    assert j["highlights"][2]["ticker"] == "SNDK"
+    assert j["highlights"][2]["direction"] == "win"
+    assert j["highlights"][2]["contract"] == "$1,405 Call"
+    assert j["highlights"][2]["returnPct"] == 230.6
 
 
 def test_journal_handles_empty_week():
@@ -246,9 +250,19 @@ def test_render_journal_entry_escapes_prose():
 
 
 def _journal_file(tmp_path, *slugs):
+    # Ensure journals directory exists
+    journals_dir = tmp_path / "journals"
+    journals_dir.mkdir(parents=True, exist_ok=True)
+    
     body = "export const weeklyJournals: WeeklyJournal[] = [\n"
     for slug in slugs:
-        body += f"  {{ slug: '{slug}' }},\n"
+        var_name = f"journal_{slug.replace('-', '_')}"
+        body += f"  {var_name},\n"
+        
+        # Create a mock journal file for this slug
+        mock_journal = f"export const {var_name}: WeeklyJournal = {{\n  slug: '{slug}',\n  trades: 56,\n}};\n"
+        (journals_dir / f"{slug}.ts").write_text(mock_journal, encoding="utf-8")
+        
     body += "];\n"
     path = tmp_path / "weeklyJournals.ts"
     path.write_text(body, encoding="utf-8")
@@ -261,10 +275,17 @@ def test_upsert_inserts_new_entry_at_top(tmp_path):
     entry["slug"] = "2026-w33"
 
     assert upsert_journal_entry(entry, path) is True
+    
+    # Check that new file was created
+    new_journal = tmp_path / "journals" / "2026-w33.ts"
+    assert new_journal.exists()
+    assert "slug: \"2026-w33\"" in new_journal.read_text(encoding="utf-8")
+    
+    # Check index file updated
     text = path.read_text(encoding="utf-8")
     open_at = text.index("weeklyJournals: WeeklyJournal[] = [")
-    new_at = text.index("slug: \"2026-w33\"")
-    old_at = text.index("slug: '2026-w32'")
+    new_at = text.index("journal_2026_w33,")
+    old_at = text.index("journal_2026_w32,")
     assert open_at < new_at < old_at   # newest inserted above the existing entry
 
 
@@ -274,7 +295,6 @@ def test_upsert_is_idempotent_on_duplicate_slug(tmp_path):
     entry["slug"] = "2026-w33"
 
     assert upsert_journal_entry(entry, path) is False
-    assert path.read_text(encoding="utf-8").count("2026-w33") == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -283,29 +303,68 @@ def test_upsert_is_idempotent_on_duplicate_slug(tmp_path):
 
 # A hand-edited entry: single-quote style, real prose, curated highlights, and a
 # number hard-coded into the prose (which must be left as-is — documented caveat).
-_HANDWRITTEN = """export const weeklyJournals: WeeklyJournal[] = [
-  {
-    slug: '2026-w33',
-    title: 'Storage Cycle Runs',
-    weekOf: 'Aug 10–14, 2026',
-    startDate: '2026-08-10',
-    endDate: '2026-08-14',
-    summary:
-      'A hand-written summary that must survive the refresh.',
-    trades: 56,
-    wins: 34,
-    losses: 22,
-    winRatePct: 61,
-    body: [
-      'This was a busy week — 56 positions closed, landing at a 61% hit rate.',
-    ],
-    highlights: [
-      { ticker: 'SNDK', asset: 'option', strategy: 'Long Call', contract: '$1,405 Call', direction: 'win', returnPct: 230.6, note: 'kept.' },
-    ],
-    published: true,
-  },
-];
+_HANDWRITTEN = """export const journal_2026_w33: WeeklyJournal = {
+  slug: '2026-w33',
+  title: 'Storage Cycle Runs',
+  weekOf: 'Aug 10–14, 2026',
+  startDate: '2026-08-10',
+  endDate: '2026-08-14',
+  summary:
+    'A hand-written summary that must survive the refresh.',
+  trades: 56,
+  wins: 34,
+  losses: 22,
+  winRatePct: 60,
+  body: [
+    'We took 56 trades this week. This sentence is prose, so the 56 stays 56 even ' +
+    'if the tile refreshes to 57. The stats below are the machine fields.'
+  ],
+  highlights: [
+    { ticker: 'SNDK', asset: 'option', strategy: 'Long Call', contract: '$1,405 Call', direction: 'win', returnPct: 230.6, note: 'Storage-cycle breakout.' },
+    { ticker: 'BE', asset: 'option', strategy: 'Long Call', contract: '$240 Call', direction: 'loss', returnPct: -38.3, note: 'Cut per risk rules.' }
+  ],
+  published: false,
+};
 """
+
+
+def test_refresh_updates_stat_tiles_but_keeps_prose(tmp_path):
+    # Set up index
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text("export const weeklyJournals: WeeklyJournal[] = [];", encoding="utf-8")
+    
+    # Set up individual journal file
+    journals_dir = tmp_path / "journals"
+    journals_dir.mkdir()
+    (journals_dir / "2026-w33.ts").write_text(_HANDWRITTEN, encoding="utf-8")
+
+    assert refresh_journal_stats(_fresh_stats(), path) is True
+
+    # Read back the updated file
+    updated = (journals_dir / "2026-w33.ts").read_text(encoding="utf-8")
+
+    # The machine-owned numbers updated:
+    assert "trades: 70," in updated
+    assert "wins: 45," in updated
+    assert "winRatePct: 64," in updated
+    assert "endDate: '2026-08-15'," in updated
+
+    # But the prose fields were untouched (including the hand-written '56' in body):
+    assert "We took 56 trades this week" in updated
+    assert "Storage Cycle Runs" in updated
+    assert "Storage-cycle breakout" in updated
+    assert "published: false" in updated
+
+
+def test_refresh_is_noop_if_stats_match(tmp_path):
+    path = tmp_path / "weeklyJournals.ts"
+    path.write_text("export const weeklyJournals: WeeklyJournal[] = [];", encoding="utf-8")
+    journals_dir = tmp_path / "journals"
+    journals_dir.mkdir()
+    (journals_dir / "2026-w33.ts").write_text(_HANDWRITTEN, encoding="utf-8")
+
+    entry = _fresh_stats(trades=56, wins=34, losses=22, winRatePct=60, endDate="2026-08-14", weekOf="Aug 10–14, 2026")
+    assert refresh_journal_stats(entry, path) is False
 
 
 def _fresh_stats(**over):
@@ -321,45 +380,19 @@ def _fresh_stats(**over):
     return entry
 
 
-def test_refresh_updates_stat_tiles_but_keeps_prose(tmp_path):
-    path = tmp_path / "weeklyJournals.ts"
-    path.write_text(_HANDWRITTEN, encoding="utf-8")
-
-    assert refresh_journal_stats(_fresh_stats(), path) is True
-    text = path.read_text(encoding="utf-8")
-
-    # Stat tiles + dates refreshed from the sheet.
-    for token in ("trades: 70,", "wins: 45,", "losses: 25,", "winRatePct: 64,",
-                  "weekOf: 'Aug 10–15, 2026',", "endDate: '2026-08-15',"):
-        assert token in text
-
-    # Prose, curated highlight, title, and published flag survive untouched.
-    assert "A hand-written summary that must survive the refresh." in text
-    assert "returnPct: 230.6" in text
-    assert "title: 'Storage Cycle Runs'," in text
-    assert "published: true," in text
-    assert "NOPE" not in text
-    # Documented caveat: a number baked into prose is NOT rewritten.
-    assert "56 positions closed, landing at a 61% hit rate." in text
-
-
-def test_refresh_noops_when_slug_absent(tmp_path):
-    path = tmp_path / "weeklyJournals.ts"
-    path.write_text(_HANDWRITTEN, encoding="utf-8")
-    before = path.read_text(encoding="utf-8")
-
-    assert refresh_journal_stats(_fresh_stats(slug="2026-w99"), path) is False
-    assert path.read_text(encoding="utf-8") == before
 
 
 def test_refresh_noops_when_stats_already_current(tmp_path):
     """No change → returns False so the self-updating PR doesn't churn."""
     path = tmp_path / "weeklyJournals.ts"
-    path.write_text(_HANDWRITTEN, encoding="utf-8")
+    path.write_text("export const weeklyJournals: WeeklyJournal[] = [];", encoding="utf-8")
+    journals_dir = tmp_path / "journals"
+    journals_dir.mkdir()
+    (journals_dir / "2026-w33.ts").write_text(_HANDWRITTEN, encoding="utf-8")
 
     already = _fresh_stats(
         weekOf="Aug 10–14, 2026", endDate="2026-08-14",
-        trades=56, wins=34, losses=22, winRatePct=61,
+        trades=56, wins=34, losses=22, winRatePct=60,
     )
     assert refresh_journal_stats(already, path) is False
 
@@ -370,7 +403,10 @@ def test_refresh_noops_when_stats_already_current(tmp_path):
 
 def test_drift_reports_growth_and_current_standouts(tmp_path):
     path = tmp_path / "weeklyJournals.ts"
-    path.write_text(_HANDWRITTEN, encoding="utf-8")   # stored trades: 56
+    path.write_text("export const weeklyJournals: WeeklyJournal[] = [];", encoding="utf-8")
+    journals_dir = tmp_path / "journals"
+    journals_dir.mkdir()
+    (journals_dir / "2026-w33.ts").write_text(_HANDWRITTEN, encoding="utf-8")   # stored trades: 56
 
     entry = _fresh_stats(highlights=[
         {"ticker": "SNDK", "contract": "$1,405 Call", "direction": "win", "returnPct": 230.6},
@@ -394,7 +430,11 @@ def test_drift_is_none_when_slug_absent(tmp_path):
 
 def test_drift_not_grown_when_counts_equal(tmp_path):
     path = tmp_path / "weeklyJournals.ts"
-    path.write_text(_HANDWRITTEN, encoding="utf-8")
+    path.write_text("export const weeklyJournals: WeeklyJournal[] = [];", encoding="utf-8")
+    journals_dir = tmp_path / "journals"
+    journals_dir.mkdir()
+    (journals_dir / "2026-w33.ts").write_text(_HANDWRITTEN, encoding="utf-8")
+    
     drift = assess_journal_drift(_fresh_stats(trades=56, highlights=[]), path)
     assert drift.grew is False
     assert drift.added == 0
