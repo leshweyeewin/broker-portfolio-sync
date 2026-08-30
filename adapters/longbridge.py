@@ -185,6 +185,70 @@ class LongbridgeAdapter:
                     return True
         return False
 
+    @staticmethod
+    def _has_fee_data(detail) -> bool:
+        """True if the order carries any fee information (non-zero total or a fee
+        line item).
+
+        Longbridge's misreported option-combo closes come back with a completely
+        empty ``charge_detail`` (``total_amount`` 0, no fee items); genuine stock
+        and option fills normally carry a fee. Used to narrow the price
+        sanity-check in ``fetch_stock_executions`` to only the ambiguous zero-fee
+        fills, so normal stock trades are never second-guessed."""
+        cd = getattr(detail, "charge_detail", None)
+        if cd is None:
+            return False
+        total = getattr(cd, "total_amount", None)
+        try:
+            if total is not None and Decimal(str(total)) != 0:
+                return True
+        except (ArithmeticError, ValueError, TypeError):
+            pass
+        for item in getattr(cd, "items", []) or []:
+            if getattr(item, "fees", None):
+                return True
+        return False
+
+    # A "stock" fill priced below this fraction of the live share price is really
+    # an option premium misreported under the bare underlying symbol. 0.4 sits far
+    # from both a real fill (~1.0 of spot) and a premium (typically <0.1 of spot).
+    _STOCK_PRICE_FLOOR_FRAC = Decimal("0.4")
+
+    @staticmethod
+    def _live_price(code: str) -> Optional[Decimal]:
+        """Best-effort last share price via yfinance; None on any failure.
+
+        Kept self-contained (no analytics-layer import) so the adapter has no
+        upward dependency."""
+        try:
+            import logging
+
+            import yfinance as yf
+
+            logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+            tk = yf.Ticker(code)
+            p = getattr(getattr(tk, "fast_info", None), "last_price", None)
+            if not p:
+                hist = tk.history(period="1d")
+                if not hist.empty:
+                    p = float(hist["Close"].iloc[-1])
+            return Decimal(str(p)) if p else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _price_implausible_for_stock(self, code: str, price: Decimal) -> bool:
+        """True if ``price`` is too small to be a share price for ``code`` — the
+        signature of an option premium misreported as a stock fill.
+
+        Fail-safe: any quote failure (or non-positive price) returns False, so a
+        network hiccup never drops a real holding."""
+        if price <= 0:
+            return False
+        spot = self._live_price(code)
+        if not spot or spot <= 0:
+            return False
+        return price < spot * self._STOCK_PRICE_FLOOR_FRAC
+
     def fetch_stock_executions(self, since: date | None) -> list[StockTrade]:
         trades: list[StockTrade] = []
         for order, fill_dt in self._get_filled_orders(since):
@@ -192,12 +256,19 @@ class LongbridgeAdapter:
             if qty == 0:
                 continue
             code = str(order.symbol).split(".")[0]  # Longbridge uses AAPL.US
+            price = dec(order.executed_price or order.price or "0")
             if is_option_code(code) or self._has_option_fees(order):
                 continue  # option execution — handled by fetch_option_executions
 
-            if str(order.order_id) == "1277991007597641728":
-                # Workaround: This was a MRVL option combo close that Longbridge reported
-                # with 0 option fees and hid the legs, causing it to look exactly like a stock trade.
+            # Longbridge occasionally reports an option/combo close under the bare
+            # underlying symbol with an EMPTY charge_detail — indistinguishable
+            # from a stock fill by symbol or fees (a real stock fill can be
+            # zero-fee too). The tell is price: an option premium is a small
+            # fraction of the share price. Only when a fill has no fee data at all
+            # AND its price is implausibly low vs the live quote do we treat it as
+            # a misreported option and drop it (Longbridge exposes no
+            # options-position API to rebuild the legs from).
+            if not self._has_fee_data(order) and self._price_implausible_for_stock(code, price):
                 continue
 
             trades.append(
@@ -207,7 +278,7 @@ class LongbridgeAdapter:
                     ticker=code,
                     action=StockAction.BUY if order.side == OrderSide.Buy else StockAction.SELL,
                     qty=qty,
-                    price=dec(order.executed_price or order.price or "0"),
+                    price=price,
                     fee=self._fee(order),
                     currency=str(order.currency),
                     fill_id=str(order.order_id),

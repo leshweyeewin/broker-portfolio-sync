@@ -10,7 +10,7 @@ import os
 import unittest
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -220,6 +220,56 @@ class TestLongbridgeAdapter(unittest.TestCase):
         self.assertEqual(positions[0].strike, Decimal("23"))
         self.assertEqual(positions[1].symbol, "SNDQ")
         self.assertEqual(positions[1].strike, Decimal("25"))
+
+    # -- zero-fee option-misreport guard ----------------------------------- #
+    # Longbridge sometimes reports an option/combo close under the bare underlying
+    # symbol with an empty charge_detail — indistinguishable from a stock fill by
+    # symbol or fees. The price sanity-check (premium << share price) catches it.
+
+    def _one_fill(self, oid, symbol, side, price, qty, total_amount):
+        dt = datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)
+        self.mock_client.history_executions.return_value = [FakeExecution(oid, dt)]
+        self.mock_client.order_detail.return_value = FakeOrderDetail(
+            oid, symbol, side, price, qty, dt, total_amount)
+
+    def test_zero_fee_low_price_fill_dropped_as_misreported_option(self):
+        # MRVL "1 share" @ $4.89 with no fees, spot ~$217 → option premium, drop it.
+        self._one_fill("m1", "MRVL.US", OrderSide.Buy, "4.89", "1", "0.00")
+        with patch.object(LongbridgeAdapter, "_live_price", return_value=Decimal("216.62")):
+            stocks = self.adapter.fetch_stock_executions(date(2026, 8, 25))
+        self.assertEqual(stocks, [])
+
+    def test_zero_fee_normal_price_fill_kept_as_stock(self):
+        # Real zero-fee stock: CRWV 100 @ $86.31, spot ~$84 → keep it.
+        self._one_fill("c1", "CRWV.US", OrderSide.Sell, "86.31", "100", "0.00")
+        with patch.object(LongbridgeAdapter, "_live_price", return_value=Decimal("84.23")):
+            stocks = self.adapter.fetch_stock_executions(date(2026, 8, 25))
+        self.assertEqual([t.ticker for t in stocks], ["CRWV"])
+        self.assertEqual(stocks[0].price, Decimal("86.31"))
+
+    def test_price_check_failsafe_keeps_fill_when_quote_unavailable(self):
+        # A quote failure must never drop a fill (better a stray row than lost data).
+        self._one_fill("m1", "MRVL.US", OrderSide.Buy, "4.89", "1", "0.00")
+        with patch.object(LongbridgeAdapter, "_live_price", return_value=None):
+            stocks = self.adapter.fetch_stock_executions(date(2026, 8, 25))
+        self.assertEqual([t.ticker for t in stocks], ["MRVL"])
+
+    def test_fee_bearing_fill_is_never_price_checked(self):
+        # A cheap but genuine stock that carries a fee must skip the price check
+        # entirely — no quote lookup, never dropped.
+        self._one_fill("s1", "SNDL.US", OrderSide.Buy, "2.50", "100", "1.00")
+        with patch.object(LongbridgeAdapter, "_live_price",
+                          side_effect=AssertionError("must not fetch a quote")):
+            stocks = self.adapter.fetch_stock_executions(date(2026, 8, 25))
+        self.assertEqual([t.ticker for t in stocks], ["SNDL"])
+
+    def test_price_implausible_threshold_and_failsafe(self):
+        with patch.object(LongbridgeAdapter, "_live_price", return_value=Decimal("100")):
+            self.assertTrue(self.adapter._price_implausible_for_stock("X", Decimal("39")))
+            self.assertFalse(self.adapter._price_implausible_for_stock("X", Decimal("41")))
+        with patch.object(LongbridgeAdapter, "_live_price", return_value=None):
+            self.assertFalse(self.adapter._price_implausible_for_stock("X", Decimal("1")))
+        self.assertFalse(self.adapter._price_implausible_for_stock("X", Decimal("0")))
 
 if __name__ == "__main__":
     unittest.main()
