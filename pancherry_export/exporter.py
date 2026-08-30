@@ -280,8 +280,8 @@ def build_weekly_journal(
         "weekOf": week_label,
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
-        "summary": _summary(len(decided), len(winners), len(losers), win_rate, winners),
-        "body": _body(len(decided), len(winners), len(losers), win_rate, winners, losers),
+        "summary": _summary(decided, winners, losers, win_rate),
+        "body": _body(decided, winners, losers, win_rate),
         "trades": len(decided),
         "wins": len(winners),
         "losses": len(losers),
@@ -320,24 +320,126 @@ def _to_highlight(p: ClosedPosition) -> dict:
     return out
 
 
-def _summary(trades, wins, losses, rate, winners) -> str:
-    lead = f"{trades} positions closed this week — {wins} winners, {losses} losers, a {rate}% hit rate."
-    if winners:
-        lead += f" The standout was {_pretty_label(winners[0])}."
-    return lead
+def _summary(decided, winners, losers, rate) -> str:
+    """One-liner teaser for the journal card."""
+    trades = len(decided)
+    wins = len(winners)
+    losses = len(losers)
+
+    # Identify the dominant strategy theme
+    theme = _dominant_theme(decided)
+    standout = _standout_phrase(winners)
+
+    parts = [f"{trades} positions closed this week — {wins} winners, {losses} losers, a {rate}% hit rate."]
+    if theme:
+        parts.append(theme)
+    if standout:
+        parts.append(standout)
+    return " ".join(parts)
 
 
-def _body(trades, wins, losses, rate, winners, losers) -> list[str]:
-    paras = [
-        f"{trades} positions closed this week: {wins} winners against {losses} losers — a {rate}% hit rate.",
-    ]
+def _body(decided, winners, losers, rate) -> list[str]:
+    """Multi-paragraph narrative body."""
+    trades = len(decided)
+    wins = len(winners)
+    losses = len(losers)
+
+    paras: list[str] = []
+
+    # --- Opening: mix breakdown ---
+    stocks = [p for p in decided if p.asset == "stock"]
+    options = [p for p in decided if p.asset == "option"]
+    if stocks and options:
+        opener = (f"{trades} positions closed: {len(options)} option trades and "
+                  f"{len(stocks)} stock trades — {wins} winners against {losses} losers "
+                  f"for a {rate}% hit rate.")
+    else:
+        asset = "option" if options else "stock"
+        opener = (f"{trades} {asset} positions closed: {wins} winners against "
+                  f"{losses} losers — a {rate}% hit rate.")
+    paras.append(opener)
+
+    # --- Strategy breakdown (what kinds of trades) ---
+    strat_line = _strategy_breakdown(decided)
+    if strat_line:
+        paras.append(strat_line)
+
+    # --- Winners paragraph ---
     if winners:
-        names = ", ".join(f"{_pretty_label(p)} ({_ret_str(p)})" for p in winners[:MAX_WINNERS])
-        paras.append(f"Top winners: {names}.")
+        top = winners[:MAX_WINNERS]
+        labels = ", ".join(f"{_pretty_label(p)} ({_ret_str(p)})" for p in top)
+        if len(winners) == 1:
+            paras.append(f"The standout winner was {labels}.")
+        else:
+            verb = "led the winners" if len(winners) > MAX_WINNERS else "were the winners"
+            paras.append(f"Top performers: {labels} {verb}.")
+
+    # --- Losers paragraph ---
     if losers:
-        names = ", ".join(f"{_pretty_label(p)} ({_ret_str(p)})" for p in losers[:MAX_LOSERS])
-        paras.append(f"Cut for a loss and moved on: {names}.")
+        top = losers[:MAX_LOSERS]
+        labels = ", ".join(f"{_pretty_label(p)} ({_ret_str(p)})" for p in top)
+        paras.append(f"Cut for a loss and moved on: {labels}. Discipline over conviction.")
+
+    # --- Ticker concentration ---
+    concentration = _ticker_concentration(decided)
+    if concentration:
+        paras.append(concentration)
+
     return paras
+
+
+def _dominant_theme(decided: list) -> str:
+    """Identify the dominant strategy and build a theme phrase."""
+    from collections import Counter
+    strategies = Counter(p.kind for p in decided if p.kind)
+    if not strategies:
+        return ""
+    top_strat, top_count = strategies.most_common(1)[0]
+    ratio = top_count / len(decided)
+    if ratio >= 0.4 and top_count >= 3:
+        return f"The week was anchored by {top_strat} activity ({top_count} trades)."
+    if len(strategies) >= 3:
+        top3 = [s for s, _ in strategies.most_common(3)]
+        return f"A mixed week across {', '.join(top3)}."
+    return ""
+
+
+def _standout_phrase(winners: list) -> str:
+    """Name the top winner with its return."""
+    if not winners:
+        return ""
+    best = winners[0]
+    ret = _ret_str(best)
+    return f"The standout was {_pretty_label(best)} at {ret}."
+
+
+def _strategy_breakdown(decided: list) -> str:
+    """Group trades by strategy and summarize."""
+    from collections import Counter
+    strategies = Counter(p.kind for p in decided if p.kind)
+    if len(strategies) < 2:
+        return ""
+    parts = [f"{count} {strat}" for strat, count in strategies.most_common(5)]
+    return f"Strategy mix: {', '.join(parts)}."
+
+
+def _ticker_concentration(decided: list) -> str:
+    """Note if one ticker dominated the week."""
+    from collections import Counter
+    tickers = Counter(p.symbol for p in decided)
+    if not tickers:
+        return ""
+    top_ticker, top_count = tickers.most_common(1)[0]
+    if top_count >= 4 and top_count / len(decided) >= 0.15:
+        wins = sum(1 for p in decided if p.symbol == top_ticker and p.realized_pl and p.realized_pl > 0)
+        losses = top_count - wins
+        return (f"{top_ticker} was the most-traded name this week ({top_count} closes, "
+                f"{wins}W/{losses}L) — a conviction play worth watching.")
+    unique = len(tickers)
+    if unique >= 8:
+        return f"Broad exposure across {unique} different names this week."
+    return ""
+
 
 
 def _pretty_label(p: ClosedPosition) -> str:

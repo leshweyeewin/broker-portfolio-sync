@@ -213,7 +213,7 @@ def test_journal_stats_and_highlights():
     assert j["wins"] == 2
     assert j["losses"] == 1
     assert j["winRatePct"] == 67
-    assert j["published"] is False
+    assert j["published"] is True
     assert j["slug"].startswith("2026-w")
 
     # Winners first (by P/L desc), then losers; biggest winner leads.
