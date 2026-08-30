@@ -380,44 +380,6 @@ def _body(decided, winners, losers, rate) -> list[str]:
     if concentration:
         paras.append(concentration)
 
-    # --- All closed trades ---
-    all_trades = _all_trades_by_ticker(decided)
-    if all_trades:
-        paras.extend(all_trades)
-
-    return paras
-
-
-def _all_trades_by_ticker(decided: list) -> list[str]:
-    """Group all closed trades by ticker and format them as paragraphs."""
-    if not decided:
-        return []
-    
-    from collections import defaultdict
-    grouped = defaultdict(list)
-    for p in decided:
-        grouped[p.symbol].append(p)
-        
-    paras = ["All closed positions this week:"]
-    
-    # Sort tickers by number of trades (most active first)
-    sorted_tickers = sorted(grouped.keys(), key=lambda t: len(grouped[t]), reverse=True)
-    
-    for ticker in sorted_tickers:
-        trades = grouped[ticker]
-        # Sort trades by P/L descending (winners first)
-        trades.sort(key=lambda p: p.realized_pl if p.realized_pl is not None else -999999, reverse=True)
-        
-        trade_strs = []
-        for p in trades:
-            if p.asset == "option" and p.strike and p.option_type:
-                name = f"{_strike_money(p.strike)} {p.option_type}"
-            else:
-                name = "Stock"
-            trade_strs.append(f"{name} ({_ret_str(p)})")
-            
-        paras.append(f"{ticker}: {', '.join(trade_strs)}")
-        
     return paras
 
 
