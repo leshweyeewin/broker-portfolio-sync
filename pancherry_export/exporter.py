@@ -270,9 +270,19 @@ def build_weekly_journal(
     iso_year, iso_week, _ = today.isocalendar()
     week_label = _format_span(start, end)
 
-    highlights = _dedupe_highlights(
-        [_to_highlight(p) for p in (winners[:MAX_WINNERS] + losers[:MAX_LOSERS])]
-    )
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for p in decided:
+        grouped[p.symbol].append(p)
+    
+    highlights = []
+    # Sort tickers alphabetically to match open positions style
+    for ticker in sorted(grouped.keys()):
+        trades = grouped[ticker]
+        # Sort trades within ticker by P/L descending (winners first)
+        trades.sort(key=lambda x: x.realized_pl if x.realized_pl is not None else -999999, reverse=True)
+        for p in trades:
+            highlights.append(_to_highlight(p))
 
     return {
         "slug": f"{iso_year}-w{iso_week}",
