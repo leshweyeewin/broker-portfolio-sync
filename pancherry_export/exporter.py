@@ -188,6 +188,9 @@ export interface OpenPosition {
   hidden?: boolean; // set true to drop from the grid
 }
 
+// Injected by exporter
+// export const asOfDate: string = "...";
+
 export const openPositions: OpenPosition[] = [
 """
 
@@ -203,7 +206,15 @@ def render_open_positions_ts(
     security name, from the sync cache) fills the optional ``name`` field."""
     hidden = hidden or set()
     names = names or {}
-    lines = [_OPEN_POSITIONS_HEADER]
+    
+    from datetime import date
+    today_str = date.today().isoformat()
+    header = _OPEN_POSITIONS_HEADER.replace(
+        "// export const asOfDate: string = \"...\";",
+        f"export const asOfDate: string = '{today_str}';"
+    )
+    
+    lines = [header]
     for pos in positions:
         head = f"  {{ ticker: '{pos.ticker}'"
         nm = (names.get(pos.ticker) or "").strip()
