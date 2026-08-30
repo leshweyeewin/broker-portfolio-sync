@@ -57,6 +57,37 @@ OpenD), fail-soft per broker, and caches `ticker → company name` for the open
 - **Nothing goes live unattended** — drafts land on a `*-drafts` branch, never the
   branch Cloudflare Pages builds; publishing is the merge you control.
 
+## Weekly workflow (step by step)
+
+```
+1. Run the export       → python -m pancherry_export --pr
+2. Review the Draft PR  → GitHub shows the diff for weeklyJournals.ts
+3. Edit prose on the PR → pencil icon on the file, or checkout the branch locally
+4. Merge when ready     → published: true entries go live on Cloudflare Pages
+```
+
+**What you can safely edit on the PR branch** (a re-run never overwrites these):
+
+| Field | What to write | Example |
+|---|---|---|
+| `title` | Your editorial headline | `"Storage Cycle Runs & Disciplined Cuts"` |
+| `summary` | 1–2 sentence teaser | `"A high-activity week anchored by SanDisk..."` |
+| `body` | Array of paragraph strings | Your narrative — rationale, lessons, outlook |
+| `highlights[].note` | Per-trade colour text | `"Breakout entry on volume confirmation"` |
+
+**What auto-refreshes** if you re-run `--pr` mid-week (more trades closed):
+`trades`, `wins`, `losses`, `winRatePct`, `weekOf`, `startDate`, `endDate`.
+
+**If you want to edit locally instead of on GitHub:**
+```bash
+cd D:\Learn\Google\pancherry
+git fetch origin pancherry-drafts
+git checkout pancherry-drafts
+# edit src/data/weeklyJournals.ts
+git commit -am "polish week narrative" && git push
+# then merge the PR on GitHub
+```
+
 **Every trade carries its *which* and *why*:**
 - **Which / kind** — each trade shows its type, derived from data already synced:
   the option **Strategy** (e.g. `Short Put`, `Cash Secured Put`), or a stock's
