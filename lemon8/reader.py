@@ -184,7 +184,9 @@ def _build_position(
         currency=str(_cell(row, idx["Currency"])),
         realized_pl=pl,
         realized_pl_sgd=pl_sgd,
-        return_pct=_return_pct(cost_basis, pl),
+        return_pct=_return_pct(
+            cost_basis, pl, is_long_option=(asset == "option" and "long" in strategy.lower())
+        ),
         option_type=option_type,
         strike=strike,
         expiry=expiry,
@@ -231,9 +233,9 @@ def _find_cost_basis_and_strategy(
 ) -> tuple[Optional[Decimal], str]:
     """Find the initial capital at risk and true opening strategy for a closed position.
 
-    1. Formula check: If P/L formula references an opening row (e.g. K207), use its Total and Strategy.
+    1. Formula check: If P/L formula references an opening row (e.g. K207), use its Total, Fee, and Strategy.
     2. Backward match: Look back for the matching opening transaction of the same instrument.
-    3. Fallback: Use current row Total.
+    3. Fallback: Use current row Total + Fee or gross P/L.
     """
     pl_col = idx.get("P/L" if asset == "option" else "Realized P/L", 0)
     raw_pl = _cell(row, pl_col)
@@ -253,6 +255,8 @@ def _find_cost_basis_and_strategy(
     symbol = str(_cell(row, stock_col)).strip()
     action = str(_cell(row, idx.get("Action", 0))).strip().lower()
 
+    first_strat = ""
+
     # 2. Backward search for matching opening trade
     if asset == "option":
         opt_type = str(_cell(row, idx.get("Type", 0))).strip().lower()
@@ -268,34 +272,70 @@ def _find_cost_basis_and_strategy(
                 r_exp = str(_cell(r, idx.get("Expiry", 0))).strip()
                 r_act = str(_cell(r, idx.get("Action", 0))).strip().lower()
                 if r_typ == opt_type and r_stk == strike and r_exp == expiry:
-                    if r_act.startswith(open_action[:1]):
+                    if r_act.startswith(open_action[:1]) or r_act.startswith("o"):
                         tot = _dec(_cell(r, idx.get("Total", 0)))
-                        open_strat = str(_cell(r, idx.get("Strategy", 0))).strip() if "Strategy" in idx else ""
-                        return abs(tot) if (tot and tot != 0) else None, open_strat
+                        strat = str(_cell(r, idx.get("Strategy", 0))).strip() if "Strategy" in idx else ""
+                        if not first_strat and strat:
+                            first_strat = strat
+
+                        if tot and tot != 0:
+                            return abs(tot), strat or first_strat
+
+                        # Sibling check for multi-leg combo orders (e.g. MooMoo:FS1D0AA007D8937000:2)
+                        dedup = str(_cell(r, idx.get("_dedup_key", 0))).strip() if "_dedup_key" in idx else ""
+                        if ":" in dedup:
+                            combo_prefix = dedup.rsplit(":", 1)[0]
+                            for c_i in range(max(header_idx, r_i - 5), min(len(values), r_i + 6)):
+                                c_r = values[c_i]
+                                c_dedup = str(_cell(c_r, idx.get("_dedup_key", 0))).strip() if "_dedup_key" in idx else ""
+                                if c_dedup.startswith(combo_prefix + ":"):
+                                    c_tot = _dec(_cell(c_r, idx.get("Total", 0)))
+                                    if c_tot and c_tot != 0:
+                                        return abs(c_tot), strat or first_strat
     else:
         open_action = "buy" if action.startswith("s") else "sell"
         for r_i in range(row_idx - 1, header_idx, -1):
             r = values[r_i]
             if str(_cell(r, stock_col)).strip() == symbol:
                 r_act = str(_cell(r, idx.get("Action", 0))).strip().lower()
-                if r_act.startswith(open_action[:1]):
+                if r_act.startswith(open_action[:1]) or r_act.startswith("o"):
                     tot = _dec(_cell(r, idx.get("Total", 0)))
-                    return abs(tot) if (tot and tot != 0) else None, ""
+                    if tot and tot != 0:
+                        return abs(tot), ""
 
-    # 3. Fallback to current row total
+    # 3. Fallback to current row total or gross P/L
     cur_tot = _dec(_cell(row, idx.get("Total", 0)))
-    return (abs(cur_tot) if (cur_tot and cur_tot != 0) else None), ""
+    if cur_tot and cur_tot != 0:
+        return abs(cur_tot), first_strat
+
+    pl_dec = _evaluate_pl_cell(raw_pl, values, header_idx)
+    if pl_dec and pl_dec != 0:
+        return abs(pl_dec), first_strat
+
+    return None, first_strat
 
 
-def _return_pct(cost_basis: Optional[Decimal], realized_pl: Optional[Decimal]) -> Optional[Decimal]:
-    """Realized P/L as a % of the initial capital at risk."""
+def _return_pct(
+    cost_basis: Optional[Decimal],
+    realized_pl: Optional[Decimal],
+    *,
+    is_long_option: bool = False,
+) -> Optional[Decimal]:
+    """Realized P/L as a % of the initial capital at risk.
+
+    - 0 realized P/L returns 0.0% (breakeven).
+    - Long options cannot lose more than 100% of capital at risk.
+    """
     if realized_pl is None:
         return None
     if realized_pl == 0:
         return Decimal(0)
     if cost_basis is None or cost_basis == 0:
         return None
-    return (realized_pl / abs(cost_basis)) * Decimal(100)
+    ret = (realized_pl / abs(cost_basis)) * Decimal(100)
+    if is_long_option and ret < Decimal("-100"):
+        return Decimal("-100")
+    return ret
 
 
 def _cell(row: list[Any], i: int) -> Any:
