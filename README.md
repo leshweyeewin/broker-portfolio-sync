@@ -41,6 +41,70 @@ Sheet, then **reconciles** computed quantities against broker positions. Money i
 `Decimal` throughout, and the run **fails loud** rather than half-writing. See
 [docs/architecture.md](docs/architecture.md) for the diagrams.
 
+## What gets notified (Telegram)
+
+All alerts are **read-only decision support** — plans, scores and reminders. Nothing
+places, modifies or cancels an order. Three cadences push to Telegram, plus an
+on-demand bot you can query any time.
+
+### Daily — `📊 Daily Market & Portfolio Report`
+
+Pushed by the daily job (`run.py --analytics` → `format_telegram_report`). Scanned
+over your **full universe** = current holdings + monitored watchlist
+(`analytics/data/earnings_dates.json`). Sections (each shown only when it has content):
+
+| Section | What it flags | Based on |
+|---|---|---|
+| 🚀 **Daily Ticker Movers** | Biggest bullish / bearish movers | Day's % change vs prior close |
+| 📅 **Upcoming Earnings (next 2 weeks)** | Names reporting soon, to prep IV-crush spreads | Earnings calendar + ATM-straddle expected move |
+| 🔎 **Systematic Short Option Picks** | Short-put (bullish) / short-call (bearish) income | Δ 0.30–0.40, open interest > 500, IV/RV ratio |
+| 📈 **Swing Setups** | Technical long entries (see below) | SMA20/50/200 stack, RSI(14), ATR%, 52w-high distance |
+| ⏳ **Risk Alerts** | Options expiring within 7 days | Days-to-expiry on open contracts |
+| 💸 **Diagnostics** | Fee-drag and IV-crush warnings | Realized-fee ratio + post-earnings IV history |
+
+**Swing setup labels** (the `📈 Swing Setups` block), in priority order:
+
+| Label | Meaning | Trigger |
+|---|---|---|
+| 🚀 **Breakout** | Riding highs with momentum | Rising MA stack (20>50>200) · within 3% of 52w high · RSI ≥ 60 |
+| 🎯 **Pullback-buy** | Classic swing entry zone | Uptrend intact (MA20>MA50) · price dipped to/under MA20 but holds MA50 |
+| **Uptrend** | Trending but not at an entry | Above a rising MA stack, above MA20 |
+| **Overbought** | Extended — wait, don't chase | RSI > 75 |
+| **Downtrend** | Not a long setup | Price < MA20 < MA50 |
+| **Base** | Chop / undefined trend | None of the above |
+
+Only **Breakout** and **Pullback-buy** are surfaced as actionable long entries; they
+sort to the top.
+
+### Weekly — `🗓️ Weekly Options Digest`
+
+Pushed by `python -m alerting.weekly_digest` on a weekly schedule. Two scans, one message:
+
+- **Earnings credit spreads** — runs the IV-crush screener over the *same* earnings
+  universe as the daily report, grading each name (FOCUS / WATCH / SKIP) and, where the
+  edge is RICH/FAIR, attaching live put-credit / call-credit / iron-condor strikes.
+- **Wheel from current positions** — reads your holdings from the Sheet and scans
+  cash-secured puts, covered calls and PMCC diagonals against what you actually hold
+  (no ticker needed). Falls back to yfinance quotes when the broker feed is down.
+
+Other weekly pushes already in place: `alerting/weekly_pl_alert.py` (realized-P/L digest)
+and `alerting/expiry.py` (options expiring ≤ 7 days).
+
+### On demand — the Telegram bot (`python -m alerting.bot`)
+
+Long-polls Telegram and answers instantly:
+
+| Command | Needs a ticker? | Returns |
+|---|---|---|
+| `/quote NVDA` (or bare `NVDA`) | yes | Price, trend/RSI/ATR, 52w position, next earnings + expected move |
+| `/directional NVDA` | yes | Bull-call / long / CSP / covered-call / PMCC board for one name |
+| `/midweek SPY` | yes | Short-dated (0–5 DTE) expiry templates |
+| `/spreads` | **no** | Earnings credit-spread scan over your watchlist |
+| `/wheel` | **no** | CSP / covered-call / PMCC from your current positions |
+
+`/spreads` and `/wheel` take no argument — they scan your watchlist and your positions,
+the same inputs as the weekly digest.
+
 ## Key Tools (Playbook & Analytics)
 
 The repository contains several offline decision-support tools you can run locally:
@@ -93,6 +157,8 @@ broker-portfolio-sync/
 ├─ sheets/writer.py       # ✅ service-account auth, idempotent upsert, Tag & Reason
 ├─ alerting/              # ✅ Telegram (stdlib urllib, best-effort)
 │  ├─ notify.py           #    core send
+│  ├─ bot.py              # ✅ on-demand bot (/quote /directional /midweek /spreads /wheel)
+│  ├─ weekly_digest.py    # ✅ weekly options digest (earnings spreads + wheel)
 │  ├─ expiry.py           # ✅ weekly expiry watch (≤ 7 days)
 │  ├─ weekly_pl_alert.py  # ✅ weekly realized-P/L digest
 │  ├─ take_profit.py      # ✅ live long-option +50% take-profit alert
@@ -107,7 +173,7 @@ broker-portfolio-sync/
 ├─ Dockerfile             # ✅ job container (+ .dockerignore)
 ├─ DEPLOY.md              # ✅ GitHub Actions cron / Cloud Run Job + Scheduler
 ├─ opend/                 # ✅ MooMoo OpenD sidecar (Dockerfile, compose, entrypoint)
-├─ tests/                 # ✅ test suite (423 passing tests)
+├─ tests/                 # ✅ test suite (480+ passing tests)
 └─ requirements.txt
 ```
 

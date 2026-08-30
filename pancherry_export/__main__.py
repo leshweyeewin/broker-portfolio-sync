@@ -173,10 +173,12 @@ def main(argv=None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Report changes without writing.")
     parser.add_argument("--pr", action="store_true",
                         help="After writing, commit the files to a drafts branch and open/update a Draft PR.")
+    parser.add_argument("--date", help="Override the 'today' date (YYYY-MM-DD) for generating past weeks.")
     args = parser.parse_args(argv)
 
+    today = date.fromisoformat(args.date) if args.date else date.today()
     client = SheetClient(get_service_account_info(), get_spreadsheet_id())
-    return run(client, Path(args.repo), today=date.today(), dry_run=args.dry_run, open_pr=args.pr)
+    return run(client, Path(args.repo), today=today, dry_run=args.dry_run, open_pr=args.pr)
 
 
 if __name__ == "__main__":

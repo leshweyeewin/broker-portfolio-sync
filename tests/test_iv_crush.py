@@ -11,9 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import analytics.earnings.iv_crush as ivc
 from analytics.earnings.iv_crush import (
     IVCrushCandidate,
     compute_iv_percentile,
+    earnings_universe,
     em_bounds,
     playbook_grade,
     scan_iv_crush,
@@ -21,6 +23,32 @@ from analytics.earnings.iv_crush import (
     _STRATEGY_BY_BIAS,
 )
 from analytics.earnings.iv_crush_history import CrushStudy
+
+
+# --------------------------------------------------------------------------- #
+# earnings_universe
+# --------------------------------------------------------------------------- #
+
+def test_earnings_universe_watchlist_only(monkeypatch):
+    import analytics.earnings.earnings as earnings_mod
+    monkeypatch.setattr(
+        earnings_mod, "_load_static_cache",
+        lambda: {"NVDA": ["2026-02-26"], "CRM": ["2026-03-01"],
+                 "BRK.B": [], "TOOLONGXX": []},
+    )
+    out = earnings_universe(include_holdings=False)
+    # clean alphabetic ≤6-char names survive; punctuated / over-length are dropped
+    assert out == ["CRM", "NVDA"]
+
+
+def test_earnings_universe_survives_missing_cache(monkeypatch):
+    import analytics.earnings.earnings as earnings_mod
+
+    def boom():
+        raise RuntimeError("cache unreadable")
+
+    monkeypatch.setattr(earnings_mod, "_load_static_cache", boom)
+    assert earnings_universe(include_holdings=False) == []
 
 
 # --------------------------------------------------------------------------- #

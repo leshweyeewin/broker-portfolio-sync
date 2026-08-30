@@ -83,14 +83,56 @@ def get_current_price(ticker: str) -> float:
     return 0.0
 
 def fetch_chains_for_expiry(client, ticker: str, expiry: str) -> list[dict]:
+    """Option chain for one expiry: broker first, yfinance fallback.
+
+    When the Tiger client is absent or returns nothing (e.g. the weekly digest
+    running unattended), fall back to yfinance quotes so the scan still produces
+    candidates. The fallback carries no live Greeks — ``delta`` is omitted.
+    """
+    if client is not None:
+        try:
+            chain = client.get_option_chain(symbol=ticker, expiry=expiry, market="US")
+            if chain is not None:
+                if hasattr(chain, "to_dict"):
+                    rows = chain.to_dict("records")
+                elif isinstance(chain, list):
+                    rows = chain
+                else:
+                    rows = []
+                if rows:
+                    return rows
+        except Exception:
+            pass
+    return _yf_chain(ticker, expiry)
+
+
+def _yf_chain(ticker: str, expiry: str) -> list[dict]:
+    """yfinance option chain for one expiry, normalised to the broker dict shape."""
     try:
-        chain = client.get_option_chain(symbol=ticker, expiry=expiry, market="US")
-        if chain is None: return []
-        if hasattr(chain, "to_dict"): return chain.to_dict("records")
-        if isinstance(chain, list): return chain
+        import yfinance as yf
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+        oc = yf.Ticker(ticker).option_chain(expiry)
     except Exception:
-        pass
-    return []
+        return []
+
+    rows: list[dict] = []
+    for right, df in (("call", getattr(oc, "calls", None)), ("put", getattr(oc, "puts", None))):
+        if df is None:
+            continue
+        try:
+            records = df.to_dict("records")
+        except Exception:
+            continue
+        for r in records:
+            rows.append({
+                "right": right,
+                "strike": r.get("strike"),
+                "bid": r.get("bid"),
+                "ask": r.get("ask"),
+                "open_interest": r.get("openInterest"),
+                "implied_volatility": r.get("impliedVolatility"),
+            })
+    return rows
 
 def get_dte(expiry_str: str) -> int:
     try:
@@ -322,9 +364,8 @@ def main(argv=None) -> int:
     
     q_client = _build_quote_client()
     if not q_client:
-        print("Tiger QuoteClient not available. Skipping option chains.")
-        return 0
-        
+        print("Tiger QuoteClient not available — using yfinance chains (delayed, no live Greeks).")
+
     targets = set(args.tickers)
     for s in states:
         targets.add(s.ticker)

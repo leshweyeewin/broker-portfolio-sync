@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -127,6 +128,41 @@ def test_scan_covered_calls_only_scans_shares_state():
         out = scan_covered_calls(MagicMock(), states)
     assert {c.ticker for c in out} == {"AAPL"}
     assert out[0].call_away_price == Decimal("110") + out[0].premium
+
+
+class _FakeDF:
+    def __init__(self, records):
+        self._records = records
+
+    def to_dict(self, orient):
+        return self._records
+
+
+def test_fetch_chains_falls_back_to_yfinance_without_broker():
+    oc = SimpleNamespace(
+        calls=_FakeDF([{"strike": 110.0, "bid": 1.0, "ask": 1.2,
+                        "openInterest": 50, "impliedVolatility": 0.4}]),
+        puts=_FakeDF([{"strike": 90.0, "bid": 0.8, "ask": 1.0,
+                       "openInterest": 30, "impliedVolatility": 0.5}]),
+    )
+    fake_tk = MagicMock()
+    fake_tk.option_chain.return_value = oc
+    with patch("yfinance.Ticker", return_value=fake_tk):
+        rows = iw.fetch_chains_for_expiry(None, "AAPL", EXP)  # client=None → yfinance path
+
+    assert {r["right"] for r in rows} == {"call", "put"}
+    call_row = next(r for r in rows if r["right"] == "call")
+    assert call_row["strike"] == 110.0
+    assert call_row["open_interest"] == 50
+    assert "delta" not in call_row  # yfinance carries no live Greeks
+
+
+def test_fetch_chains_prefers_broker_when_present():
+    broker = MagicMock()
+    broker.get_option_chain.return_value = [{"right": "put", "strike": 190, "bid": 2.0, "ask": 2.2}]
+    with patch("yfinance.Ticker", side_effect=AssertionError("must not hit yfinance")):
+        rows = iw.fetch_chains_for_expiry(broker, "TSLA", EXP)
+    assert rows == [{"right": "put", "strike": 190, "bid": 2.0, "ask": 2.2}]
 
 
 def test_scan_pmccs_uses_note_for_long_leg():

@@ -207,6 +207,36 @@ def _fetch_snapshot(tk, earnings_date: date) -> tuple[Optional[float], Optional[
     return float(price), implied, closes
 
 
+def earnings_universe(*, include_holdings: bool = True) -> list[str]:
+    """Ticker universe for the earnings scan: monitored watchlist + held names.
+
+    Mirrors the daily "Upcoming Earnings" report universe so the on-demand
+    ``/spreads`` command and the weekly digest screen the same names you already
+    watch. Sheet access is best-effort — on any failure the monitored watchlist
+    cache alone is returned, so the scan never depends on the sheet being up.
+    """
+    names: set[str] = set()
+    try:
+        from analytics.earnings.earnings import _load_static_cache
+        names.update(_load_static_cache().keys())
+    except Exception as exc:
+        log.debug("earnings watchlist cache unavailable: %s", exc)
+
+    if include_holdings:
+        try:
+            from sheets.writer import PortfolioWriter, SheetClient
+            from config.settings import get_service_account_info, get_spreadsheet_id
+            writer = PortfolioWriter(SheetClient(get_service_account_info(), get_spreadsheet_id()))
+            for item in writer.read_all_stock_trades():
+                names.add(item["trade"].underlying)
+            for item in writer.read_all_option_trades():
+                names.add(item["trade"].underlying)
+        except Exception as exc:
+            log.debug("holdings universe unavailable (watchlist-only): %s", exc)
+
+    return sorted(t for t in names if t and t.isalpha() and len(t) <= 6)
+
+
 def scan_iv_crush(
     tickers: list[str],
     *,

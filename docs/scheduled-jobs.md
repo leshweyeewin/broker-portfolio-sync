@@ -13,9 +13,11 @@ is installed by `scripts/setup/daily_sync_register.ps1`.
 | Daily 06:00 | Portfolio sync + Market Analytics | `python run.py --analytics` | fetch brokers → **writes** sheet + strategy tags, daily movers, earnings alerts & short option picks → Telegram |
 | Weekly (Sun) | Expiry watch | `python -m alerting.expiry` | reads Options → Telegram: contracts expiring ≤ 7 days |
 | Weekly (Sun) | Realized-P/L digest | `python -m alerting.weekly_pl_alert` | reads closed trades → Telegram: week's realized P/L by broker |
+| Weekly (Sun) | Options digest | `python -m alerting.weekly_digest` | reads watchlist + holdings → Telegram: earnings credit-spread scan + wheel (CSP/CC/PMCC) from current positions |
 | Weekly (Sun) | Lemon8 journal | `python -m lemon8.weekly_job` | reads closed trades → caption + card + blog draft, commits blog draft |
 | Weekly (Sun) | pancherry export | `python -m core.ticker_names` then `python -m pancherry_export --pr` | refreshes ticker names, regenerates `.ts`, opens/updates a Draft PR |
 | On-demand | Standalone Market Analytics | `python -m analytics.report --notify` | runs strategy tagging, diagnostics, movers, earnings & option screener |
+| On-demand | Telegram quote/options bot | `python -m alerting.bot` | long-polls Telegram → answers `/quote`, `/directional`, `/midweek` (per-ticker) and `/spreads`, `/wheel` (watchlist / positions) |
 | Intraday | Long-option take-profit | `python -m alerting.take_profit` | reads **live** broker positions → Telegram: long options at/above +50% unrealized (`--dry-run` prints instead) |
 | Intraday | Earnings IV Exit | `python -m alerting.earnings_iv_exit` | reads **live** broker positions → Telegram: alerts to close short premium options day before earnings |
 | Daily 16:30 | IV Logger | `python -m analytics.earnings.iv_logger` | fetches options chain → **writes** `analytics/data/iv_history.json` |

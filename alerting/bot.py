@@ -50,6 +50,12 @@ _OPTION_COMMANDS = {
     "midweek": "midweek", "mid": "midweek", "mw": "midweek",
 }
 
+# Argument-free commands: scan the watchlist / current positions (no ticker).
+_NULLARY_COMMANDS = {
+    "spreads": "spreads", "spread": "spreads", "iv": "spreads",
+    "wheel": "wheel", "income": "wheel",
+}
+
 _USAGE = (
     "📊 Send me a ticker for a quick-take.\n"
     "Try: /quote NVDA  (or just: NVDA)\n"
@@ -57,7 +63,9 @@ _USAGE = (
     "with its expected move.\n\n"
     "📈 Options (read-only plans, no orders):\n"
     "/directional NVDA — bull-call / long / CSP / covered-call / PMCC board\n"
-    "/midweek SPY — short-dated (0–5 DTE) expiry templates"
+    "/midweek SPY — short-dated (0–5 DTE) expiry templates\n"
+    "/spreads — earnings credit-spread scan over your watchlist (no ticker)\n"
+    "/wheel — CSP / covered-call / PMCC from your current positions (no ticker)"
 )
 
 # A transport takes (url, timeout seconds) and returns the parsed JSON payload.
@@ -111,6 +119,19 @@ def parse_options_command(text: str):
         return None
     cand = parts[1].upper()
     return (key, cand) if (cand.isalpha() and 1 <= len(cand) <= 5) else None
+
+
+def parse_nullary_command(text: str) -> Optional[str]:
+    """Extract the builder key for an argument-free command (``/spreads``, ``/wheel``).
+
+    Returns the ``_NULLARY_COMMANDS`` value (e.g. ``"spreads"``) or None. Any
+    trailing tokens are ignored — these commands take no ticker.
+    """
+    t = (text or "").strip()
+    if not t.startswith("/"):
+        return None
+    cmd = t.split()[0].lstrip("/").split("@")[0].lower()  # strip @botname suffix
+    return _NULLARY_COMMANDS.get(cmd)
 
 
 def is_help(text: str) -> bool:
@@ -189,14 +210,14 @@ def build_quote(ticker: str, *, today: Optional[date] = None) -> str:
 # Options builders (reuse the existing CLIs in-process by capturing stdout)
 # --------------------------------------------------------------------------- #
 
-def _capture_cli(cli_main: Callable[[list], int], ticker: str) -> str:
-    """Run an ``analytics.options`` CLI ``main([ticker])`` and capture its stdout."""
+def _capture_cli(cli_main: Callable[[list], int], *args: str) -> str:
+    """Run a CLI ``main([*args])`` and capture its stdout (``main([])`` if no args)."""
     import contextlib
     import io
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        cli_main([ticker])
+        cli_main(list(args))
     return buf.getvalue()
 
 
@@ -231,6 +252,34 @@ _DEFAULT_OPTION_BUILDERS: dict[str, Callable[..., str]] = {
 }
 
 
+def build_spreads(*, today: Optional[date] = None) -> str:
+    """Earnings-driven credit-spread scan over your watchlist (no ticker needed)."""
+    from analytics.earnings.iv_crush import scan_iv_crush, format_message, earnings_universe
+
+    universe = earnings_universe()
+    if not universe:
+        return "⚠️ No earnings watchlist configured yet."
+    cands = scan_iv_crush(universe, today=today)
+    if not cands:
+        return "⚠️ No upcoming earnings in your watchlist horizon right now."
+    return _trim_for_telegram(format_message(cands))
+
+
+def build_wheel(*, today: Optional[date] = None) -> str:
+    """Wheel / CSP / CC / PMCC scan from your current Sheet positions (no ticker needed)."""
+    from analytics.options.income_workspace import main as wheel_main
+
+    out = _trim_for_telegram(_capture_cli(wheel_main))
+    return out or "⚠️ No wheel setups from your current positions right now."
+
+
+# Nullary (argument-free) commands: scan your watchlist / positions, no ticker.
+_DEFAULT_NULLARY_BUILDERS: dict[str, Callable[..., str]] = {
+    "spreads": build_spreads,
+    "wheel": build_wheel,
+}
+
+
 # --------------------------------------------------------------------------- #
 # Telegram long-polling
 # --------------------------------------------------------------------------- #
@@ -258,18 +307,20 @@ def run_bot(
     reply: Optional[Reply] = None,
     quote_builder: Callable[..., str] = build_quote,
     option_builders: Optional[dict] = None,
+    nullary_builders: Optional[dict] = None,
     today: Optional[date] = None,
     once: bool = False,
 ) -> None:
     """Long-poll Telegram and answer quote requests until interrupted.
 
-    ``transport``/``reply``/``quote_builder``/``option_builders`` are injectable
-    for tests; ``once`` processes a single ``getUpdates`` batch and returns.
+    ``transport``/``reply``/``quote_builder``/``option_builders``/``nullary_builders``
+    are injectable for tests; ``once`` processes a single ``getUpdates`` batch.
     """
     token = token or get_telegram_bot_token()
     transport = transport or _http_get_json
     reply = reply or (lambda chat_id, text: send_telegram(text, chat_id=chat_id))
     option_builders = option_builders or _DEFAULT_OPTION_BUILDERS
+    nullary_builders = nullary_builders or _DEFAULT_NULLARY_BUILDERS
 
     offset: Optional[int] = None
     while True:
@@ -310,6 +361,18 @@ def run_bot(
                     except Exception as exc:
                         log.warning("%s build failed for %s: %s", key, tk, exc)
                         out = f"⚠️ Couldn't build {key} for {tk} right now."
+                    reply(str(chat_id), out)
+                continue
+
+            nkey = parse_nullary_command(text)
+            if nkey is not None:
+                builder = nullary_builders.get(nkey)
+                if builder is not None:
+                    try:
+                        out = builder(today=today)
+                    except Exception as exc:
+                        log.warning("%s build failed: %s", nkey, exc)
+                        out = f"⚠️ Couldn't build {nkey} right now."
                     reply(str(chat_id), out)
                 continue
 

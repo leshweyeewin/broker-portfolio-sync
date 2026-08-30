@@ -13,6 +13,7 @@ from alerting.bot import (
     _trim_for_telegram,
     format_quote,
     is_help,
+    parse_nullary_command,
     parse_options_command,
     parse_ticker,
     run_bot,
@@ -62,6 +63,23 @@ def test_parse_options_command_rejects_noise():
     assert parse_options_command("/quote NVDA") is None        # not an options cmd
     assert parse_options_command("NVDA") is None               # bare word
     assert parse_options_command("") is None
+
+
+def test_parse_nullary_command():
+    assert parse_nullary_command("/spreads") == "spreads"
+    assert parse_nullary_command("/spread") == "spreads"
+    assert parse_nullary_command("/iv") == "spreads"
+    assert parse_nullary_command("/wheel") == "wheel"
+    assert parse_nullary_command("/income") == "wheel"
+    assert parse_nullary_command("/wheel@MyBot") == "wheel"
+    assert parse_nullary_command("/spreads NVDA") == "spreads"  # trailing token ignored
+
+
+def test_parse_nullary_command_rejects_noise():
+    assert parse_nullary_command("/quote NVDA") is None
+    assert parse_nullary_command("/directional NVDA") is None
+    assert parse_nullary_command("wheel") is None   # bare word, not a command
+    assert parse_nullary_command("") is None
 
 
 def test_is_help():
@@ -210,12 +228,42 @@ def test_run_bot_survives_options_builder_error():
     assert "Couldn't build midweek for SPY" in sent[0][1]
 
 
+def test_run_bot_routes_nullary_command():
+    sent: list[tuple[str, str]] = []
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _one_update("/wheel"),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        nullary_builders={"wheel": lambda today=None: "WHEEL SCAN"},
+        once=True,
+    )
+    assert sent == [("123", "WHEEL SCAN")]
+
+
+def test_run_bot_survives_nullary_builder_error():
+    sent: list[tuple[str, str]] = []
+
+    def boom(today=None):
+        raise RuntimeError("sheet down")
+
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _one_update("/spreads"),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        nullary_builders={"spreads": boom},
+        once=True,
+    )
+    assert len(sent) == 1
+    assert "Couldn't build spreads" in sent[0][1]
+
+
 def test_capture_cli_and_trim():
     def fake_main(argv):
-        print(f"scan {argv[0]}")
+        print(f"scan {argv[0] if argv else 'ALL'}")
         return 0
 
     assert "scan NVDA" in _capture_cli(fake_main, "NVDA")
+    assert "scan ALL" in _capture_cli(fake_main)  # nullary: main([])
     assert _trim_for_telegram("  hi  ") == "hi"
     assert _trim_for_telegram("x" * 5000).endswith("(truncated)")
 
