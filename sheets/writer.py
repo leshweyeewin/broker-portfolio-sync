@@ -259,8 +259,13 @@ def _enrich_market_prices(rows: list[list[Any]]) -> None:
         symbol = str(row[2]).strip()
         if not symbol:
             continue
+        # Format HK numeric tickers (e.g. 7709 -> 7709.HK)
+        yf_symbol = symbol
+        if yf_symbol.isdigit():
+            yf_symbol = f"{int(yf_symbol):d}.HK"
         try:
-            hist = yf.Ticker(symbol).history(period="1d")
+            t = yf.Ticker(yf_symbol)
+            hist = t.history(period="1d")
             if hist is not None and not hist.empty:
                 row[6] = round(float(hist["Close"].iloc[-1]), 2)
         except Exception:  # noqa: BLE001 - best-effort only
@@ -609,10 +614,23 @@ class PortfolioWriter:
     def update_holdings(
         self,
         cash: dict[str, float] | None = None,
-        enrich_prices: bool = False,
+        enrich_prices: bool = True,
     ) -> list[list[Any]]:
         """Read open stock and option rows from the sheet, aggregate into Deskpilot
         Holdings format, and overwrite the Holdings tab. Returns the generated rows."""
+        import os
+        if cash is None:
+            spec = os.getenv("DESKPILOT_CASH", "SGD=12450,USD=3120")
+            cash = {}
+            for part in (spec or "").split(","):
+                part = part.strip()
+                if not part or "=" not in part:
+                    continue
+                cur, _, amt = part.partition("=")
+                val = _money(amt)
+                if val is not None:
+                    cash[cur.strip().upper()] = val
+
         stock_rows: list[dict[str, Any]] = []
         try:
             stock_vals = self._client.get_values(f"{TAB_STOCKS}!A:{_col_letter(len(STOCKS_HEADERS))}")
