@@ -613,6 +613,12 @@ def run_sync(
         )
     )
 
+    # 8b. Auto-generate Holdings snapshot tab for Deskpilot.
+    try:
+        writer.update_holdings()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not update Holdings tab: %s", exc)
+
     # 9. Run Log.
     fx_used = ", ".join(f"{p}={r}" for p, r in sorted(fx.cached_pairs_for_date(today).items()))
     writer.append_run_log(

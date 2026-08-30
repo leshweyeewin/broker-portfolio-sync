@@ -55,12 +55,15 @@ log = logging.getLogger(__name__)
 # Constants — tab names and column definitions
 # --------------------------------------------------------------------------- #
 
+from collections import defaultdict
+
 TAB_TRANSACTIONS = "Transactions"
 TAB_STOCKS       = "Stocks"
 TAB_OPTIONS      = "Options"
 TAB_DASHBOARD    = "Dashboard"
 TAB_RUN_LOG      = "Run Log"
 TAB_EARNINGS_PLAN = "Earnings Plan"
+TAB_HOLDINGS     = "Holdings"
 
 # Column headers for each data tab. _dedup_key is a hidden internal key; on the
 # Stocks/Options tabs a manual "Reason" column trails it (see note below).
@@ -95,6 +98,10 @@ EARNINGS_PLAN_HEADERS = [
     "Implied Move", "Hist Move", "Trend Bias", "Strategy", "EM Lower", "EM Upper",
     "IV Percentile", "Grade", "Verdict", "Reason",
 ]
+HOLDINGS_HEADERS = [
+    "kind", "broker", "ticker", "type", "qty", "avg_cost", "market_price",
+    "strike", "expiry", "action", "premium", "currency", "amount",
+]
 
 # How many header rows each data tab has before row data starts.
 # 1 = just the column header row. The summary block is placed off to the right.
@@ -104,9 +111,13 @@ DATA_HEADER_ROWS = {
     TAB_OPTIONS: 3,
     TAB_RUN_LOG: 1,
     TAB_EARNINGS_PLAN: 1,
+    TAB_HOLDINGS: 1,
 }
 
-ALL_TABS = [TAB_TRANSACTIONS, TAB_STOCKS, TAB_OPTIONS, TAB_DASHBOARD, TAB_RUN_LOG, TAB_EARNINGS_PLAN]
+ALL_TABS = [
+    TAB_TRANSACTIONS, TAB_STOCKS, TAB_OPTIONS, TAB_DASHBOARD,
+    TAB_RUN_LOG, TAB_EARNINGS_PLAN, TAB_HOLDINGS,
+]
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -133,6 +144,127 @@ def _fmt(val: object) -> str | int | float:
 def _dedup_col_index(headers: list[str]) -> int:
     """0-based index of the _dedup_key column."""
     return headers.index("_dedup_key")
+
+
+def _money(x: Any) -> float | None:
+    """Parse a spreadsheet money/number cell: strips $ , spaces; ( ) = negative."""
+    if x is None or x == "":
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    if isinstance(x, Decimal):
+        return float(x)
+    s = str(x).strip().replace(",", "").replace("$", "").replace(" ", "")
+    if not s:
+        return None
+    neg = s.startswith("(") and s.endswith(")")
+    s = s.strip("()")
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _fmt_qty(n: float) -> Any:
+    """Render whole numbers without a trailing .0 (share/contract counts)."""
+    return int(n) if float(n).is_integer() else round(n, 4)
+
+
+def build_holdings(
+    stock_rows: list[dict[str, Any]],
+    option_rows: list[dict[str, Any]],
+    cash: dict[str, float] | None = None,
+) -> list[list[Any]]:
+    """Aggregate Status=Open rows into Deskpilot Holdings rows (pure/testable)."""
+    out: list[list[Any]] = []
+
+    # --- Stocks: net qty + weighted-average cost per (broker, ticker, currency) ---
+    stock_agg: dict[tuple, dict[str, float]] = defaultdict(lambda: {"qty": 0.0, "cost": 0.0})
+    for r in stock_rows:
+        if (r.get("Status") or "").strip().lower() != "open":
+            continue
+        qty = _money(r.get("Qty"))
+        price = _money(r.get("Price"))
+        if qty is None:
+            continue
+        key = (
+            (r.get("Broker") or "").strip(),
+            (r.get("Ticker") or "").strip(),
+            (r.get("Currency") or "USD").strip().upper(),
+        )
+        stock_agg[key]["qty"] += qty
+        if price is not None:
+            stock_agg[key]["cost"] += qty * price
+
+    for (broker, ticker, currency), a in sorted(stock_agg.items()):
+        if round(a["qty"], 6) == 0:
+            continue
+        avg = round(a["cost"] / a["qty"], 4) if a["qty"] else ""
+        out.append([
+            "position", broker, ticker, "", _fmt_qty(a["qty"]), avg, "",
+            "", "", "", "", currency, "",
+        ])
+
+    # --- Options: net qty + weighted-avg premium per (broker, underlying, type, strike, expiry, currency) ---
+    opt_agg: dict[tuple, dict[str, float]] = defaultdict(lambda: {"qty": 0.0, "prem_w": 0.0, "w": 0.0})
+    for r in option_rows:
+        if (r.get("Status") or "").strip().lower() != "open":
+            continue
+        qty = _money(r.get("Qty"))
+        prem = _money(r.get("Premium"))
+        if qty is None:
+            continue
+        exp_raw = r.get("Expiry")
+        exp_str = sheet_date_to_iso(exp_raw) if exp_raw is not None else ""
+        key = (
+            (r.get("Broker") or "").strip(),
+            (r.get("Stock") or "").strip(),
+            (r.get("Type") or "").strip().upper(),
+            str(r.get("Strike") or "").strip(),
+            exp_str,
+            (r.get("Currency") or "USD").strip().upper(),
+        )
+        opt_agg[key]["qty"] += qty
+        if prem is not None:
+            opt_agg[key]["prem_w"] += abs(qty) * prem
+            opt_agg[key]["w"] += abs(qty)
+
+    for (broker, underlying, otype, strike, expiry, currency), a in sorted(opt_agg.items()):
+        if round(a["qty"], 6) == 0:
+            continue
+        premium = round(a["prem_w"] / a["w"], 4) if a["w"] else ""
+        action = "sell-to-open" if a["qty"] < 0 else "buy-to-open"
+        out.append([
+            "option", broker, underlying, otype, _fmt_qty(a["qty"]), "", "",
+            _money(strike) if strike else "", expiry, action, premium, currency, "",
+        ])
+
+    # --- Cash: supplied explicitly (not derivable from the trade tabs) ---
+    for currency, amount in (cash or {}).items():
+        out.append(["cash", "", "", "", "", "", "", "", "", "", "", currency.upper(), amount])
+
+    return out
+
+
+def _enrich_market_prices(rows: list[list[Any]]) -> None:
+    """Best-effort: fill market_price for stock positions via yfinance (in place)."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        return
+    for row in rows:
+        if row[0] != "position" or row[6]:  # not a position, or price already set
+            continue
+        symbol = str(row[2]).strip()
+        if not symbol:
+            continue
+        try:
+            hist = yf.Ticker(symbol).history(period="1d")
+            if hist is not None and not hist.empty:
+                row[6] = round(float(hist["Close"].iloc[-1]), 2)
+        except Exception:  # noqa: BLE001 - best-effort only
+            continue
 
 
 # --------------------------------------------------------------------------- #
@@ -464,6 +596,52 @@ class PortfolioWriter:
         self._client.batch_update_values([
             {"range": f"{TAB_EARNINGS_PLAN}!A1", "values": blocks}
         ])
+
+    def overwrite_holdings(self, blocks: list[list[Any]]) -> None:
+        """Overwrite the Holdings tab with the given rows."""
+        if not blocks:
+            return
+        self._client.clear_range(f"{TAB_HOLDINGS}!A1:Z1000")
+        self._client.batch_update_values([
+            {"range": f"{TAB_HOLDINGS}!A1", "values": blocks}
+        ])
+
+    def update_holdings(
+        self,
+        cash: dict[str, float] | None = None,
+        enrich_prices: bool = False,
+    ) -> list[list[Any]]:
+        """Read open stock and option rows from the sheet, aggregate into Deskpilot
+        Holdings format, and overwrite the Holdings tab. Returns the generated rows."""
+        stock_rows: list[dict[str, Any]] = []
+        try:
+            stock_vals = self._client.get_values(f"{TAB_STOCKS}!A:{_col_letter(len(STOCKS_HEADERS))}")
+            stock_hr = DATA_HEADER_ROWS.get(TAB_STOCKS, 3) - 1
+            if len(stock_vals) > stock_hr:
+                s_hdr = [str(c).strip() for c in stock_vals[stock_hr]]
+                for r in stock_vals[stock_hr + 1:]:
+                    if any(str(c).strip() for c in r):
+                        stock_rows.append({s_hdr[i]: (r[i] if i < len(r) else "") for i in range(len(s_hdr))})
+        except Exception:
+            log.warning("Could not read Stocks for holdings update", exc_info=True)
+
+        opt_rows: list[dict[str, Any]] = []
+        try:
+            opt_vals = self._client.get_values(f"{TAB_OPTIONS}!A:{_col_letter(len(OPTIONS_HEADERS))}")
+            opt_hr = DATA_HEADER_ROWS.get(TAB_OPTIONS, 3) - 1
+            if len(opt_vals) > opt_hr:
+                o_hdr = [str(c).strip() for c in opt_vals[opt_hr]]
+                for r in opt_vals[opt_hr + 1:]:
+                    if any(str(c).strip() for c in r):
+                        opt_rows.append({o_hdr[i]: (r[i] if i < len(r) else "") for i in range(len(o_hdr))})
+        except Exception:
+            log.warning("Could not read Options for holdings update", exc_info=True)
+
+        rows = build_holdings(stock_rows, opt_rows, cash=cash)
+        if enrich_prices:
+            _enrich_market_prices(rows)
+        self.overwrite_holdings([HOLDINGS_HEADERS] + rows)
+        return rows
 
     def read_net_capital_in_by_broker(self) -> dict[str, "Decimal"]:
         """Net external capital per broker = Σ Deposits − Σ Withdrawals, in SGD,
@@ -1012,6 +1190,12 @@ def _parse_sheet_date(value: object) -> date:
         from datetime import timedelta
         return _SHEETS_EPOCH + timedelta(days=int(value))
     s = str(value).strip()
+    if s.isdigit() or (s.replace(".", "", 1).isdigit() and len(s) >= 4 and "." in s):
+        try:
+            from datetime import timedelta
+            return _SHEETS_EPOCH + timedelta(days=int(float(s)))
+        except (ValueError, OverflowError):
+            pass
     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
         try:
             return datetime.strptime(s, fmt).date()
