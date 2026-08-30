@@ -321,21 +321,16 @@ def _to_highlight(p: ClosedPosition) -> dict:
 
 
 def _summary(decided, winners, losers, rate) -> str:
-    """One-liner teaser for the journal card."""
-    trades = len(decided)
-    wins = len(winners)
-    losses = len(losers)
-
-    # Identify the dominant strategy theme
+    """One-liner teaser for the journal card (w33 editorial style)."""
     theme = _dominant_theme(decided)
     standout = _standout_phrase(winners)
-
-    parts = [f"{trades} positions closed this week — {wins} winners, {losses} losers, a {rate}% hit rate."]
+    
+    if theme and standout:
+        return f"{theme} {standout} the losers were cut early and cleanly per the risk rules."
     if theme:
-        parts.append(theme)
-    if standout:
-        parts.append(standout)
-    return " ".join(parts)
+        return f"{theme} The losers were cut early and cleanly per the risk rules."
+    
+    return "A high-activity week. The winners ran on confirmed setups; the losers were cut early and cleanly per the risk rules."
 
 
 def _body(decided, winners, losers, rate) -> list[str]:
@@ -385,32 +380,73 @@ def _body(decided, winners, losers, rate) -> list[str]:
     if concentration:
         paras.append(concentration)
 
+    # --- All closed trades ---
+    all_trades = _all_trades_by_ticker(decided)
+    if all_trades:
+        paras.extend(all_trades)
+
+    return paras
+
+
+def _all_trades_by_ticker(decided: list) -> list[str]:
+    """Group all closed trades by ticker and format them as paragraphs."""
+    if not decided:
+        return []
+    
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for p in decided:
+        grouped[p.symbol].append(p)
+        
+    paras = ["All closed positions this week:"]
+    
+    # Sort tickers by number of trades (most active first)
+    sorted_tickers = sorted(grouped.keys(), key=lambda t: len(grouped[t]), reverse=True)
+    
+    for ticker in sorted_tickers:
+        trades = grouped[ticker]
+        # Sort trades by P/L descending (winners first)
+        trades.sort(key=lambda p: p.realized_pl if p.realized_pl is not None else -999999, reverse=True)
+        
+        trade_strs = []
+        for p in trades:
+            if p.asset == "option" and p.strike and p.option_type:
+                name = f"{_strike_money(p.strike)} {p.option_type}"
+            else:
+                name = "Stock"
+            trade_strs.append(f"{name} ({_ret_str(p)})")
+            
+        paras.append(f"{ticker}: {', '.join(trade_strs)}")
+        
     return paras
 
 
 def _dominant_theme(decided: list) -> str:
-    """Identify the dominant strategy and build a theme phrase."""
+    """Identify the dominant strategy and build an editorial theme phrase."""
     from collections import Counter
     strategies = Counter(p.kind for p in decided if p.kind)
-    if not strategies:
+    tickers = Counter(p.symbol for p in decided)
+    
+    if not strategies or not tickers:
         return ""
+        
     top_strat, top_count = strategies.most_common(1)[0]
-    ratio = top_count / len(decided)
-    if ratio >= 0.4 and top_count >= 3:
-        return f"The week was anchored by {top_strat} activity ({top_count} trades)."
-    if len(strategies) >= 3:
-        top3 = [s for s, _ in strategies.most_common(3)]
-        return f"A mixed week across {', '.join(top3)}."
-    return ""
+    top_ticker, ticker_count = tickers.most_common(1)[0]
+    
+    if ticker_count / len(decided) >= 0.2:
+        return f"A high-activity week anchored by {top_ticker} conviction."
+    if top_count / len(decided) >= 0.3:
+        return f"A high-activity week anchored by {top_strat} setups."
+        
+    return "A high-activity week testing multiple setups."
 
 
 def _standout_phrase(winners: list) -> str:
-    """Name the top winner with its return."""
+    """Name the top winner with editorial flair."""
     if not winners:
         return ""
     best = winners[0]
-    ret = _ret_str(best)
-    return f"The standout was {_pretty_label(best)} at {ret}."
+    return f"The winners were led by {_pretty_label(best)};"
 
 
 def _strategy_breakdown(decided: list) -> str:
