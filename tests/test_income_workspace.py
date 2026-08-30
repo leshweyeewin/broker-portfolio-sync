@@ -1,13 +1,32 @@
+import sys
+from unittest.mock import MagicMock, patch
+
 import pytest
 from decimal import Decimal
-from datetime import date
+from datetime import date, timedelta
+
+sys.modules.setdefault("yfinance", MagicMock())
+
+import analytics.options.income_workspace as iw
 from analytics.options.income_workspace import (
     WheelState,
     CC_Candidate,
     CSP_Candidate,
     PMCC_Candidate,
-    get_dte
+    get_dte,
+    scan_csps,
+    scan_covered_calls,
+    scan_pmccs,
 )
+
+# An expiry ~30 DTE out so it lands inside the 14-45 DTE scan window.
+EXP = (date.today() + timedelta(days=30)).isoformat()
+
+
+def _yf_with_expiry(exp=EXP):
+    tk = MagicMock()
+    tk.options = (exp,)
+    return tk
 
 def test_get_dte():
     assert get_dte("2050-01-01") > 0
@@ -58,3 +77,67 @@ def test_pmcc_candidate():
         diagonal_risk=Decimal("50.0")
     )
     assert pmcc.diagonal_risk == Decimal("50.0")
+
+
+# --------------------------------------------------------------------------- #
+# Scanner logic (previously untested — only the dataclasses were covered)
+# --------------------------------------------------------------------------- #
+def test_scan_csps_finds_otm_put_within_cash_and_delta():
+    put_chain = [{"right": "put", "strike": 190, "bid": 2.0, "ask": 2.2, "delta": 0.25}]
+    with patch.object(iw, "get_current_price", return_value=200.0), \
+         patch("yfinance.Ticker", return_value=_yf_with_expiry()), \
+         patch.object(iw, "fetch_chains_for_expiry", return_value=put_chain):
+        out = scan_csps(MagicMock(), ["TSLA"], available_cash=25000)
+    assert len(out) == 1
+    c = out[0]
+    assert c.ticker == "TSLA"
+    assert c.strike == Decimal("190")
+    assert c.delta == 0.25
+    assert c.effective_cost == Decimal("190") - c.premium
+
+
+def test_scan_csps_skips_when_cash_insufficient():
+    put_chain = [{"right": "put", "strike": 190, "bid": 2.0, "ask": 2.2, "delta": 0.25}]
+    with patch.object(iw, "get_current_price", return_value=200.0), \
+         patch("yfinance.Ticker", return_value=_yf_with_expiry()), \
+         patch.object(iw, "fetch_chains_for_expiry", return_value=put_chain):
+        # 190 strike needs $19,000 of collateral; only $5,000 available.
+        out = scan_csps(MagicMock(), ["TSLA"], available_cash=5000)
+    assert out == []
+
+
+def test_scan_csps_skips_high_delta_puts():
+    put_chain = [{"right": "put", "strike": 195, "bid": 6.0, "ask": 6.2, "delta": 0.60}]
+    with patch.object(iw, "get_current_price", return_value=200.0), \
+         patch("yfinance.Ticker", return_value=_yf_with_expiry()), \
+         patch.object(iw, "fetch_chains_for_expiry", return_value=put_chain):
+        out = scan_csps(MagicMock(), ["TSLA"], available_cash=25000)
+    assert out == []  # delta 0.60 > 0.35 cutoff
+
+
+def test_scan_covered_calls_only_scans_shares_state():
+    call_chain = [{"right": "call", "strike": 110, "bid": 1.0, "ask": 1.2}]
+    states = [
+        WheelState("AAPL", "SHARES", 100, Decimal("90")),
+        WheelState("MSFT", "CASH", 0, Decimal("0")),  # not shares -> ignored
+    ]
+    with patch.object(iw, "get_current_price", return_value=100.0), \
+         patch("yfinance.Ticker", return_value=_yf_with_expiry()), \
+         patch.object(iw, "fetch_chains_for_expiry", return_value=call_chain):
+        out = scan_covered_calls(MagicMock(), states)
+    assert {c.ticker for c in out} == {"AAPL"}
+    assert out[0].call_away_price == Decimal("110") + out[0].premium
+
+
+def test_scan_pmccs_uses_note_for_long_leg():
+    call_chain = [{"right": "call", "strike": 210, "bid": 3.0, "ask": 3.2}]
+    states = [WheelState("NVDA", "PMCC_BASE", 100, Decimal("40"), note="Long Call 150 exp 2028-01-01")]
+    with patch.object(iw, "get_current_price", return_value=200.0), \
+         patch("yfinance.Ticker", return_value=_yf_with_expiry()), \
+         patch.object(iw, "fetch_chains_for_expiry", return_value=call_chain):
+        out = scan_pmccs(MagicMock(), states)
+    assert len(out) == 1
+    c = out[0]
+    assert c.long_strike == Decimal("150")
+    assert c.long_expiry == "2028-01-01"
+    assert c.short_strike == Decimal("210")

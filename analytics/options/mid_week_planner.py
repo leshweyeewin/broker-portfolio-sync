@@ -4,7 +4,7 @@ Targets 0-5 DTE options (Monday/Wednesday/Friday expiries).
 Checks assignment risk for physically settled contracts.
 Outputs templates for Protective Hedge, Directional Trade, and Short-Duration Income.
 
-Run: python -m analytics.mid_week_planner SPY QQQ
+Run: python -m analytics.options.mid_week_planner SPY QQQ
 """
 
 from __future__ import annotations

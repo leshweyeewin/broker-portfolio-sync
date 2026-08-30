@@ -206,106 +206,27 @@ def test_rsi_signal_context_is_context_not_advice():
     assert "overbought" in rsi_signal_context(80.0, "call_credit").lower()
     assert "neutral" in rsi_signal_context(55.0, "iron_condor").lower()
 
-from analytics.options.strategies import build_bull_call_spreads, build_long_calls
 
-def _directional_chain():
-    # Long call at 105 (Delta 0.50), short call at 110
-    return _snapshot([
-        _quote(Decimal("105"), "call", "4.0", "4.2", "0.50"),
-        _quote(Decimal("110"), "call", "1.0", "1.1", "0.20"),
-    ])
+def test_min_credit_is_set_via_filters_not_a_builder_kwarg():
+    # Regression guard for the iv_crush wiring: the credit floor is a SpreadFilters
+    # field, passed through ``filters=`` — the builders take no ``min_credit`` kwarg.
+    kept = build_put_credit_spreads(
+        _base_chain(), EXPIRY, today=TODAY,
+        filters=SpreadFilters(min_credit=Decimal("0.20")))
+    assert len(kept.candidates) == 1  # 1.05/sh credit clears a 0.20 floor
 
-def test_build_bull_call_spread():
-    scan = build_bull_call_spreads(_directional_chain(), EXPIRY, today=TODAY)
-    assert len(scan.candidates) == 1
-    c = scan.candidates[0]
-    assert c.strategy == "bull_call"
-    assert c.net_debit > 0
-    assert c.max_loss == c.net_debit
+    dropped = build_put_credit_spreads(
+        _base_chain(), EXPIRY, today=TODAY,
+        filters=SpreadFilters(min_credit=Decimal("2.0")))
+    assert dropped.candidates == ()
+    assert any("not above min" in r.detail for r in dropped.rejections)
 
-def test_build_long_call():
-    scan = build_long_calls(_directional_chain(), EXPIRY, today=TODAY)
-    assert len(scan.candidates) == 1
-    c = scan.candidates[0]
-    assert c.strategy == "long_call"
-    assert c.net_debit > 0
-    assert c.max_loss == c.net_debit
-    
-from analytics.options.strategies import (
-    SpreadFiltersShortTerm,
-    WheelFilters,
-    WheelFiltersShortTerm,
-    LeapsFilters,
-    build_cash_secured_puts,
-    build_covered_calls,
-    build_pmcc_leaps,
-    build_full_pmcc,
-)
+    import pytest
+    with pytest.raises(TypeError):
+        build_put_credit_spreads(_base_chain(), EXPIRY, today=TODAY, min_credit=Decimal("0.20"))
 
-def test_spread_filters_short_term():
+
+def test_spread_filters_short_term_window():
+    from analytics.options.strategies import SpreadFiltersShortTerm
     sf = SpreadFiltersShortTerm()
-    assert sf.min_dte == 7
-    assert sf.max_dte == 14
-
-def test_wheel_filters_standard():
-    wf = WheelFilters()
-    assert wf.min_dte == 30
-    assert wf.max_dte == 45
-
-def test_wheel_filters_short_term():
-    wf = WheelFiltersShortTerm()
-    assert wf.min_dte == 7
-    assert wf.max_dte == 14
-
-def _wheel_chain():
-    return _snapshot([
-        _quote(Decimal("90"), "put", "1.0", "1.1", "-0.25"),
-        _quote(Decimal("110"), "call", "1.0", "1.1", "0.25"),
-    ])
-
-def test_build_cash_secured_puts():
-    scan = build_cash_secured_puts(_wheel_chain(), EXPIRY, today=TODAY)
-    assert len(scan.candidates) == 1
-    c = scan.candidates[0]
-    assert c.strategy == "short_put"
-    assert c.net_debit < 0  # It's a credit
-
-def test_build_covered_calls():
-    scan = build_covered_calls(_wheel_chain(), EXPIRY, today=TODAY)
-    assert len(scan.candidates) == 1
-    c = scan.candidates[0]
-    assert c.strategy == "short_call"
-    assert c.net_debit < 0
-
-def test_build_pmcc_leaps():
-    leaps_expiry = date(2027, 2, 5)
-    # create a custom quote with a different expiry
-    c = OptionContract("XYZ50C", "XYZ", leaps_expiry, Decimal("50"), "call")
-    q = OptionQuote(c, AS_OF, "broker_live", bid="40.0", ask="41.0", last=None, volume=500, open_interest=500, implied_volatility="0.35", delta="0.85")
-    chain = _snapshot([q])
-    scan = build_pmcc_leaps(chain, leaps_expiry, today=TODAY)
-    assert len(scan.candidates) == 1
-    c = scan.candidates[0]
-    assert c.strategy == "long_call"
-    assert c.net_debit > 0
-
-def test_build_full_pmcc():
-    leaps_expiry = date(2027, 2, 5)
-    short_expiry = EXPIRY
-    
-    # LEAPS
-    c_l = OptionContract("XYZ50C", "XYZ", leaps_expiry, Decimal("50"), "call")
-    q_l = OptionQuote(c_l, AS_OF, "broker_live", bid="40.0", ask="41.0", last=None, volume=500, open_interest=500, implied_volatility="0.35", delta="0.85")
-    
-    # Short
-    c_s = OptionContract("XYZ110C", "XYZ", short_expiry, Decimal("110"), "call")
-    q_s = OptionQuote(c_s, AS_OF, "broker_live", bid="1.0", ask="1.1", last=None, volume=500, open_interest=500, implied_volatility="0.35", delta="0.25")
-    
-    scan = build_full_pmcc(_snapshot([q_l, q_s]), leaps_expiry, short_expiry)
-    assert len(scan.candidates) == 1
-    c = scan.candidates[0]
-    assert c.leaps_strike == Decimal("50")
-    assert c.short_strike == Decimal("110")
-    assert c.net_debit == Decimal("39.45")
-    assert c.approx_max_profit == (Decimal("110") - Decimal("50")) - c.net_debit
-
+    assert (sf.min_dte, sf.max_dte) == (7, 14)

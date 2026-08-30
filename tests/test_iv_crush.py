@@ -230,7 +230,10 @@ def test_scan_wires_credit_spreads(monkeypatch):
         {"strike": 85, "type": "put", "bid": 0.5, "ask": 0.7},
     ])
     
-    def dummy_builder(snap, exp, min_credit):
+    def dummy_builder(snap, exp, *, filters=None):
+        # The credit floor must arrive via SpreadFilters(min_credit=...), never a
+        # bare ``min_credit=`` kwarg (which the real builder rejects with TypeError).
+        assert filters is not None and filters.min_credit == Decimal("0.20")
         return SimpleNamespace(candidates=[
             SimpleNamespace(
                 legs=[

@@ -34,7 +34,7 @@ from typing import Optional
 from analytics.earnings.earnings_move import historical_earnings_move, implied_vs_historical
 from analytics.earnings.iv_crush_history import historical_iv_crush
 
-from analytics.options.strategies import build_put_credit_spreads, build_call_credit_spreads, build_iron_condors
+from analytics.options.strategies import build_put_credit_spreads, build_call_credit_spreads, build_iron_condors, SpreadFilters
 from analytics.screening.screener import _build_quote_client, fetch_option_chain
 from analytics.options.option_chain import OptionChainSnapshot, OptionQuote, OptionContract
 from datetime import timezone, datetime
@@ -284,8 +284,14 @@ def scan_iv_crush(
                             strike = float(c.get("strike", c.get("strike_price", 0)))
                             bid = float(c.get("bid_price", c.get("bid", 0)))
                             ask = float(c.get("ask_price", c.get("ask", 0)))
+                            oi = int(c.get("open_interest", 0) or 0)
+                            delta = c.get("delta")
+                            if delta is not None:
+                                delta = float(delta)
                             contract = OptionContract(ev.ticker, ev.ticker, date.fromisoformat(target_exp.replace("/", "-")), strike, right)
-                            quotes.append(OptionQuote(contract, datetime.now(timezone.utc), "broker_live" if client else "delayed", bid=bid, ask=ask))
+                            # delta/OI are required for the credit-spread builder to gate a short
+                            # leg; without them every candidate is (correctly) rejected.
+                            quotes.append(OptionQuote(contract, datetime.now(timezone.utc), "broker_live" if client else "delayed", bid=bid, ask=ask, open_interest=oi, delta=delta))
                             
                         snap = OptionChainSnapshot(
                             snapshot_id="iv_crush",
@@ -298,17 +304,17 @@ def scan_iv_crush(
                         
                         # Build strategies
                         if cand.bias == "Bullish":
-                            res = build_put_credit_spreads(snap, exp_dt, min_credit=Decimal("0.20"))
+                            res = build_put_credit_spreads(snap, exp_dt, filters=SpreadFilters(min_credit=Decimal("0.20")))
                             if res.candidates:
                                 c = res.candidates[0]
                                 cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} | Cr: ${c.net_credit:.2f}]"
                         elif cand.bias == "Bearish":
-                            res = build_call_credit_spreads(snap, exp_dt, min_credit=Decimal("0.20"))
+                            res = build_call_credit_spreads(snap, exp_dt, filters=SpreadFilters(min_credit=Decimal("0.20")))
                             if res.candidates:
                                 c = res.candidates[0]
                                 cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} | Cr: ${c.net_credit:.2f}]"
                         else:
-                            res = build_iron_condors(snap, exp_dt, min_credit=Decimal("0.50"))
+                            res = build_iron_condors(snap, exp_dt, filters=SpreadFilters(min_credit=Decimal("0.50")))
                             if res.candidates:
                                 c = res.candidates[0]
                                 cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} & {c.legs[2].strike}/{c.legs[3].strike} | Cr: ${c.net_credit:.2f}]"
