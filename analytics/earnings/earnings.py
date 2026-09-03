@@ -81,20 +81,27 @@ def get_earnings_dates(ticker: str) -> list[date]:
     if ticker in _mem_cache:
         return _mem_cache[ticker]
 
-    # 2. Check static JSON cache first
+    # 2. Check static JSON cache
     disk = _load_static_cache()
+    cached_dates: list[date] = []
     if ticker in disk and disk[ticker]:
-        dates = sorted(date.fromisoformat(d) for d in disk[ticker])
-        _mem_cache[ticker] = dates
-        return dates
+        cached_dates = sorted(date.fromisoformat(d) for d in disk[ticker])
 
-    # 3. Try API if not in disk cache
-    api_dates = _fetch_from_yfinance(ticker)
-    if api_dates:
-        _mem_cache[ticker] = api_dates
-        disk[ticker] = [d.isoformat() for d in api_dates]
-        _save_static_cache(disk)
-        return api_dates
+    today = date.today()
+    # If no dates cached or all cached dates are in the past, query API to get newly scheduled dates
+    if not cached_dates or max(cached_dates) <= today:
+        api_dates = _fetch_from_yfinance(ticker)
+        if api_dates:
+            min_fresh = min(api_dates)
+            merged = sorted({d for d in cached_dates if d < min_fresh} | set(api_dates))
+            _mem_cache[ticker] = merged
+            disk[ticker] = [d.isoformat() for d in merged]
+            _save_static_cache(disk)
+            return merged
+
+    if cached_dates:
+        _mem_cache[ticker] = cached_dates
+        return cached_dates
 
     # No data at all — safe default
     _mem_cache[ticker] = []
@@ -114,15 +121,8 @@ def is_near_earnings(
 def refresh_earnings_cache(tickers: Optional[list[str]] = None) -> dict[str, int]:
     """Re-fetch earnings dates from yfinance and merge them into the disk cache.
 
-    ``get_earnings_dates`` reads the JSON cache *before* the API, so a ticker
-    already in the file never picks up newly-scheduled or corrected dates — the
-    reason a stale date (e.g. an already-passed quarter) can linger. This forces
-    a fresh pull for each ticker and *merges* it with the existing dates
-    (union), so future/corrected dates are added while historical ones the API
-    no longer returns are preserved for the tagger.
-
-    ``tickers`` defaults to every ticker already in the cache. Returns
-    ``{ticker: total_dates_after_refresh}``.
+    Preserves older historical dates before yfinance's lookback window while
+    authoritatively updating recent and future dates.
     """
     disk = _load_static_cache()
     targets = [t.upper().strip() for t in (tickers or sorted(disk.keys()))]
@@ -131,7 +131,11 @@ def refresh_earnings_cache(tickers: Optional[list[str]] = None) -> dict[str, int
     for t in targets:
         existing = {date.fromisoformat(d) for d in disk.get(t, [])}
         fresh = _fetch_from_yfinance(t) or []
-        merged = sorted(existing | set(fresh))
+        if fresh:
+            min_fresh = min(fresh)
+            merged = sorted({d for d in existing if d < min_fresh} | set(fresh))
+        else:
+            merged = sorted(existing)
         disk[t] = [d.isoformat() for d in merged]
         result[t] = len(merged)
         if fresh:

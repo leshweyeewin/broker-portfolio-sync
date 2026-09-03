@@ -260,4 +260,14 @@ def test_is_option_code():
     assert is_option_code("US.SHOP260821P130000/US.SHOP260821P145000") is True
     # 4-leg iron condor
     assert is_option_code("DELL260904P400/430/C520/550") is True
+    # 4-leg calendar / diagonal roll
+    assert is_option_code("DELL260904P400/430/260911P400/430") is True
+
+    roll_legs = parse_option_legs("DELL260904P400/430/260911P400/430")
+    assert roll_legs == [
+        ("DELL", OptionType.PUT, Decimal("400"), date(2026, 9, 4)),
+        ("DELL", OptionType.PUT, Decimal("430"), date(2026, 9, 4)),
+        ("DELL", OptionType.PUT, Decimal("400"), date(2026, 9, 11)),
+        ("DELL", OptionType.PUT, Decimal("430"), date(2026, 9, 11)),
+    ]
 

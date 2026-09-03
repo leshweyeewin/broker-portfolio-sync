@@ -71,6 +71,7 @@ from adapters.base import (
     StockTrade,
     dec,
     is_option_code,
+    parse_option_code,
     parse_option_legs,
 )
 
@@ -243,7 +244,7 @@ class MooMooAdapter:
                 if oid in seen:
                     continue
                 seen.add(oid)
-                if is_option_code(str(row["code"])):
+                if is_option_code(str(row["code"])) or bool(row.get("combo_legs")):
                     continue  # options (single or combo) handled separately
                 qty = dec(row["dealt_qty"])
                 if qty == 0:
@@ -274,9 +275,6 @@ class MooMooAdapter:
                 if oid in seen:
                     continue
                 seen.add(oid)
-                legs = parse_option_legs(str(row["code"]))
-                if legs is None:
-                    continue  # stocks handled separately
                 qty = dec(row["dealt_qty"])
                 if qty == 0:
                     continue
@@ -284,6 +282,62 @@ class MooMooAdapter:
                 order_fee = fees.get(str(row["order_id"]), Decimal("0"))
                 ccy = self._row_currency(row, ticker_market=market)
                 is_buy = self._is_buy(row["trd_side"])
+
+                combo_legs = row.get("combo_legs")
+                if combo_legs and isinstance(combo_legs, (list, tuple)):
+                    price = dec(row["dealt_avg_price"])
+                    is_net_credit = (is_buy and price < 0) or ((not is_buy) and price > 0)
+                    parsed_legs = []
+                    for leg in combo_legs:
+                        parsed = parse_option_code(str(getattr(leg, "code", "")))
+                        if parsed is None:
+                            break
+                        side_str = str(getattr(leg, "trd_side", "")).upper()
+                        act = OptionAction.BUY if "BUY" in side_str else OptionAction.SELL
+                        ratio = dec(getattr(leg, "qty_ratio", 1.0))
+                        parsed_legs.append((parsed, act, side_str, ratio))
+
+                    if len(parsed_legs) == len(combo_legs):
+                        primary_idx = 0
+                        if is_net_credit:
+                            for i, (_, _, s_str, _) in enumerate(parsed_legs):
+                                if s_str == "SELL_SHORT":
+                                    primary_idx = i
+                                    break
+                            else:
+                                for i, (_, act, _, _) in enumerate(parsed_legs):
+                                    if act == OptionAction.SELL:
+                                        primary_idx = i
+                                        break
+                        else:
+                            for i, (_, _, s_str, _) in enumerate(parsed_legs):
+                                if s_str in ("BUY", "BUY_BACK"):
+                                    primary_idx = i
+                                    break
+
+                        for i, ((underlying, otype, strike, expiry), leg_action, _, ratio) in enumerate(parsed_legs):
+                            trades.append(
+                                OptionTrade(
+                                    date=order_date,
+                                    broker=Broker.MOOMOO,
+                                    underlying=underlying,
+                                    option_type=otype,
+                                    strike=strike,
+                                    qty=qty * ratio,
+                                    expiry=expiry,
+                                    action=leg_action,
+                                    premium=abs(price) if i == primary_idx else Decimal("0"),
+                                    fee=order_fee if i == primary_idx else Decimal("0"),
+                                    currency=ccy,
+                                    multiplier=_OPTION_MULTIPLIER,
+                                    fill_id=f"{oid}:{i}",
+                                )
+                            )
+                        continue
+
+                legs = parse_option_legs(str(row["code"]))
+                if legs is None:
+                    continue  # stocks handled separately
 
                 if len(legs) == 1:
                     underlying, otype, strike, expiry = legs[0]

@@ -283,23 +283,35 @@ def parse_option_legs(code: str) -> Optional[list[tuple[str, OptionType, Decimal
     # Check combo / spread shorthand (2+ legs):
     #   "SHOP260821P130/145", "SHOP260821P130000/145000"
     #   "DELL260904P400/430/C520/550" (4-leg iron condor)
-    m_combo = _OPTION_COMBO_RE.match(clean)
-    if m_combo:
-        u = m_combo.group("u")
-        d = m_combo.group("d")
-        expiry = date(2000 + int(d[0:2]), int(d[2:4]), int(d[4:6]))
-        cp = m_combo.group("cp")
-        otype = OptionType.CALL if cp == "C" else OptionType.PUT
-        legs = [(u, otype, _parse_strike(m_combo.group("s")), expiry)]
+    #   "DELL260904P400/430/260911P400/430" (4-leg diagonal/calendar roll)
+    if "/" in clean:
+        parts = clean.split("/")
+        m0 = re.match(r"^(?P<u>[A-Z]+)(?P<d>\d{6})(?P<cp>[CP])(?P<s>\d+(?:\.\d+)?)$", parts[0])
+        if m0:
+            u = m0.group("u")
+            curr_d = m0.group("d")
+            curr_cp = m0.group("cp")
+            expiry = date(2000 + int(curr_d[0:2]), int(curr_d[2:4]), int(curr_d[4:6]))
+            otype = OptionType.CALL if curr_cp == "C" else OptionType.PUT
+            legs = [(u, otype, _parse_strike(m0.group("s")), expiry)]
 
-        for seg in m_combo.group("rest").split("/"):
-            if not seg:
-                continue
-            if seg[0] in "CP":
-                otype = OptionType.CALL if seg[0] == "C" else OptionType.PUT
-                seg = seg[1:]
-            legs.append((u, otype, _parse_strike(seg), expiry))
-        return legs
+            sub_re = re.compile(r"^(?:(?P<d>\d{6}))?(?:(?P<cp>[CP]))?(?P<s>\d+(?:\.\d+)?)$")
+            valid = True
+            for p in parts[1:]:
+                m = sub_re.match(p)
+                if not m:
+                    valid = False
+                    break
+                if m.group("d"):
+                    curr_d = m.group("d")
+                if m.group("cp"):
+                    curr_cp = m.group("cp")
+                expiry = date(2000 + int(curr_d[0:2]), int(curr_d[2:4]), int(curr_d[4:6]))
+                otype = OptionType.CALL if curr_cp == "C" else OptionType.PUT
+                strike = _parse_strike(m.group("s"))
+                legs.append((u, otype, strike, expiry))
+            if valid:
+                return legs
 
     # Check single option code: "SHOP260821C145000", "AAPL240119C00190000"
     single = _parse_single_leg(clean)

@@ -553,8 +553,12 @@ def run_sync(
     writer.sort_data_tabs()
 
     # 6. Reconcile computed holdings against broker-reported positions.
+    # Only reconcile brokers that were successfully fetched so an offline or
+    # skipped broker doesn't flag all its persistent holdings as missing.
     holdings = list(stock_result.holdings) + list(option_result.holdings)
-    recon_warnings = reconcile(holdings, positions)
+    fetched_brokers = {d.broker for d in ok}
+    holdings_to_reconcile = [h for h in holdings if h.broker.value in fetched_brokers]
+    recon_warnings = reconcile(holdings_to_reconcile, positions)
 
     # 7. Dashboard summary: realized P/L, net capital in, current value, total P/L.
     # Realized P/L per broker (SGD) over three rolling windows, all on the SGT
@@ -616,13 +620,14 @@ def run_sync(
     # 8b. Auto-generate Holdings snapshot tab for Deskpilot with live broker cash.
     try:
         cash_by_currency: dict[str, float] = defaultdict(float)
-        for broker, adapter in adapters:
+        for adapter in adapters:
+            broker_name = getattr(adapter, "name", str(adapter))
             if hasattr(adapter, "fetch_cash_balances"):
                 try:
                     for amt, ccy in adapter.fetch_cash_balances():
                         cash_by_currency[ccy.upper()] += float(amt)
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("Could not fetch cash balances for %s: %s", broker, exc)
+                    log.warning("Could not fetch cash balances for %s: %s", broker_name, exc)
         writer.update_holdings(cash=dict(cash_by_currency) if cash_by_currency else None)
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not update Holdings tab: %s", exc)
