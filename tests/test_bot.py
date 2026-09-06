@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from datetime import date
 
+import json
+
 from alerting.bot import (
+    _COMMAND_MENU,
     _capture_cli,
     _trim_for_telegram,
     format_quote,
@@ -16,6 +19,7 @@ from alerting.bot import (
     parse_nullary_command,
     parse_options_command,
     parse_ticker,
+    register_commands,
     run_bot,
 )
 from analytics.screening.swing import SwingSetup
@@ -266,6 +270,24 @@ def test_capture_cli_and_trim():
     assert "scan ALL" in _capture_cli(fake_main)  # nullary: main([])
     assert _trim_for_telegram("  hi  ") == "hi"
     assert _trim_for_telegram("x" * 5000).endswith("(truncated)")
+
+
+def test_register_commands_posts_menu():
+    calls: list[tuple[str, bytes, int]] = []
+    register_commands(
+        token="T",
+        transport=lambda url, data, timeout: calls.append((url, data, timeout)),
+    )
+    assert len(calls) == 1
+    url, data, _ = calls[0]
+    assert url.endswith("/botT/setMyCommands")
+    # Body is form-encoded ``commands=<json>``; decode and check the menu round-trips.
+    from urllib.parse import parse_qs
+    payload = json.loads(parse_qs(data.decode("utf-8"))["commands"][0])
+    assert [(c["command"], c["description"]) for c in payload] == list(_COMMAND_MENU)
+    assert ("quote", "Quick-take for a ticker (price, RSI, earnings)") in [
+        (c["command"], c["description"]) for c in payload
+    ]
 
 
 def test_run_bot_survives_transport_error():

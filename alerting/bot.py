@@ -56,6 +56,18 @@ _NULLARY_COMMANDS = {
     "wheel": "wheel", "income": "wheel",
 }
 
+# Command menu registered via setMyCommands (see ``register_commands``). Only the
+# primary command of each action is listed — aliases still work when typed, but
+# Telegram shows one entry per action in the autocomplete menu.
+_COMMAND_MENU = (
+    ("quote", "Quick-take for a ticker (price, RSI, earnings)"),
+    ("directional", "Options board: bull-call / CSP / CC / PMCC"),
+    ("midweek", "Short-dated 0-5 DTE expiry templates"),
+    ("spreads", "Earnings credit-spread scan (watchlist)"),
+    ("wheel", "CSP / CC / PMCC from your positions"),
+    ("help", "Show usage"),
+)
+
 _USAGE = (
     "📊 Send me a ticker for a quick-take.\n"
     "Try: /quote NVDA  (or just: NVDA)\n"
@@ -383,6 +395,29 @@ def run_bot(
             break
 
 
+def register_commands(
+    *,
+    token: Optional[str] = None,
+    transport: Optional[Callable[[str, bytes, int], None]] = None,
+    timeout: int = 10,
+) -> None:
+    """Register the command menu with Telegram via ``setMyCommands``.
+
+    Makes the primary commands autocomplete (with descriptions) in the Telegram
+    app. Idempotent — re-running just overwrites the menu. ``transport`` is
+    injectable for tests; it defaults to the same urllib POST + ``ok`` check
+    used by the alert sender, so a rejected call raises ``NotifyError``.
+    """
+    from alerting.notify import _urllib_post
+
+    token = token or get_telegram_bot_token()
+    transport = transport or _urllib_post
+    commands = [{"command": c, "description": d} for c, d in _COMMAND_MENU]
+    url = f"{_API_BASE}/bot{token}/setMyCommands"
+    data = urlencode({"commands": json.dumps(commands)}).encode("utf-8")
+    transport(url, data, timeout)
+
+
 def main(argv=None) -> int:
     import argparse
     import sys
@@ -396,7 +431,17 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="On-demand Telegram quote bot (long-polling).")
     p.add_argument("--once", action="store_true", help="Process one batch and exit (debugging).")
     p.add_argument("--poll-timeout", type=int, default=25, help="Long-poll seconds per getUpdates.")
+    p.add_argument(
+        "--register-commands",
+        action="store_true",
+        help="Register the command menu (setMyCommands) with Telegram and exit.",
+    )
     args = p.parse_args(argv)
+
+    if args.register_commands:
+        register_commands()
+        log.info("Registered %d commands with Telegram.", len(_COMMAND_MENU))
+        return 0
 
     log.info("Quote bot starting (poll_timeout=%ds). Ctrl-C to stop.", args.poll_timeout)
     try:
