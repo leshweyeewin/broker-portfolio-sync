@@ -57,6 +57,12 @@ def theme_of(ticker: str) -> str:
     return THEMES.get(ticker.strip().upper(), "Other")
 
 
+# ATR-based risk bracket for a long swing entry (single source of the policy
+# figures): stop 1.5× ATR below entry, target 3× ATR above → a 2:1 reward:risk.
+_STOP_ATR_MULT = 1.5
+_TARGET_ATR_MULT = 3.0
+
+
 @dataclass
 class SwingSetup:
     """One ticker's swing-relevant technical snapshot."""
@@ -76,6 +82,25 @@ class SwingSetup:
     def is_actionable(self) -> bool:
         """Setups a swing trader would actually look at for a long entry."""
         return self.setup in ("Breakout", "Pullback-buy")
+
+    @property
+    def _atr_dollars(self) -> Optional[float]:
+        """ATR expressed in price terms (None if price/ATR% unavailable)."""
+        if not self.price or self.atr_pct is None:
+            return None
+        return self.price * self.atr_pct / 100
+
+    @property
+    def stop_loss(self) -> Optional[float]:
+        """Suggested stop for a long entry: 1.5× ATR below the current price."""
+        atr = self._atr_dollars
+        return round(self.price - _STOP_ATR_MULT * atr, 2) if atr is not None else None
+
+    @property
+    def take_profit(self) -> Optional[float]:
+        """Suggested target for a long entry: 3× ATR above the current price (2:1)."""
+        atr = self._atr_dollars
+        return round(self.price + _TARGET_ATR_MULT * atr, 2) if atr is not None else None
 
 
 # Setups we surface first in the brief (long-biased swing entries).
@@ -272,4 +297,11 @@ def format_swing_message(setups: list[SwingSetup], *, max_rows: int = 12) -> str
             f"   {icon} {s.ticker} [{s.theme}] {s.setup} · ${s.price:,.2f} · "
             f"{rsi} · {atr} · {s.note}"
         )
+        sl, tp = s.stop_loss, s.take_profit
+        if sl is not None and tp is not None:
+            sl_pct = (sl - s.price) / s.price * 100
+            tp_pct = (tp - s.price) / s.price * 100
+            lines.append(
+                f"      🎯 TP ${tp:,.2f} ({tp_pct:+.1f}%) · 🛑 SL ${sl:,.2f} ({sl_pct:+.1f}%)"
+            )
     return "\n".join(lines)

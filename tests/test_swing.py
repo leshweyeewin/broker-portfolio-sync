@@ -65,9 +65,26 @@ def test_format_swing_message():
     s3 = SwingSetup(ticker="TSLA", price=200, setup="Downtrend") # Not actionable
     
     msg = format_swing_message([s1, s2, s3])
-    
+
     assert "AAPL" in msg
     assert "NVDA" in msg
     assert "TSLA" not in msg # Downtrend is not actionable
     assert "🚀" in msg # Breakout
     assert "🎯" in msg # Pullback
+    # ATR-based bracket appears on its own line.
+    assert "TP $" in msg
+    assert "SL $" in msg
+
+
+def test_swing_targets_from_atr():
+    # AAPL $150, ATR 5% -> ATR = $7.50. Stop = 150 - 1.5*7.5 = 138.75;
+    # target = 150 + 3*7.5 = 172.50 (2:1 reward:risk).
+    s = SwingSetup(ticker="AAPL", price=150, setup="Breakout", atr_pct=5)
+    assert s.stop_loss == 138.75
+    assert s.take_profit == 172.50
+
+
+def test_swing_targets_none_without_atr():
+    s = SwingSetup(ticker="XYZ", price=150, setup="Breakout")  # atr_pct None
+    assert s.stop_loss is None
+    assert s.take_profit is None
