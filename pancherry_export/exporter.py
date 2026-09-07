@@ -72,15 +72,17 @@ class OpenPositionData:
     legs: list[OptionLegData] = field(default_factory=list)
 
 
-def read_open_positions(client) -> list[OpenPositionData]:
+def read_open_positions(client, *, today: date | None = None) -> list[OpenPositionData]:
     """Net the Stocks + Options tabs into the current open book.
 
     Shares net per ticker; option legs net per (ticker, type, strike, expiry).
-    A ticker appears if it still holds shares *or* has any open leg. Sorted
+    A ticker appears if it still holds shares *or* has any open leg. Expired
+    option legs (expiry before ``today``) are dropped — a leg that expired
+    without being closed out in the sheet is no longer an open position. Sorted
     alphabetically for a stable diff.
     """
     shares = _net_shares(client)
-    legs = _net_legs(client)
+    legs = _net_legs(client, today=today or date.today())
 
     tickers = {t for t, q in shares.items() if q != 0} | set(legs.keys())
     out: list[OpenPositionData] = []
@@ -109,8 +111,9 @@ def _net_shares(client) -> dict[str, Decimal]:
     return net
 
 
-def _net_legs(client) -> dict[str, list[OptionLegData]]:
+def _net_legs(client, *, today: date | None = None) -> dict[str, list[OptionLegData]]:
     values, idx = _read_tab(client, TAB_OPTIONS, OPTIONS_HEADERS)
+    cutoff = (today or date.today()).isoformat()  # ISO strings compare lexically
     net: dict[tuple[str, str, Decimal, str], Decimal] = {}
     malformed: set[str] = set()
     for row in values:
@@ -138,7 +141,7 @@ def _net_legs(client) -> dict[str, list[OptionLegData]]:
 
     out: dict[str, list[OptionLegData]] = {}
     for (ticker, otype, strike, expiry), qty in net.items():
-        if qty == 0:
+        if qty == 0 or expiry < cutoff:  # skip flat and already-expired legs
             continue
         out.setdefault(ticker, []).append(
             OptionLegData(type=otype, strike=strike, expiry=expiry, qty=qty)

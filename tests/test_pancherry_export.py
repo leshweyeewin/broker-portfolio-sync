@@ -77,7 +77,7 @@ def test_nets_option_legs_and_signs_by_action():
         _opt("Tiger", "SNDK", "Call", "$1405.00", 3, "2026-08-14", "Buy"),    # long 3
         _opt("Tiger", "SNDK", "Call", "$1405.00", 1, "2026-08-14", "Sell"),   # net 1405 = 2
     ])
-    out = read_open_positions(client)
+    out = read_open_positions(client, today=date(2026, 8, 1))
     assert len(out) == 1
     legs = {(l.strike, l.qty) for l in out[0].legs}
     assert legs == {(Decimal(1400), Decimal(-4)), (Decimal(1405), Decimal(2))}
@@ -93,7 +93,7 @@ def test_skips_malformed_combo_underlying():
             _opt("Tiger", "SHOP", "Put", "$145.00", 1, "2026-08-21", "Sell"),
         ],
     )
-    tickers = [p.ticker for p in read_open_positions(client)]
+    tickers = [p.ticker for p in read_open_positions(client, today=date(2026, 8, 1))]
     assert tickers == ["SHOP"]
 
 
@@ -128,8 +128,22 @@ def test_open_leg_expiry_serial_is_rendered_as_iso():
         ["2026-08-11", "Tiger", "Sell Call", "AVGO", "Call", "$400.00", -2, 46249,
          "Sell", 1.0, 100.0, 1.0, "USD", "Open", "", "", "AVGO-x"],
     ])
-    legs = read_open_positions(client)[0].legs
+    legs = read_open_positions(client, today=date(2026, 8, 1))[0].legs
     assert legs[0].expiry == "2026-08-15"
+
+
+def test_drops_expired_option_legs():
+    # A leg that expired without a closing row nets non-zero forever; it must not
+    # show as open once its expiry is past. A leg expiring today still counts.
+    client = _client(options=[
+        _opt("Tiger", "AAPL", "Put", "$150.00", 1, "2026-09-04", "Sell"),   # expired
+        _opt("Tiger", "AAPL", "Put", "$160.00", 1, "2026-09-07", "Sell"),   # 0DTE today
+        _opt("Tiger", "AAPL", "Put", "$170.00", 1, "2026-09-18", "Sell"),   # future
+    ])
+    out = read_open_positions(client, today=date(2026, 9, 7))
+    assert len(out) == 1
+    expiries = {l.expiry for l in out[0].legs}
+    assert expiries == {"2026-09-07", "2026-09-18"}   # 2026-09-04 dropped
 
 
 def test_ticker_with_only_options_still_appears():
