@@ -88,22 +88,93 @@ def _build_quote_client():
         return None
 
 
-def fetch_option_chain(
-    symbol: str,
-    expiry: str,
-    *,
-    quote_client=None,
-    market: str = "US",
-) -> list[dict]:
-    """Fetch the option chain for a symbol+expiry from Tiger.
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF (mirrors ``market_scan._norm_cdf``; kept local to
+    avoid a circular import — market_scan imports from this module)."""
+    import math
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-    Returns a list of dicts with contract details, or empty list on failure.
-    ``expiry`` format: "YYYYMMDD" or "YYYY-MM-DD".
+
+def _bs_delta(spot: float, strike: float, dte_days: int, iv: float, is_call: bool, r: float = 0.045) -> float:
+    """Estimate option Delta via Black-Scholes (for chains that carry no Greeks)."""
+    import math
+    if dte_days <= 0 or iv <= 0 or spot <= 0 or strike <= 0:
+        return 0.0
+    t = dte_days / 365.0
+    d1 = (math.log(spot / strike) + (r + 0.5 * iv ** 2) * t) / (iv * math.sqrt(t))
+    return _norm_cdf(d1) if is_call else _norm_cdf(d1) - 1.0
+
+
+def _yfinance_option_chain(symbol: str, expiry: str) -> list[dict]:
+    """Delayed yfinance fallback for one symbol+expiry when Tiger is unavailable.
+
+    Returns dicts shaped like the Tiger chain (``right``/``strike``/``bid``/
+    ``ask``/``open_interest``/``delta``/…). yfinance carries no Greeks, so Delta
+    is estimated from the row's implied vol so downstream delta filters work.
     """
-    client = quote_client or _build_quote_client()
-    if client is None:
+    try:
+        import yfinance as yf
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+        exp_iso = expiry.replace("/", "-")
+        try:
+            exp_date = date.fromisoformat(exp_iso)
+        except ValueError:
+            # accept compact "YYYYMMDD"
+            exp_date = date(int(exp_iso[:4]), int(exp_iso[4:6]), int(exp_iso[6:8]))
+            exp_iso = exp_date.isoformat()
+
+        tk = yf.Ticker(symbol)
+        fast_info = getattr(tk, "fast_info", None)
+        spot = getattr(fast_info, "last_price", None)
+        if not spot:
+            hist = tk.history(period="1d")
+            spot = float(hist["Close"].iloc[-1]) if not hist.empty else 0.0
+        spot = float(spot or 0.0)
+
+        chain = tk.option_chain(exp_iso)
+        dte = (exp_date - date.today()).days
+
+        def _num(x) -> float:
+            """Coerce a cell to float, mapping None/NaN to 0.0 (yfinance leaves
+            volume/OI/IV as NaN for illiquid strikes)."""
+            try:
+                v = float(x)
+            except (TypeError, ValueError):
+                return 0.0
+            return v if v == v else 0.0  # NaN != NaN
+
+        out: list[dict] = []
+        for frame, right, is_call in ((chain.calls, "call", True), (chain.puts, "put", False)):
+            if frame is None or frame.empty:
+                continue
+            for _, row in frame.iterrows():
+                strike = _num(row.get("strike"))
+                bid = _num(row.get("bid"))
+                ask = _num(row.get("ask"))
+                iv = _num(row.get("impliedVolatility"))
+                out.append({
+                    "identifier": str(row.get("contractSymbol", "")),
+                    "symbol": symbol,
+                    "expiry": exp_iso,
+                    "right": right,
+                    "strike": strike,
+                    "bid": bid, "bid_price": bid,
+                    "ask": ask, "ask_price": ask,
+                    "open_interest": int(_num(row.get("openInterest"))),
+                    "volume": int(_num(row.get("volume"))),
+                    "implied_volatility": iv,
+                    "delta": _bs_delta(spot, strike, dte, iv, is_call),
+                })
+        return out
+    except Exception as exc:
+        log.warning("yfinance option-chain fallback failed for %s %s: %s", symbol, expiry, exc)
         return []
 
+
+def _tiger_option_chain(client, symbol: str, expiry: str, market: str = "US") -> list[dict]:
+    """Fetch one chain via a live Tiger QuoteClient. Returns [] on any failure
+    (no data, or the account lacks options-market permission)."""
     try:
         from tigeropen.common.consts import Market
         mkt = Market.US if market.upper() == "US" else Market.HK
@@ -119,8 +190,35 @@ def fetch_option_chain(
             return chain
         return []
     except Exception as exc:
-        log.warning("Failed to fetch option chain for %s %s: %s", symbol, expiry, exc)
+        # Expected when the account lacks US-options data entitlement — the
+        # caller falls back to yfinance, so this is debug, not a warning.
+        log.debug("Tiger option chain unavailable for %s %s: %s", symbol, expiry, exc)
         return []
+
+
+def fetch_option_chain(
+    symbol: str,
+    expiry: str,
+    *,
+    quote_client=None,
+    market: str = "US",
+) -> list[dict]:
+    """Fetch the option chain for a symbol+expiry.
+
+    Prefers a live Tiger QuoteClient, but falls back to delayed yfinance chains
+    whenever Tiger yields nothing — whether the ``tigeropen`` SDK isn't installed,
+    no client could be built, or the client call fails (e.g. the account has no
+    US options-market data permission). ``expiry`` format: "YYYYMMDD" or
+    "YYYY-MM-DD". Returns a list of contract dicts, or empty list on failure.
+    """
+    client = quote_client or _build_quote_client()
+    if client is not None:
+        rows = _tiger_option_chain(client, symbol, expiry, market)
+        if rows:
+            return rows
+        # Client present but returned nothing — fall through to yfinance.
+
+    return _yfinance_option_chain(symbol, expiry)
 
 
 def screen_options(

@@ -375,14 +375,23 @@ def _get_snapshot(client, ticker: str) -> OptionChainSnapshot | None:
         if not exps:
             return None
 
-        target_exps = list(exps[:5])
+        # Fetch expiries covering the DTE windows the builders use: short-term
+        # wheel (7-14), directional debit spreads / CSPs (30-45), and one LEAP
+        # (365-730) for PMCC. Grabbing only the nearest few would miss the 30-45
+        # monthly on names dominated by weeklies (e.g. NVDA).
         today = date.today()
-        for exp in exps:
-            exp_date = date.fromisoformat(exp.replace("/", "-"))
-            if (exp_date - today).days > 365:
+
+        def _dte(exp: str) -> int:
+            return (date.fromisoformat(exp.replace("/", "-")) - today).days
+
+        target_exps = [e for e in exps if 7 <= _dte(e) <= 50][:6]
+        for exp in exps:  # append the first LEAP (>365 DTE) for PMCC long legs
+            if _dte(exp) > 365:
                 if exp not in target_exps:
                     target_exps.append(exp)
                 break
+        if not target_exps:  # ultra-short names — fall back to whatever exists
+            target_exps = list(exps[:5])
 
         quotes = []
         for exp in target_exps:
@@ -442,7 +451,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     client = _build_quote_client()
     if not client:
-        print("Tiger QuoteClient not available. Option chains might not be fetched optimally.")
+        print("Tiger QuoteClient not available — using delayed yfinance chains (Greeks estimated).")
 
     for ticker in args.tickers:
         print(f"\nScanning {ticker}...")

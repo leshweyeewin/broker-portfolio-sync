@@ -162,9 +162,14 @@ def test_directional_builder_main_prints_candidate_values(mock_get_snapshot, _cl
 @patch("yfinance.Ticker")
 @patch("analytics.options.directional_builder.fetch_option_chain")
 def test_get_snapshot(mock_fetch_chain, mock_ticker):
+    from datetime import timedelta
+    today = date.today()
+    near = (today + timedelta(days=35)).isoformat()   # in the 7-50 DTE window
+    leap = (today + timedelta(days=500)).isoformat()   # LEAP (>365 DTE)
+
     mock_tk = MagicMock()
     mock_tk.fast_info.last_price = 150.0
-    mock_tk.options = ["2026-02-05", "2028-02-05"]
+    mock_tk.options = [near, leap]
     mock_ticker.return_value = mock_tk
 
     mock_fetch_chain.return_value = [
