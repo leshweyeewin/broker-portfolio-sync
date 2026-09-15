@@ -88,8 +88,12 @@ def get_earnings_dates(ticker: str) -> list[date]:
         cached_dates = sorted(date.fromisoformat(d) for d in disk[ticker])
 
     today = date.today()
-    # If no dates cached or all cached dates are in the past, query API to get newly scheduled dates
-    if not cached_dates or max(cached_dates) <= today:
+    next_up = next((d for d in cached_dates if d >= today), None)
+    # Re-fetch when the cache can't answer authoritatively: nothing cached, every
+    # cached date is already past, or the next event is close (<= 10 days) — an
+    # upcoming date starts as an estimate and is often confirmed/moved as it nears,
+    # and the lazy path would otherwise keep showing the stale date until it lapses.
+    if not cached_dates or max(cached_dates) <= today or (next_up and (next_up - today).days <= 10):
         api_dates = _fetch_from_yfinance(ticker)
         if api_dates:
             min_fresh = min(api_dates)
