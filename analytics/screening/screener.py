@@ -68,6 +68,10 @@ class ScreenerResult:
 def _build_quote_client():
     """Build a Tiger QuoteClient from env credentials. Returns None on failure."""
     try:
+        # Quiet the SDK's INFO chatter (sdk version, device-access claims); keep
+        # its warnings/errors.
+        logging.getLogger("tiger_openapi").setLevel(logging.WARNING)
+
         from tigeropen.quote.quote_client import QuoteClient
         from tigeropen.tiger_open_config import TigerOpenClientConfig
 

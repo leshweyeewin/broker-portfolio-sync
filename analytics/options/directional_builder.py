@@ -461,10 +461,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
 
         print(f"  Spot Price: ${snap.underlying_price}")
+
+        found_any = False  # did any builder produce a candidate for this ticker?
         expiries = sorted({q.contract.expiry for q in snap.quotes})
         for exp in expiries:
             bcs = build_bull_call_spreads(snap, exp)
             if bcs.candidates:
+                found_any = True
                 c = bcs.candidates[0]
                 strikes = "/".join(str(l.strike) for l in c.legs)
                 print(f"  [Bull Call] {exp} {strikes} | Debit: ${_fmt(c.net_debit)} | "
@@ -472,6 +475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             bps = build_bear_put_spreads(snap, exp)
             if bps.candidates:
+                found_any = True
                 c = bps.candidates[0]
                 strikes = "/".join(str(l.strike) for l in c.legs)
                 print(f"  [Bear Put]  {exp} {strikes} | Debit: ${_fmt(c.net_debit)} | "
@@ -479,6 +483,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             lc = build_long_calls(snap, exp)
             if lc.candidates:
+                found_any = True
                 c = lc.candidates[0]
                 be = _fmt(c.breakevens[0]) if c.breakevens else "n/a"
                 print(f"  [Long Call] {exp} {c.legs[0].strike}C | Debit: ${_fmt(c.net_debit)} | "
@@ -486,6 +491,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             lp = build_long_puts(snap, exp)
             if lp.candidates:
+                found_any = True
                 c = lp.candidates[0]
                 be = _fmt(c.breakevens[0]) if c.breakevens else "n/a"
                 print(f"  [Long Put]  {exp} {c.legs[0].strike}P | Debit: ${_fmt(c.net_debit)} | "
@@ -495,6 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not csp.candidates:
                 csp = build_cash_secured_puts(snap, exp, filters=WheelFiltersShortTerm())
             if csp.candidates:
+                found_any = True
                 c = csp.candidates[0]
                 print(f"  [CSP]       {exp} {c.legs[0].strike}P | Credit: ${_fmt(-c.net_debit)} | "
                       f"Capital Required: ${c.legs[0].strike * 100:.2f}")
@@ -503,11 +510,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not cc.candidates:
                 cc = build_covered_calls(snap, exp, filters=WheelFiltersShortTerm())
             if cc.candidates:
+                found_any = True
                 c = cc.candidates[0]
                 print(f"  [Cov Call]  {exp} {c.legs[0].strike}C | Credit: ${_fmt(-c.net_debit)}")
 
             leaps = build_pmcc_leaps(snap, exp)
             if leaps.candidates:
+                found_any = True
                 c = leaps.candidates[0]
                 print(f"  [PMCC Buy]  {exp} {c.legs[0].strike}C | Debit: ${_fmt(c.net_debit)} | Delta: >0.70")
 
@@ -517,9 +526,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if leaps_expiries and near_term_expiries:
             pmcc = build_full_pmcc(snap, leaps_expiries[0], near_term_expiries[0])
             if pmcc.candidates:
+                found_any = True
                 c = pmcc.candidates[0]
                 print(f"  [PMCC Full] Buy {c.leaps_expiry} {c.leaps_strike}C / Sell {c.short_expiry} {c.short_strike}C | "
                       f"Debit: ${c.net_debit:.2f} | Approx Max Profit: ${c.approx_max_profit:.2f}")
+
+        if not found_any:
+            # No structure passed the filters. On delayed (yfinance) chains this is
+            # almost always thin data — zero bid/ask/open-interest when the US market
+            # is closed or the feed is throttled — rather than a genuine "no setups".
+            print(f"  [!] No setups passed the filters for {ticker}. Delayed data may be "
+                  f"thin (no bid/open-interest outside US market hours) — try again "
+                  f"during the session, or connect live options data.")
 
     return 0
 
