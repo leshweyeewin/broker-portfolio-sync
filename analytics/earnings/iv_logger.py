@@ -23,6 +23,13 @@ HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "iv_history.jso
 # Fallback watchlist for a bare invocation or when --from-brokers finds nothing.
 DEFAULT_WATCHLIST = ["NVDA", "CRM", "CRWD", "COST", "TSLA", "AAPL"]
 
+# yfinance returns degraded implied vol (a ~1e-5 placeholder, or other sub-percent
+# noise) for strikes with no live market (illiquid, or the US market is closed /
+# the feed is throttled). Those are > 0 so they slip past a naive ``iv <= 0`` guard
+# and pollute the IV history (logged as ~0.0 after rounding). No optionable equity
+# has an ATM IV below ~5%, so treat anything under that as missing data.
+MIN_PLAUSIBLE_IV = 0.05
+
 def fetch_atm_iv(ticker: str) -> float | None:
     try:
         import yfinance as yf
@@ -51,7 +58,8 @@ def fetch_atm_iv(ticker: str) -> float | None:
         atm_call = calls.sort_values("dist").iloc[0]
         
         iv = float(atm_call.get("impliedVolatility", 0))
-        if iv <= 0:
+        # Reject 0, NaN, and yfinance's ~1e-5 placeholder (NaN fails the >= test).
+        if not (iv >= MIN_PLAUSIBLE_IV):
             return None
         return iv
     except Exception as exc:
