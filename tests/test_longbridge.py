@@ -12,8 +12,11 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+pytest.importorskip("longport")  # optional broker SDK; skip when not installed
 from longport.openapi import OrderSide, OrderStatus, CashFlowDirection
 from adapters.longbridge import LongbridgeAdapter, LongbridgeCredentials
 from adapters.base import (

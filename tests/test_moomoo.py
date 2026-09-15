@@ -8,6 +8,8 @@ from decimal import Decimal
 
 import pandas as pd
 import pytest
+
+pytest.importorskip("moomoo")  # optional broker SDK; skip when not installed
 from moomoo import RET_OK
 
 from adapters.base import (

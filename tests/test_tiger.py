@@ -20,6 +20,7 @@ from adapters.base import (
     OptionType,
     StockAction,
 )
+pytest.importorskip("tigeropen")  # optional broker SDK; skip when not installed
 from adapters.tiger import TigerAdapter
 
 SGT = ZoneInfo("Asia/Singapore")
