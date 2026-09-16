@@ -12,10 +12,14 @@ import json
 
 from alerting.bot import (
     _COMMAND_MENU,
+    _PROMPT_DIRECTIONAL,
+    _PROMPT_QUOTE,
+    _PROMPTS,
     _capture_cli,
     _trim_for_telegram,
     format_quote,
     is_help,
+    parse_bare_ticker_command,
     parse_nullary_command,
     parse_options_command,
     parse_ticker,
@@ -84,6 +88,26 @@ def test_parse_nullary_command_rejects_noise():
     assert parse_nullary_command("/directional NVDA") is None
     assert parse_nullary_command("wheel") is None   # bare word, not a command
     assert parse_nullary_command("") is None
+
+
+def test_parse_bare_ticker_command():
+    # A ticker-needing command tapped from the menu (no symbol).
+    assert parse_bare_ticker_command("/quote") == "quote"
+    assert parse_bare_ticker_command("/q") == "quote"
+    assert parse_bare_ticker_command("/directional") == "directional"
+    assert parse_bare_ticker_command("/dir@MyBot") == "directional"
+    assert parse_bare_ticker_command("/midweek") == "midweek"
+    assert parse_bare_ticker_command("/mw") == "midweek"
+
+
+def test_parse_bare_ticker_command_rejects():
+    assert parse_bare_ticker_command("/directional NVDA") is None  # already has a ticker
+    assert parse_bare_ticker_command("/quote NVDA") is None
+    assert parse_bare_ticker_command("/spreads") is None           # nullary, needs no ticker
+    assert parse_bare_ticker_command("/wheel") is None
+    assert parse_bare_ticker_command("/help") is None
+    assert parse_bare_ticker_command("NVDA") is None               # bare word, not a command
+    assert parse_bare_ticker_command("") is None
 
 
 def test_is_help():
@@ -259,6 +283,71 @@ def test_run_bot_survives_nullary_builder_error():
     )
     assert len(sent) == 1
     assert "Couldn't build spreads" in sent[0][1]
+
+
+def _reply_update(text: str, prompt_text: str, chat_id: int = 123, update_id: int = 1) -> dict:
+    """An update where the user replied (text) to one of the bot's prompts."""
+    return {"ok": True, "result": [
+        {"update_id": update_id, "message": {
+            "chat": {"id": chat_id}, "text": text,
+            "reply_to_message": {"text": prompt_text},
+        }},
+    ]}
+
+
+def test_run_bot_prompts_on_bare_menu_command():
+    # Tapping /directional from the menu sends the bare command; the bot must
+    # ask for a ticker (force_reply) instead of silently ignoring it.
+    prompts: list[tuple[str, str]] = []
+    sent: list[tuple[str, str]] = []
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _one_update("/directional"),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        prompt=lambda chat_id, text: prompts.append((chat_id, text)),
+        option_builders={"directional": lambda t, today=None: f"DIR {t}"},
+        once=True,
+    )
+    assert prompts == [("123", _PROMPTS["directional"])]
+    assert sent == []  # nothing built yet — waiting for the ticker
+
+
+def test_run_bot_routes_reply_to_option_prompt():
+    # The user replies to the directional prompt with a ticker.
+    sent: list[tuple[str, str]] = []
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _reply_update("nvda", _PROMPT_DIRECTIONAL),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        option_builders={"directional": lambda t, today=None: f"DIR {t}"},
+        once=True,
+    )
+    assert sent == [("123", "DIR NVDA")]
+
+
+def test_run_bot_routes_reply_to_quote_prompt():
+    sent: list[tuple[str, str]] = []
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _reply_update("TSLA", _PROMPT_QUOTE),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        quote_builder=lambda ticker, today=None: f"QUOTE {ticker}",
+        once=True,
+    )
+    assert sent == [("123", "QUOTE TSLA")]
+
+
+def test_run_bot_reply_with_bad_ticker_is_rejected():
+    sent: list[tuple[str, str]] = []
+    run_bot(
+        token="T",
+        transport=lambda url, timeout: _reply_update("12345", _PROMPT_DIRECTIONAL),
+        reply=lambda chat_id, text: sent.append((chat_id, text)),
+        option_builders={"directional": lambda t, today=None: "should not run"},
+        once=True,
+    )
+    assert len(sent) == 1
+    assert "doesn't look like a ticker" in sent[0][1]
 
 
 def test_capture_cli_and_trim():

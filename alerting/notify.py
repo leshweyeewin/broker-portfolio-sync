@@ -103,11 +103,13 @@ def send_telegram(
     chat_id: Optional[str] = None,
     timeout: int = _REQUEST_TIMEOUT,
     transport: Optional[Transport] = None,
+    reply_markup: Optional[dict] = None,
 ) -> None:
     """Send ``text`` to the configured Telegram chat.
 
     Splits messages longer than 4000 characters into multiple sequential messages
-    to stay strictly within Telegram's 4096 character limit.
+    to stay strictly within Telegram's 4096 character limit. ``reply_markup`` (e.g.
+    a ``{"force_reply": True}`` keyboard) is attached to the last chunk only.
     """
     token = token or get_telegram_bot_token()
     chat_id = chat_id or get_telegram_chat_id()
@@ -116,14 +118,15 @@ def send_telegram(
     url = f"{_API_BASE}/bot{token}/sendMessage"
     chunks = _split_message(text, max_len=4000)
 
-    for chunk in chunks:
-        data = urlencode(
-            {
-                "chat_id": chat_id,
-                "text": chunk,
-                "disable_web_page_preview": "true",
-            }
-        ).encode("utf-8")
+    for i, chunk in enumerate(chunks):
+        params = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "disable_web_page_preview": "true",
+        }
+        if reply_markup is not None and i == len(chunks) - 1:
+            params["reply_markup"] = json.dumps(reply_markup)
+        data = urlencode(params).encode("utf-8")
         transport(url, data, timeout)
 
 

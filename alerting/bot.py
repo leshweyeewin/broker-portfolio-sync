@@ -80,10 +80,33 @@ _USAGE = (
     "/wheel — CSP / covered-call / PMCC from your current positions (no ticker)"
 )
 
+# Prompts sent (with force_reply) when a ticker-needing command is tapped from the
+# menu with no symbol — Telegram fires the bare command immediately, so we ask for
+# the ticker and route the user's reply back by matching reply_to_message.text.
+# Kept as fixed strings so the reverse lookup below is an exact match.
+_PROMPT_QUOTE = "📊 Which ticker? Reply to this message with a symbol (e.g. NVDA) for a quick-take."
+_PROMPT_DIRECTIONAL = "📈 Which ticker? Reply to this message with a symbol (e.g. NVDA) for an options board."
+_PROMPT_MIDWEEK = "🗓 Which ticker? Reply to this message with a symbol (e.g. SPY) for 0–5 DTE templates."
+
+_PROMPTS = {
+    "quote": _PROMPT_QUOTE,
+    "directional": _PROMPT_DIRECTIONAL,
+    "midweek": _PROMPT_MIDWEEK,
+}
+# Reverse map: the exact prompt a user is replying to -> (kind, builder_key).
+# kind "quote" uses the quote builder; "option" uses an options builder by key.
+_PROMPT_ROUTES = {
+    _PROMPT_QUOTE: ("quote", None),
+    _PROMPT_DIRECTIONAL: ("option", "directional"),
+    _PROMPT_MIDWEEK: ("option", "midweek"),
+}
+
 # A transport takes (url, timeout seconds) and returns the parsed JSON payload.
 Transport = Callable[[str, int], dict]
 # A reply takes (chat_id, text) and delivers it.
 Reply = Callable[[str, str], None]
+# A prompt takes (chat_id, text) and delivers it asking for a reply (force_reply).
+Prompt = Callable[[str, str], None]
 
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +167,26 @@ def parse_nullary_command(text: str) -> Optional[str]:
         return None
     cmd = t.split()[0].lstrip("/").split("@")[0].lower()  # strip @botname suffix
     return _NULLARY_COMMANDS.get(cmd)
+
+
+def parse_bare_ticker_command(text: str) -> Optional[str]:
+    """Return a prompt key when ``text`` is a ticker-needing command sent with NO
+    symbol (e.g. tapped from the Telegram menu), else None.
+
+    Keys are ``"quote"``, ``"directional"`` or ``"midweek"`` — the caller replies
+    with the matching prompt (force_reply) so the user can then type just a ticker.
+    """
+    t = (text or "").strip()
+    if not t.startswith("/"):
+        return None
+    parts = t.split()
+    if len(parts) > 1:
+        return None  # already has an argument — handled by the normal parsers
+    cmd = parts[0].lstrip("/").split("@")[0].lower()  # strip @botname suffix
+    if cmd in _COMMANDS:
+        return "quote"
+    key = _OPTION_COMMANDS.get(cmd)
+    return key if key in _PROMPTS else None
 
 
 def is_help(text: str) -> bool:
@@ -317,6 +360,7 @@ def run_bot(
     poll_timeout: int = 25,
     transport: Optional[Transport] = None,
     reply: Optional[Reply] = None,
+    prompt: Optional[Prompt] = None,
     quote_builder: Callable[..., str] = build_quote,
     option_builders: Optional[dict] = None,
     nullary_builders: Optional[dict] = None,
@@ -325,14 +369,39 @@ def run_bot(
 ) -> None:
     """Long-poll Telegram and answer quote requests until interrupted.
 
-    ``transport``/``reply``/``quote_builder``/``option_builders``/``nullary_builders``
-    are injectable for tests; ``once`` processes a single ``getUpdates`` batch.
+    ``transport``/``reply``/``prompt``/``quote_builder``/``option_builders``/
+    ``nullary_builders`` are injectable for tests; ``once`` processes a single
+    ``getUpdates`` batch. ``prompt`` sends a force_reply message (asking for a
+    ticker) when a ticker-needing command is tapped from the menu with no symbol.
     """
     token = token or get_telegram_bot_token()
     transport = transport or _http_get_json
     reply = reply or (lambda chat_id, text: send_telegram(text, chat_id=chat_id))
+    prompt = prompt or (lambda chat_id, text: send_telegram(
+        text, chat_id=chat_id,
+        reply_markup={"force_reply": True, "input_field_placeholder": "Ticker e.g. NVDA"},
+    ))
     option_builders = option_builders or _DEFAULT_OPTION_BUILDERS
     nullary_builders = nullary_builders or _DEFAULT_NULLARY_BUILDERS
+
+    def _dispatch_quote(chat_id, tk: str) -> None:
+        try:
+            out = quote_builder(tk, today=today)
+        except Exception as exc:
+            log.warning("quote build failed for %s: %s", tk, exc)
+            out = f"⚠️ Couldn't build a quote for {tk} right now."
+        reply(str(chat_id), out)
+
+    def _dispatch_option(chat_id, key: str, tk: str) -> None:
+        builder = option_builders.get(key)
+        if builder is None:
+            return
+        try:
+            out = builder(tk, today=today)
+        except Exception as exc:
+            log.warning("%s build failed for %s: %s", key, tk, exc)
+            out = f"⚠️ Couldn't build {key} for {tk} right now."
+        reply(str(chat_id), out)
 
     offset: Optional[int] = None
     while True:
@@ -353,27 +422,32 @@ def run_bot(
             if chat_id is None:
                 continue
 
+            # A reply to one of our force_reply prompts: the reply text is the
+            # ticker, and reply_to_message tells us which command it belongs to.
+            reply_to = msg.get("reply_to_message") or {}
+            route = _PROMPT_ROUTES.get(reply_to.get("text", ""))
+            if route is not None:
+                stripped = (text or "").strip()
+                cand = stripped.split()[0].upper() if stripped else ""
+                if not (cand.isalpha() and 1 <= len(cand) <= 5):
+                    reply(str(chat_id), "That doesn't look like a ticker. Send 1–5 letters, e.g. NVDA.")
+                    continue
+                kind, key = route
+                if kind == "quote":
+                    _dispatch_quote(chat_id, cand)
+                else:
+                    _dispatch_option(chat_id, key, cand)
+                continue
+
             ticker = parse_ticker(text)
             if ticker is not None:
-                try:
-                    out = quote_builder(ticker, today=today)
-                except Exception as exc:
-                    log.warning("quote build failed for %s: %s", ticker, exc)
-                    out = f"⚠️ Couldn't build a quote for {ticker} right now."
-                reply(str(chat_id), out)
+                _dispatch_quote(chat_id, ticker)
                 continue
 
             opt = parse_options_command(text)
             if opt is not None:
                 key, tk = opt
-                builder = option_builders.get(key)
-                if builder is not None:
-                    try:
-                        out = builder(tk, today=today)
-                    except Exception as exc:
-                        log.warning("%s build failed for %s: %s", key, tk, exc)
-                        out = f"⚠️ Couldn't build {key} for {tk} right now."
-                    reply(str(chat_id), out)
+                _dispatch_option(chat_id, key, tk)
                 continue
 
             nkey = parse_nullary_command(text)
@@ -386,6 +460,14 @@ def run_bot(
                         log.warning("%s build failed: %s", nkey, exc)
                         out = f"⚠️ Couldn't build {nkey} right now."
                     reply(str(chat_id), out)
+                continue
+
+            # A ticker-needing command tapped from the menu with no symbol —
+            # Telegram sent it immediately, so ask for the ticker (force_reply)
+            # instead of silently ignoring it.
+            bare = parse_bare_ticker_command(text)
+            if bare is not None:
+                prompt(str(chat_id), _PROMPTS[bare])
                 continue
 
             if is_help(text):
