@@ -1,3 +1,6 @@
+import sys
+from unittest.mock import MagicMock
+
 import pytest
 import pandas as pd
 from analytics.screening.swing import (
@@ -6,7 +9,8 @@ from analytics.screening.swing import (
     _atr_pct,
     _classify,
     SwingSetup,
-    format_swing_message
+    format_swing_message,
+    scan_swing_setups,
 )
 
 def test_theme_of():
@@ -88,3 +92,34 @@ def test_swing_targets_none_without_atr():
     s = SwingSetup(ticker="XYZ", price=150, setup="Breakout")  # atr_pct None
     assert s.stop_loss is None
     assert s.take_profit is None
+
+
+def test_scan_swing_setups_handles_multiindex_columns(monkeypatch):
+    # Regression: yf.download(group_by="ticker") returns MultiIndex columns
+    # like ('MU','Close') even for a single ticker. The scanner must extract the
+    # ticker sub-frame, not treat the whole thing as flat (which returned No-data).
+    n = 60
+    idx = pd.date_range("2026-01-01", periods=n, freq="D")
+    prices = [100.0 + i for i in range(n)]  # steady uptrend
+    frame = pd.DataFrame(
+        {
+            ("MU", "Open"): prices,
+            ("MU", "High"): [p + 1 for p in prices],
+            ("MU", "Low"): [p - 1 for p in prices],
+            ("MU", "Close"): prices,
+            ("MU", "Volume"): [1_000_000] * n,
+        },
+        index=idx,
+    )
+    frame.columns = pd.MultiIndex.from_tuples(frame.columns)
+
+    fake_yf = MagicMock()
+    fake_yf.download.return_value = frame
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+    monkeypatch.setattr("analytics.screening.swing.get_earnings_dates", lambda t: [])
+
+    setups = scan_swing_setups(["MU"])
+    assert len(setups) == 1
+    assert setups[0].ticker == "MU"
+    assert setups[0].setup != "No-data"
+    assert setups[0].price == pytest.approx(prices[-1], abs=0.01)

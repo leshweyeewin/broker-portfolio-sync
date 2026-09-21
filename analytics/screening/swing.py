@@ -228,7 +228,15 @@ def scan_swing_setups(
     results: list[SwingSetup] = []
     for ticker in clean:
         try:
-            hist = data if len(clean) == 1 else (data[ticker] if ticker in data else None)
+            # yf.download returns MultiIndex columns like ('MU','Close') even for a
+            # single ticker with group_by="ticker" — extract that ticker's OHLCV
+            # sub-frame. (The old ``data if len(clean)==1`` left the MultiIndex in
+            # place, so ``hist["Close"]`` raised KeyError → every single-ticker
+            # quote came back "No-data".)
+            if getattr(data.columns, "nlevels", 1) > 1:
+                hist = data[ticker] if ticker in data.columns.get_level_values(0) else None
+            else:
+                hist = data if len(clean) == 1 else None
             if hist is None or hist.empty:
                 results.append(SwingSetup(ticker, 0.0, "No-data", theme=theme_of(ticker)))
                 continue
