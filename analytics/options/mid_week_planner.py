@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Sequence
 
 from analytics.screening.screener import _build_quote_client, fetch_option_chain
@@ -25,6 +25,21 @@ def get_dte(expiry_str: str) -> int:
         return max(0, (exp - date.today()).days)
     except:
         return 30
+
+
+def _standard_short_expiries(today: date | None = None) -> list[str]:
+    """Upcoming standard Mon/Wed/Fri option-expiry dates within 0-5 DTE.
+
+    The planner only prints day/DTE templates — it uses no live prices — so when
+    the live yfinance expiry list is unavailable (throttled/offline) it can still
+    work off the standard weekly-expiry calendar instead of reporting no data.
+    """
+    today = today or date.today()
+    return [
+        (today + timedelta(days=i)).isoformat()
+        for i in range(0, 6)
+        if (today + timedelta(days=i)).weekday() in (0, 2, 4)  # Mon, Wed, Fri
+    ]
 
 def main(argv: Sequence[str] | None = None) -> int:
     import sys
@@ -48,21 +63,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"📅 MID-WEEK PLANNER: {ticker}")
         print(f"========================================")
         
+        exps = None
         try:
             import yfinance as yf
             logging.getLogger("yfinance").setLevel(logging.CRITICAL)
-            tk = yf.Ticker(ticker)
-            exps = tk.options
-            if not exps:
-                print(f"  [!] No options found for {ticker}")
-                continue
-                
+            exps = yf.Ticker(ticker).options
+        except Exception as e:
+            log.warning("Failed to fetch expiries for %s: %s", ticker, e)
+
+        if exps:
             short_exps = [e for e in exps if 0 <= get_dte(e) <= 5]
-            if not short_exps:
-                print(f"  [i] No short-dated (0-5 DTE) expiries for {ticker}.")
-                continue
-                
-            for exp in short_exps:
+        else:
+            # yfinance unavailable (throttled/offline) — the planner needs only the
+            # expiry calendar, not live prices, so fall back to standard expiries.
+            short_exps = _standard_short_expiries()
+            if short_exps:
+                print("  [i] Live options list unavailable — using the standard "
+                      "Mon/Wed/Fri expiry calendar.")
+
+        if not short_exps:
+            print(f"  [i] No short-dated (0-5 DTE) expiries for {ticker}.")
+            continue
+
+        for exp in short_exps:
+            try:
                 dte = get_dte(exp)
                 exp_date = date.fromisoformat(exp.replace("/", "-"))
                 day_name = exp_date.strftime("%A")
@@ -79,9 +103,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"    - [Protective Hedge] Buy OTM Put to protect long delta into {day_name} close.")
                 print(f"    - [Directional Trade] Buy Debit Spread if post-news catalyst is expected.")
                 print(f"    - [Short-Duration Income] Sell Credit Spread (Ensure position is closed by 3:55 PM to avoid assignment!)")
-                
-        except Exception as e:
-            log.warning(f"Failed to fetch {ticker}: {e}")
+            except Exception as e:
+                log.warning("Failed to render expiry %s for %s: %s", exp, ticker, e)
 
     return 0
 
