@@ -298,7 +298,11 @@ def test_upsert_inserts_new_entry_at_top(tmp_path):
     # Check that new file was created
     new_journal = tmp_path / "journals" / "2026-w33.ts"
     assert new_journal.exists()
-    assert "slug: \"2026-w33\"" in new_journal.read_text(encoding="utf-8")
+    new_text = new_journal.read_text(encoding="utf-8")
+    assert "slug: \"2026-w33\"" in new_text
+    # The standalone const must be valid TS — no "},;" and it ends with "};".
+    assert "},;" not in new_text
+    assert new_text.rstrip().endswith("};")
     
     # Check index file updated
     text = path.read_text(encoding="utf-8")

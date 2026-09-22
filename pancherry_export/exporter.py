@@ -563,7 +563,10 @@ def upsert_journal_entry(entry: dict, path: Path) -> bool:
     if journal_path.exists():
         return False
 
-    block = render_journal_entry(entry)
+    # render_journal_entry emits an array-element block ending in "},"; strip the
+    # trailing comma so the standalone `export const ... = {...};` is valid TS
+    # (otherwise the file ends with a "},;" syntax error).
+    block = render_journal_entry(entry).rstrip().rstrip(",")
     file_content = f"import {{ type WeeklyJournal }} from '../weeklyJournals';\n\nexport const {var_name}: WeeklyJournal = {block};\n"
     journal_path.write_text(file_content, encoding="utf-8")
 
