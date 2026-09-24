@@ -77,7 +77,7 @@ def test_nets_option_legs_and_signs_by_action():
         _opt("Tiger", "SNDK", "Call", "$1405.00", 3, "2026-08-14", "Buy"),    # long 3
         _opt("Tiger", "SNDK", "Call", "$1405.00", 1, "2026-08-14", "Sell"),   # net 1405 = 2
     ])
-    out = read_open_positions(client)
+    out = read_open_positions(client, today=date(2026, 8, 11))
     assert len(out) == 1
     legs = {(l.strike, l.qty) for l in out[0].legs}
     assert legs == {(Decimal(1400), Decimal(-4)), (Decimal(1405), Decimal(2))}
@@ -93,7 +93,7 @@ def test_skips_malformed_combo_underlying():
             _opt("Tiger", "SHOP", "Put", "$145.00", 1, "2026-08-21", "Sell"),
         ],
     )
-    tickers = [p.ticker for p in read_open_positions(client)]
+    tickers = [p.ticker for p in read_open_positions(client, today=date(2026, 8, 11))]
     assert tickers == ["SHOP"]
 
 
@@ -128,7 +128,7 @@ def test_open_leg_expiry_serial_is_rendered_as_iso():
         ["2026-08-11", "Tiger", "Sell Call", "AVGO", "Call", "$400.00", -2, 46249,
          "Sell", 1.0, 100.0, 1.0, "USD", "Open", "", "", "AVGO-x"],
     ])
-    legs = read_open_positions(client)[0].legs
+    legs = read_open_positions(client, today=date(2026, 8, 11))[0].legs
     assert legs[0].expiry == "2026-08-15"
 
 
@@ -145,7 +145,7 @@ def test_ignores_closed_status_rows():
         # A genuinely open leg on the same underlying survives.
         _opt("Tiger", "NVDA", "Put", "$180.00", 1, "2026-09-18", "Sell"),
     ])
-    out = read_open_positions(client)
+    out = read_open_positions(client, today=date(2026, 9, 15))
     assert len(out) == 1
     legs = [(l.type, l.strike, l.qty) for l in out[0].legs]
     assert legs == [("Put", Decimal(180), Decimal(-1))]   # closed 230 Call phantom gone
@@ -155,10 +155,25 @@ def test_ticker_with_only_options_still_appears():
     client = _client(options=[
         _opt("Tiger", "PLTR", "Put", "$40.00", 1, "2026-09-18", "Sell"),
     ])
-    out = read_open_positions(client)
+    out = read_open_positions(client, today=date(2026, 9, 15))
     assert out[0].ticker == "PLTR"
     assert out[0].shares == Decimal(0)
     assert out[0].legs[0].qty == Decimal(-1)
+
+
+def test_expired_option_legs_are_dropped():
+    # Regression: an option that expired before `today` but whose sheet row is
+    # still marked "Open" (expiry isn't a broker trade, so the sync never flips
+    # it to Closed) must NOT surface as a current holding. This is the "options
+    # ending 18 Sep still showing on 20 Sep" bug.
+    client = _client(options=[
+        _opt("Tiger", "AAPL", "Call", "$200.00", 1, "2026-09-18", "Buy"),   # expired
+        _opt("Tiger", "AAPL", "Put", "$180.00", 1, "2026-10-17", "Sell"),   # still live
+    ])
+    out = read_open_positions(client, today=date(2026, 9, 20))
+    assert len(out) == 1
+    legs = [(l.type, l.strike, l.expiry) for l in out[0].legs]
+    assert legs == [("Put", Decimal(180), "2026-10-17")]  # expired 18 Sep call gone
 
 
 # --------------------------------------------------------------------------- #

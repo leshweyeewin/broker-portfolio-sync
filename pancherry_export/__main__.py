@@ -57,7 +57,7 @@ def run(client, repo: Path, *, today: date, dry_run: bool = False,
         if not p.exists():
             raise SystemExit(f"Expected pancherry data file not found: {p}")
 
-    positions = read_open_positions(client)
+    positions = read_open_positions(client, today=today)
     entry = build_weekly_journal(read_closed_positions(client), today=today)
     names = load_names(get_ticker_names_path())
 
