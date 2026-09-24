@@ -42,6 +42,18 @@ def test_atr_pct_calculation():
     # TR is always 4. ATR is 4. Price is 10. 4 / 10 = 40%
     assert atr == 40.0
 
+
+def test_atr_pct_ignores_partial_premarket_bar():
+    # Regression: a pre-market run (06:00 job) gets a current-day bar with NaN
+    # High/Low from yfinance. That must not poison the ATR into nan% (which
+    # dropped TP/SL levels from the swing digest) — the partial row is skipped.
+    import numpy as np
+    rows = [{"High": 12, "Low": 8, "Close": 10} for _ in range(15)]
+    rows.append({"High": np.nan, "Low": np.nan, "Close": np.nan})  # today's empty bar
+    atr = _atr_pct(pd.DataFrame(rows))
+    assert atr == 40.0  # computed from the 15 complete rows, not NaN
+
+
 def test_classify():
     # Base: Missing MAs
     assert _classify(100, None, 50, 200, 50, 5)[0] == "Base"

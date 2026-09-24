@@ -138,17 +138,26 @@ def _rsi(closes, period: int = 14) -> Optional[float]:
 
 
 def _atr_pct(hist, period: int = 14) -> Optional[float]:
-    """14-day ATR as a % of last close (True Range averaged)."""
-    if len(hist) < period + 1:
+    """14-day ATR as a % of last close (True Range averaged).
+
+    Drops incomplete OHLC rows first — a pre-market run (e.g. the 06:00 job)
+    gets a partial current-day bar from yfinance with NaN High/Low, which would
+    otherwise poison the rolling mean and yield a ``nan%`` ATR (no TP/SL levels).
+    """
+    cols = ["High", "Low", "Close"]
+    if not all(c in hist.columns for c in cols):
         return None
-    high, low, close = hist["High"], hist["Low"], hist["Close"]
+    ohlc = hist[cols].dropna()
+    if len(ohlc) < period + 1:
+        return None
+    high, low, close = ohlc["High"], ohlc["Low"], ohlc["Close"]
     prev_close = close.shift(1)
     tr = (high - low).combine((high - prev_close).abs(), max).combine(
         (low - prev_close).abs(), max
     )
     atr = float(tr.rolling(period).mean().iloc[-1])
     last = float(close.iloc[-1])
-    if last <= 0:
+    if last <= 0 or atr != atr:  # atr != atr guards against a residual NaN
         return None
     return round(atr / last * 100, 1)
 
