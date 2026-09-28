@@ -62,7 +62,8 @@ def _repo(tmp_path):
 def test_pr_flag_calls_publish_and_reports_link(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(cli, "publish_draft_pr",
-                        lambda files, **kw: PRResult(url="https://gh/pull/9", created=True, committed=2))
+                        lambda files, **kw: captured.setdefault("files", files) and
+                        PRResult(url="https://gh/pull/9", created=True, committed=2))
 
     msgs = []
     cli.run(_client(), _repo(tmp_path), today=_TODAY, open_pr=True,
@@ -70,6 +71,13 @@ def test_pr_flag_calls_publish_and_reports_link(tmp_path, monkeypatch):
 
     assert "Draft PR opened" in msgs[0]
     assert "https://gh/pull/9" in msgs[0]
+
+    # The new per-week journal file must ride along in the same commit as the
+    # weeklyJournals.ts import that references it (regression: a prior version
+    # committed only openPositions.ts + weeklyJournals.ts, leaving the import
+    # pointing at a file that was never pushed — broke the pancherry build).
+    repo_paths = [f[0] for f in captured["files"]]
+    assert any(p.startswith("src/data/journals/") and p.endswith(".ts") for p in repo_paths)
 
 
 def test_rerun_emits_drift_warning_when_more_trades_close(tmp_path, monkeypatch):

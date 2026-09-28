@@ -99,8 +99,14 @@ def run(client, repo: Path, *, today: date, dry_run: bool = False,
         summary += f"\n   • {drift_note}"
 
     if open_pr:
-        pr_line = _do_pr(entry, [open_path, journal_path], j_status, drift_note,
-                         pr_settings or get_pancherry_gh_settings())
+        # The per-week file itself (src/data/journals/{slug}.ts) must ride along in
+        # the same PR as the weeklyJournals.ts import that references it — omitting
+        # it leaves an import pointing at a file that was never committed, which
+        # breaks the pancherry build once merged.
+        entry_path = journal_path.parent / "journals" / f"{entry['slug']}.ts"
+        entry_rel = _JOURNAL_REL.parent / "journals" / f"{entry['slug']}.ts"
+        pr_line = _do_pr(entry, [(open_path, _OPEN_REL), (journal_path, _JOURNAL_REL), (entry_path, entry_rel)],
+                         j_status, drift_note, pr_settings or get_pancherry_gh_settings())
         msg = summary + f"\n\n{pr_line}"
     else:
         msg = summary + f"\n\nReview & push:\n   cd {repo}\n   git diff"
@@ -127,8 +133,13 @@ def _drift_note(drift) -> str:
     return note
 
 
-def _do_pr(entry: dict, local_paths: list[Path], j_status: str, drift_note: str, settings: dict) -> str:
-    """Commit the local files + open/update the Draft PR; return a status line."""
+def _do_pr(entry: dict, path_pairs: list[tuple[Path, Path]], j_status: str, drift_note: str, settings: dict) -> str:
+    """Commit the local files + open/update the Draft PR; return a status line.
+
+    ``path_pairs`` is [(local_path, repo_relative_path), ...] — every file that
+    must land in the same commit, including the new per-week journal file so its
+    import in weeklyJournals.ts never points at something the PR forgot to add.
+    """
     title = f"pancherry weekly draft — {entry['slug']}"
     body = "\n".join([
         f"Auto-generated from the live sheet ({j_status}).",
@@ -142,7 +153,7 @@ def _do_pr(entry: dict, local_paths: list[Path], j_status: str, drift_note: str,
         "",
         "Merging this publishes to the live site. Nothing goes live until you merge.",
     ])
-    files = [(_OPEN_REL.as_posix(), str(local_paths[0])), (_JOURNAL_REL.as_posix(), str(local_paths[1]))]
+    files = [(rel.as_posix(), str(local)) for local, rel in path_pairs]
     try:
         result = publish_draft_pr(files, settings=settings, title=title, body=body)
     except PancherryPublishError as exc:
