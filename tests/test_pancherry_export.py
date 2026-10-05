@@ -269,6 +269,20 @@ def test_journal_handles_empty_week():
     assert j["highlights"] == []
 
 
+def test_slug_tracks_content_week_not_today():
+    # Regression: run on Mon Sep 28 (ISO week 40), but the trailing-7-day window
+    # only holds the prior week's (ISO week 39) closes. The slug must follow the
+    # content — w39 — so this run refreshes last week instead of seeding w40 with
+    # stale prose. (Anchoring to `today` here gave w40 → the duplicate recap bug.)
+    closed = [
+        _closed("SNDK", 500, return_pct="230.6", close="2026-09-25"),
+        _closed("BE", -80, return_pct="-38.3", close="2026-09-26", strategy="Long Call"),
+    ]
+    j = build_weekly_journal(closed, today=date(2026, 9, 28), window_days=7)
+    assert j["slug"] == "2026-w39"
+    assert j["title"] == "Weekly Recap · " + j["weekOf"]
+
+
 # --------------------------------------------------------------------------- #
 # render_journal_entry + upsert
 # --------------------------------------------------------------------------- #

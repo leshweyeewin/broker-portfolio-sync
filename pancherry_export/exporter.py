@@ -299,7 +299,15 @@ def build_weekly_journal(
     win_rate = round(len(winners) / (len(winners) + len(losers)) * 100) if (winners or losers) else 0
 
     start, end = _week_span(decided or recent, today, window_days)
-    iso_year, iso_week, _ = today.isocalendar()
+    # Slug tracks the *content* week (the ISO week the closes fall in), not
+    # today's ISO week. A run early in a new ISO week still has a trailing
+    # window full of the prior week's closes; anchoring the slug to `today`
+    # there seeds a fresh slug with last week's label/prose, and
+    # refresh_journal_stats() (which never rewrites title/prose) then locks
+    # that staleness in permanently. Anchoring to `end` makes that run refresh
+    # the correct prior week instead, and the new week gets a clean insert once
+    # its own trades land.
+    iso_year, iso_week, _ = end.isocalendar()
     week_label = _format_span(start, end)
 
     from collections import defaultdict
