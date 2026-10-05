@@ -128,15 +128,27 @@ class LongbridgeAdapter:
         return datetime.fromtimestamp(ts, tz=self._tz).date()
 
     # -- retry helper ------------------------------------------------------- #
+    # Substrings that mark a transient network failure worth retrying — a failed
+    # connect / dropped connection / timeout. These surface as e.g.
+    # "error sending request for url (...): client error (Connect)", the 6am blip
+    # that otherwise fails the first call and drops the whole Longbridge leg.
+    _TRANSIENT_NET_MARKERS = (
+        "connect", "connection", "timed out", "timeout", "sending request",
+    )
+
     def _call_with_retry(self, fn, *args, **kwargs):
-        """Execute a Longbridge API call with retry on rate limit (code 429002)."""
+        """Execute a Longbridge API call, retrying on a rate limit (code 429002)
+        or a transient network failure (failed connect / timeout). A non-transient
+        error (auth, bad request) is raised immediately."""
         import time
         for attempt in range(4):
             try:
                 return fn(*args, **kwargs)
             except Exception as e:
                 err_str = str(e).lower()
-                if ("429" in err_str or "limited" in err_str or "frequency" in err_str) and attempt < 3:
+                rate_limited = "429" in err_str or "limited" in err_str or "frequency" in err_str
+                transient_net = any(m in err_str for m in self._TRANSIENT_NET_MARKERS)
+                if (rate_limited or transient_net) and attempt < 3:
                     time.sleep((attempt + 1) * 2.0)
                 else:
                     raise

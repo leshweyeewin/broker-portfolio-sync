@@ -168,6 +168,14 @@ def expire_worthless_options(
     return closes
 
 
+# Broker-reported positions below this many units, with nothing on the pipeline
+# side, are fractional corporate-action slivers (voucher redemptions, dividend
+# reinvestment) that have no fetchable order/deal — ignored by reconcile so they
+# don't flag every run. One whole share: options trade in whole contracts, so a
+# sub-1 quantity can only be a fractional stock sliver.
+_FRACTIONAL_SHARE_EPSILON = 1.0
+
+
 def reconcile(
     holdings: Sequence[Holding], positions: Sequence[Position]
 ) -> list[str]:
@@ -201,6 +209,13 @@ def reconcile(
         # Allow minor floating point drift (shouldn't happen with Decimals but just in case)
         if abs(pipe_qty - brok_qty) > 1e-4:
             if pipe_qty == 0.0:
+                # A sub-1-share position the pipeline never saw is a fractional
+                # corporate-action sliver (voucher redemption, dividend
+                # reinvestment) — no order/deal exists to fetch and it isn't in
+                # the seed, so it would flag every run. Options are always whole
+                # contracts, so <1 unit can only be a fractional stock sliver.
+                if abs(brok_qty) < _FRACTIONAL_SHARE_EPSILON:
+                    continue
                 warnings.append(f"[{b_name}] Missing from pipeline: {i_key} (broker reports {brok_qty})")
             elif brok_qty == 0.0:
                 warnings.append(f"[{b_name}] Missing from broker: {i_key} (pipeline reports {pipe_qty})")

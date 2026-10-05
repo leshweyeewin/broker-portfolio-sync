@@ -274,6 +274,35 @@ class TestLongbridgeAdapter(unittest.TestCase):
             self.assertFalse(self.adapter._price_implausible_for_stock("X", Decimal("1")))
         self.assertFalse(self.adapter._price_implausible_for_stock("X", Decimal("0")))
 
+    def test_retry_recovers_from_transient_connect_error(self):
+        # The 6am blip: "error sending request ... client error (Connect)". A
+        # transient connect failure must be retried, not dropped (which would fail
+        # the whole Longbridge leg and mark the run PARTIAL).
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError(
+                    "OpenApiException: error sending request for url "
+                    "(https://openapi.longportapp.com/...): client error (Connect)"
+                )
+            return "ok"
+
+        with patch("time.sleep"):  # don't actually back off in the test
+            self.assertEqual(self.adapter._call_with_retry(flaky), "ok")
+        self.assertEqual(calls["n"], 2)
+
+    def test_retry_does_not_mask_non_transient_error(self):
+        # A genuine error (e.g. auth) must surface immediately, not be retried.
+        def auth_fail():
+            raise RuntimeError("OpenApiException: invalid access token")
+
+        with patch("time.sleep"):
+            with self.assertRaises(RuntimeError):
+                self.adapter._call_with_retry(auth_fail)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -156,6 +156,45 @@ class TestReconcile(unittest.TestCase):
         self.assertIn("Missing from pipeline", warnings[0])
         self.assertIn("TSLA", warnings[0])
 
+    def test_reconcile_ignores_fractional_corporate_action_sliver(self):
+        # A sub-1-share position the pipeline never saw (e.g. JPM 0.0149 redeemed
+        # from a voucher at $0 cost) has no fetchable deal and isn't in the seed;
+        # it must not flag "missing from pipeline" every run.
+        holdings = []
+        positions = [
+            Position(
+                broker=Broker.MOOMOO,
+                asset_type=AssetType.STOCK,
+                symbol="JPM",
+                qty=Decimal("0.0149"),
+                avg_cost=Decimal("0"),
+                currency="USD",
+                as_of=date.today(),
+            )
+        ]
+
+        self.assertEqual(reconcile(holdings, positions), [])
+
+    def test_reconcile_still_flags_whole_share_missing(self):
+        # Boundary: a full share (or more) with no pipeline side is a real missed
+        # fill and must still flag — the fractional tolerance is strictly <1.
+        holdings = []
+        positions = [
+            Position(
+                broker=Broker.MOOMOO,
+                asset_type=AssetType.STOCK,
+                symbol="JPM",
+                qty=Decimal("1"),
+                avg_cost=Decimal("300"),
+                currency="USD",
+                as_of=date.today(),
+            )
+        ]
+
+        warnings = reconcile(holdings, positions)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Missing from pipeline", warnings[0])
+
     def test_reconcile_option_match(self):
         # Regression: option keys must match despite Holding.instrument being a
         # formatted display string ("SPY 2026-03-20 400 Put") while the broker
