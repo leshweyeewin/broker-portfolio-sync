@@ -470,6 +470,100 @@ def test_backout_openings_reconciles_including_closed_instrument():
 
 
 # --------------------------------------------------------------------------- #
+# Orphan-option backstop: close an expired leg the fetch can no longer return
+# --------------------------------------------------------------------------- #
+class _OptionReaderWriter(FakeWriter):
+    """FakeWriter that also serves persisted option rows (read_all_option_trades)."""
+
+    def __init__(self, persisted_option_rows):
+        super().__init__()
+        self._persisted = persisted_option_rows
+
+    def read_all_option_trades(self):
+        return list(self._persisted)
+
+
+def _open_leg(underlying, otype, strike, expiry, action, premium, dedup_key):
+    return OptionTrade(
+        date=date(2026, 9, 9), broker=Broker.LONGBRIDGE, underlying=underlying,
+        option_type=otype, strike=Decimal(str(strike)), qty=1, expiry=expiry,
+        action=action, premium=Decimal(str(premium)), fee=0, currency="USD",
+        multiplier=Decimal("100"), dedup_key=dedup_key,
+    )
+
+
+def test_orphaned_open_options_filters():
+    expired = date(2026, 9, 18)
+    future = date(2026, 12, 18)
+    rows = [
+        # expired, Longbridge fetched OK, not in fetched set -> orphan
+        {"status": "Open", "trade": _open_leg("AMZN", OptionType.PUT, 245, expired,
+                                              OptionAction.SELL, "2.14", "LB:o1:0")},
+        # same but already Closed -> skip
+        {"status": "Closed", "trade": _open_leg("AMZN", OptionType.PUT, 240, expired,
+                                                OptionAction.BUY, "1.13", "LB:o1:1")},
+        # not yet expired -> skip
+        {"status": "Open", "trade": _open_leg("NVDA", OptionType.CALL, 200, future,
+                                              OptionAction.SELL, "3.00", "LB:o2:0")},
+    ]
+    # A leg whose broker did NOT fetch OK -> skip.
+    tiger_leg = _open_leg("SPY", OptionType.PUT, 400, expired, OptionAction.SELL, "1.0", "TG:o3:0")
+    object.__setattr__(tiger_leg, "broker", Broker.TIGER)
+    rows.append({"status": "Open", "trade": tiger_leg})
+
+    writer = _OptionReaderWriter(rows)
+    orphans = run_module._orphaned_open_options(
+        writer, current_options=[], fetched_brokers={Broker.LONGBRIDGE.value},
+        today=date(2026, 10, 6),
+    )
+    assert [t.dedup_key for t in orphans] == ["LB:o1:0"]
+
+
+def test_orphaned_open_options_skips_already_fetched():
+    expired = date(2026, 9, 18)
+    leg = _open_leg("AMZN", OptionType.PUT, 245, expired, OptionAction.SELL, "2.14", "LB:o1:0")
+    writer = _OptionReaderWriter([{"status": "Open", "trade": leg}])
+    # The leg IS in this run's fetched set -> must not be re-ingested (no dup).
+    orphans = run_module._orphaned_open_options(
+        writer, current_options=[leg], fetched_brokers={Broker.LONGBRIDGE.value},
+        today=date(2026, 10, 6),
+    )
+    assert orphans == []
+
+
+def test_run_sync_closes_orphaned_expired_option_leg():
+    """End to end: an expired Longbridge leg that the adapter can no longer fetch
+    is re-ingested from the sheet and closed worthless with the credit realized."""
+    expired = date(2026, 9, 18)
+    # Persisted on the sheet as a still-open short put (net credit 2.14).
+    persisted = [{
+        "status": "Open",
+        "trade": _open_leg("AMZN", OptionType.PUT, 245, expired,
+                           OptionAction.SELL, "2.14", "Longbridge:o1:0"),
+    }]
+    writer = _OptionReaderWriter(persisted)
+    # Longbridge fetches OK this run but returns NOTHING for the expired combo,
+    # and reports no option position for it.
+    adapter = FakeAdapter(Broker.LONGBRIDGE.value, options=[], positions=[])
+
+    result = run_sync([adapter], writer, FakeFx(), today=date(2026, 10, 6),
+                      notifier=RecordingNotifier())
+
+    # The opening leg is now Closed and a worthless-expiry close was written.
+    statuses = [_col(r, OPTIONS_HEADERS, "Status") for r in writer.option_rows]
+    assert "Closed" in statuses
+    assert all(s == "Closed" for s in statuses)
+    # Worthless short put -> full premium kept: (2.14 - 0) * 1 * 100 = 214 realized.
+    close_row = next(
+        r for r in writer.option_rows
+        if _col(r, OPTIONS_HEADERS, "Premium") in (0, 0.0)
+    )
+    assert _col(close_row, OPTIONS_HEADERS, "P/L") == 214.0
+    # No open option holdings left -> reconciliation clean.
+    assert result.reconciliation == "OK"
+
+
+# --------------------------------------------------------------------------- #
 # Dashboard: Net Capital In / Account Value / Total P/L
 # --------------------------------------------------------------------------- #
 def test_dashboard_total_pl_is_value_minus_capital():

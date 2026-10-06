@@ -454,6 +454,57 @@ def _synth_opening(journal: list, qty: Decimal, seed_date: date):
 
 
 # --------------------------------------------------------------------------- #
+# Backstop: re-ingest persisted open option legs the fetch can no longer return
+# --------------------------------------------------------------------------- #
+def _orphaned_open_options(
+    writer,
+    current_options: Sequence[OptionTrade],
+    fetched_brokers: set,
+    today: date,
+) -> list[OptionTrade]:
+    """Persisted ``Open`` option legs this run could not re-fetch.
+
+    The forward-run model recomputes holdings by re-fetching the whole journal
+    each run. A Longbridge vertical spread, though, is a combo order the adapter
+    can only decompose from a *live* position — so once it expires the position
+    disappears, the opening fills become unfetchable, the leg drops out of the
+    recomputed set, and its ``Open`` row on the sheet never closes (the
+    worthless-expiry step only sees recomputed holdings).
+
+    Re-ingest any leg that is still ``Open`` on the sheet, whose broker fetched
+    OK this run, that is already past expiry, and that is *not* in the re-fetched
+    set — so FIFO sees it again and :func:`expire_worthless_options` can flatten
+    it. Scoped tightly so a failed/skipped broker keeps its legs untouched and a
+    not-yet-expired gap stays visible to :func:`reconcile`.
+    """
+    reader = getattr(writer, "read_all_option_trades", None)
+    if reader is None:
+        return []
+    try:
+        persisted = reader()
+    except Exception:  # noqa: BLE001 — a read failure must never sink the run
+        log.warning("Orphan-option backstop: could not read persisted options", exc_info=True)
+        return []
+
+    have = {t.dedup_key for t in current_options}
+    orphans: list[OptionTrade] = []
+    for row in persisted:
+        if row.get("status") != "Open":
+            continue
+        t = row["trade"]
+        if t.broker.value not in fetched_brokers:
+            continue
+        if t.expiry is None or t.expiry >= today:
+            continue
+        if t.dedup_key in have:
+            continue
+        orphans.append(t)
+    if orphans:
+        log.info("Orphan-option backstop: re-ingesting %d unfetchable expired leg(s)", len(orphans))
+    return orphans
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
 def run_sync(
@@ -497,6 +548,7 @@ def run_sync(
     datas = [collect_broker_data(a, fetch_since) for a in adapters]
     fetch_errors = [(d.broker, d.error) for d in datas if d.error]
     ok = [d for d in datas if d.error is None]
+    fetched_brokers = {d.broker for d in ok}
 
     stocks = [t for d in ok for t in d.stocks]
     options = [t for d in ok for t in d.options]
@@ -517,6 +569,13 @@ def run_sync(
         ob_options = _backout_openings(ob_options, options, seed_date, _option_instrument)
     stocks = ob_stocks + stocks
     options = ob_options + options
+
+    # Backstop (forward runs only): re-ingest option legs that are still Open on
+    # the sheet but the fetch can no longer return (e.g. an expired Longbridge
+    # combo spread — see _orphaned_open_options), so the worthless-expiry close
+    # below can flatten their otherwise-permanently-stale Open rows.
+    if not seed:
+        options = options + _orphaned_open_options(writer, options, fetched_brokers, today)
 
     # 3. FIFO realized P/L + remaining holdings.
     stock_result = compute_stock_pl(stocks)
@@ -556,7 +615,6 @@ def run_sync(
     # Only reconcile brokers that were successfully fetched so an offline or
     # skipped broker doesn't flag all its persistent holdings as missing.
     holdings = list(stock_result.holdings) + list(option_result.holdings)
-    fetched_brokers = {d.broker for d in ok}
     holdings_to_reconcile = [h for h in holdings if h.broker.value in fetched_brokers]
     recon_warnings = reconcile(holdings_to_reconcile, positions)
 
