@@ -871,10 +871,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sync_exit = 0
     if adapters:
         fx = FxRates()
-        result = run_sync(
-            adapters, writer, fx,
-            since=args.since, seed=args.seed, notifier=notify_safe,
-        )
+        try:
+            result = run_sync(
+                adapters, writer, fx,
+                since=args.since, seed=args.seed, notifier=notify_safe,
+            )
+        except Exception as exc:
+            # A hard failure (e.g. a transient Sheets read that aborts the
+            # opening-balance load rather than silently returning []) must exit
+            # non-zero AND alert — run_sync only alerts on its own normal-path
+            # warnings, so without this a crash would be silent on Telegram.
+            # No sheet writes happen before the opening-balance read, so an
+            # abort there leaves the sheet untouched.
+            log.error("Sync run failed: %s", exc, exc_info=True)
+            notify_safe(f"❌ Broker sync FAILED {date.today().isoformat()}: "
+                        f"{type(exc).__name__}: {exc}")
+            return 1
         log.info(
             "Run %s — stocks +%d/~%d, options +%d/~%d, txns +%d, reconciliation: %s",
             result.status,

@@ -146,6 +146,28 @@ def _dedup_col_index(headers: list[str]) -> int:
     return headers.index("_dedup_key")
 
 
+def _is_missing_tab_error(exc: Exception) -> bool:
+    """True iff ``exc`` is the Sheets API's "unknown tab" error.
+
+    When a range names a tab that doesn't exist yet (e.g. a first run before
+    ``ensure_tabs``), ``spreadsheets().get`` rejects it with HTTP 400 and
+    "Unable to parse range". That is the ONLY read failure we treat as an empty
+    tab. Every other failure — network/DNS, timeout, 429/5xx, auth — is a
+    transient or environmental error that must propagate, never be read as "no
+    data" (a forward run that silently loads zero opening balances recomputes
+    holdings from the forward journal alone and writes phantom shorts; see the
+    2026-10-09 incident).
+    """
+    try:
+        from googleapiclient.errors import HttpError  # type: ignore
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(exc, HttpError):
+        return False
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    return status == 400 and "parse range" in str(exc).lower()
+
+
 def _money(x: Any) -> float | None:
     """Parse a spreadsheet money/number cell: strips $ , spaces; ( ) = negative."""
     if x is None or x == "":
@@ -725,9 +747,16 @@ class PortfolioWriter:
                 f"{tab}!A:{_col_letter(len(headers))}",
                 value_render_option="UNFORMATTED_VALUE",
             )
-        except Exception:  # noqa: BLE001
-            log.warning("Could not read %s", tab, exc_info=True)
-            return []
+        except Exception as exc:  # noqa: BLE001
+            # Only a genuinely-absent tab is "empty". Any other error (network,
+            # timeout, 429/5xx, auth) must abort the run rather than silently
+            # return [] — otherwise read_opening_balances loads nothing and the
+            # forward run writes phantom shorts (2026-10-09 incident).
+            if _is_missing_tab_error(exc):
+                log.warning("Tab %s does not exist yet — treating as empty", tab)
+                return []
+            log.error("Read of %s failed (transient/API error) — aborting run", tab, exc_info=True)
+            raise
         hr = DATA_HEADER_ROWS.get(tab, 1)
         return vals[hr:] if len(vals) > hr else []
 

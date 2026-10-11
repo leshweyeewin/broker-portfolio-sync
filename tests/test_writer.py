@@ -703,6 +703,66 @@ def test_read_all_trades_and_update_status_batch():
     assert updated_options[0]["status"] == "Closed"
 
 
+# --------------------------------------------------------------------------- #
+# Read-failure handling: a missing tab is empty, a transient error must raise
+# (regression guard for the 2026-10-09 phantom-shorts incident, where a
+# swallowed network error loaded zero opening balances).
+# --------------------------------------------------------------------------- #
+
+class _RaisingClient:
+    """SheetClient stand-in whose get_values always raises a given exception."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def get_values(self, range_: str, value_render_option: str = "FORMATTED_VALUE"):
+        raise self._exc
+
+
+def _missing_tab_http_error():
+    import json
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    resp = httplib2.Response({"status": 400})
+    content = json.dumps(
+        {"error": {"message": "Unable to parse range: Stocks!A:O"}}
+    ).encode()
+    return HttpError(resp, content)
+
+
+def test_read_missing_tab_returns_empty():
+    """A genuinely-absent tab (HTTP 400 'parse range') reads as empty."""
+    writer = PortfolioWriter(_RaisingClient(_missing_tab_http_error()))
+    assert writer.read_all_stock_trades() == []
+    stocks, options = writer.read_opening_balances()
+    assert stocks == [] and options == []
+
+
+def test_read_transient_error_raises():
+    """A network/transient error must propagate, not be swallowed as empty —
+    otherwise read_opening_balances loads nothing and the run writes phantom
+    shorts (2026-10-09 incident)."""
+    writer = PortfolioWriter(_RaisingClient(ConnectionError("getaddrinfo failed")))
+    with pytest.raises(ConnectionError):
+        writer.read_all_stock_trades()
+    with pytest.raises(ConnectionError):
+        writer.read_opening_balances()
+
+
+def test_read_server_5xx_raises():
+    """A 5xx from the Sheets API is transient, not a missing tab — must raise."""
+    import json
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    resp = httplib2.Response({"status": 503})
+    content = json.dumps({"error": {"message": "backend error"}}).encode()
+    writer = PortfolioWriter(_RaisingClient(HttpError(resp, content)))
+    with pytest.raises(HttpError):
+        writer.read_opening_balances()
+
+
 if __name__ == "__main__":
     import pytest as pt
     pt.main([__file__, "-v"])
