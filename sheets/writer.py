@@ -193,12 +193,48 @@ def _fmt_qty(n: float) -> Any:
     return int(n) if float(n).is_integer() else round(n, 4)
 
 
+def _signed_row_qty(row: dict[str, Any]) -> float | None:
+    """Signed quantity of a Stocks/Options tab row: Buy +, Sell -.
+
+    Trade rows store an unsigned Qty with the direction in Action; only seeded
+    "Opening Balance" rows carry a meaningful sign in Qty itself (the same
+    convention as core.fifo_pl). Summing raw Qty turned every short leg into a
+    long one in the Holdings tab.
+    """
+    qty = _money(row.get("Qty"))
+    if qty is None:
+        return None
+    action = (row.get("Action") or "").strip().lower()
+    if action == "sell":
+        return -abs(qty)
+    if action == "buy":
+        return abs(qty)
+    return qty  # Opening Balance (or no Action): keep the stored sign
+
+
+def _option_expired(row: dict[str, Any], today: date) -> bool:
+    """True iff the row's Expiry is parseable and strictly before ``today``."""
+    raw = row.get("Expiry")
+    if raw is None or raw == "":
+        return False
+    try:
+        return date.fromisoformat(sheet_date_to_iso(raw)) < today
+    except (TypeError, ValueError):
+        return False
+
+
 def build_holdings(
     stock_rows: list[dict[str, Any]],
     option_rows: list[dict[str, Any]],
     cash: dict[str, float] | None = None,
+    today: date | None = None,
 ) -> list[list[Any]]:
-    """Aggregate Status=Open rows into Deskpilot Holdings rows (pure/testable)."""
+    """Aggregate Status=Open rows into Deskpilot Holdings rows (pure/testable).
+
+    Short legs come out with a negative qty, and options past their expiry are
+    dropped even if the sync has not yet flipped their Status to Closed.
+    """
+    today = today or date.today()
     out: list[list[Any]] = []
 
     # --- Cash: supplied from actual brokers / environment (placed at top) ---
@@ -211,7 +247,7 @@ def build_holdings(
     for r in stock_rows:
         if (r.get("Status") or "").strip().lower() != "open":
             continue
-        qty = _money(r.get("Qty"))
+        qty = _signed_row_qty(r)
         price = _money(r.get("Price"))
         if qty is None:
             continue
@@ -238,9 +274,9 @@ def build_holdings(
     for r in option_rows:
         if (r.get("Status") or "").strip().lower() != "open":
             continue
-        qty = _money(r.get("Qty"))
+        qty = _signed_row_qty(r)
         prem = _money(r.get("Premium"))
-        if qty is None:
+        if qty is None or _option_expired(r, today):
             continue
         exp_raw = r.get("Expiry")
         exp_str = sheet_date_to_iso(exp_raw) if exp_raw is not None else ""
@@ -638,6 +674,7 @@ class PortfolioWriter:
         self,
         cash: dict[str, float] | None = None,
         enrich_prices: bool = True,
+        today: date | None = None,
     ) -> list[list[Any]]:
         """Read open stock and option rows from the sheet, aggregate into Deskpilot
         Holdings format, and overwrite the Holdings tab. Returns the generated rows."""
@@ -678,7 +715,7 @@ class PortfolioWriter:
         except Exception:
             log.warning("Could not read Options for holdings update", exc_info=True)
 
-        rows = build_holdings(stock_rows, opt_rows, cash=cash)
+        rows = build_holdings(stock_rows, opt_rows, cash=cash, today=today)
         if enrich_prices:
             _enrich_market_prices(rows)
         self.overwrite_holdings([HOLDINGS_HEADERS] + rows)

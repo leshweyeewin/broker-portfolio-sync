@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import os
+from datetime import date
 from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -64,7 +65,7 @@ def test_build_holdings_options_aggregation():
         {"Date": "2026-08-10", "Broker": "Tiger", "Stock": "AVGO", "Type": "CALL", "Strike": "380.0", "Qty": "1", "Expiry": "2026-08-21", "Premium": "5.00", "Currency": "USD", "Status": "Closed"},
     ]
 
-    holdings = build_holdings([], opt_rows)
+    holdings = build_holdings([], opt_rows, today=date(2026, 9, 1))
     assert len(holdings) == 2
 
     # NVDA Short Put: total qty = -3, weighted prem = (2*3.5 + 1*4.1) / 3 = 11.1 / 3 = 3.7
@@ -125,7 +126,7 @@ def test_update_holdings_in_portfolio_writer():
         {"range": f"{TAB_OPTIONS}!A1", "values": options_data},
     ])
 
-    rows = writer.update_holdings(cash={"USD": 5000.0})
+    rows = writer.update_holdings(cash={"USD": 5000.0}, today=date(2026, 9, 1))
     assert len(rows) == 3  # 1 stock, 1 option, 1 cash
 
     holdings_sheet = client.get_values(f"{TAB_HOLDINGS}!A1:Z100")
@@ -154,3 +155,34 @@ def test_update_holdings_in_portfolio_writer():
     assert opt_row[3] == "CALL"
     assert opt_row[4] == 2
     assert opt_row[7] == 98.0
+
+
+def test_build_holdings_signs_qty_by_action():
+    """Trade rows store unsigned Qty; Sell must come out short (negative)."""
+    opt_rows = [
+        {"Broker": "Longbridge", "Stock": "BMNR", "Type": "Put", "Strike": "21", "Qty": "1", "Expiry": "2026-11-20", "Action": "Sell", "Premium": "1.59", "Currency": "USD", "Status": "Open"},
+        {"Broker": "Longbridge", "Stock": "BMNR", "Type": "Put", "Strike": "20", "Qty": "1", "Expiry": "2026-11-20", "Action": "Buy", "Premium": "1.14", "Currency": "USD", "Status": "Open"},
+        # Opening Balance keeps its stored sign (seeded short).
+        {"Broker": "Tiger", "Stock": "TQQQ", "Type": "Call", "Strike": "77", "Qty": "-2", "Expiry": "2026-12-18", "Action": "Opening Balance", "Premium": "5.58", "Currency": "USD", "Status": "Open"},
+    ]
+    stock_rows = [
+        {"Broker": "Tiger", "Ticker": "XYZ", "Qty": "10", "Price": "5", "Action": "Sell", "Currency": "USD", "Status": "Open"},
+    ]
+    holdings = build_holdings(stock_rows, opt_rows, today=date(2026, 10, 27))
+    by = {(r[2], r[7]): r for r in holdings}
+    assert by[("BMNR", 21.0)][4] == -1 and by[("BMNR", 21.0)][9] == "sell-to-open"
+    assert by[("BMNR", 20.0)][4] == 1 and by[("BMNR", 20.0)][9] == "buy-to-open"
+    assert by[("TQQQ", 77.0)][4] == -2
+    assert next(r for r in holdings if r[0] == "position")[4] == -10
+
+
+def test_build_holdings_drops_expired_options():
+    """Options past expiry are not holdings even if Status is still Open."""
+    opt_rows = [
+        {"Broker": "MooMoo", "Stock": "AMD", "Type": "Put", "Strike": "610", "Qty": "1", "Expiry": "2026-10-21", "Action": "Sell", "Premium": "2.5", "Currency": "USD", "Status": "Open"},
+        {"Broker": "MooMoo", "Stock": "NET", "Type": "Put", "Strike": "325", "Qty": "1", "Expiry": "2026-10-30", "Action": "Sell", "Premium": "3.27", "Currency": "USD", "Status": "Open"},
+        # expiring today is still live
+        {"Broker": "MooMoo", "Stock": "MU", "Type": "Put", "Strike": "970", "Qty": "1", "Expiry": "2026-10-27", "Action": "Sell", "Premium": "4", "Currency": "USD", "Status": "Open"},
+    ]
+    holdings = build_holdings([], opt_rows, today=date(2026, 10, 27))
+    assert sorted(r[2] for r in holdings) == ["MU", "NET"]
