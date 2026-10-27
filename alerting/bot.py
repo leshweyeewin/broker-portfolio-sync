@@ -276,12 +276,10 @@ def _capture_cli(cli_main: Callable[[list], int], *args: str) -> str:
     return buf.getvalue()
 
 
-def _trim_for_telegram(text: str, limit: int = 3500) -> str:
-    """Strip and cap CLI output so it fits a single Telegram message (< 4096)."""
-    text = (text or "").strip()
-    if len(text) > limit:
-        text = text[:limit].rstrip() + "\n…(truncated)"
-    return text
+def _trim_for_telegram(text: str) -> str:
+    """Strip CLI output. No length cap: ``send_telegram`` splits long text into
+    multiple messages, so truncating here would only drop content."""
+    return (text or "").strip()
 
 
 def build_directional(ticker: str, *, today: Optional[date] = None) -> str:

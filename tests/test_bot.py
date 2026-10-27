@@ -358,7 +358,7 @@ def test_capture_cli_and_trim():
     assert "scan NVDA" in _capture_cli(fake_main, "NVDA")
     assert "scan ALL" in _capture_cli(fake_main)  # nullary: main([])
     assert _trim_for_telegram("  hi  ") == "hi"
-    assert _trim_for_telegram("x" * 5000).endswith("(truncated)")
+    assert _trim_for_telegram("x" * 5000) == "x" * 5000  # no cap; send_telegram splits
 
 
 def test_register_commands_posts_menu():

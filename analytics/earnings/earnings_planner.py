@@ -39,6 +39,20 @@ def build_earnings_plan_row(cand: IVCrushCandidate) -> list[Any]:
         cand.verdict_reason,
     ]
 
+def refresh_earnings_plan(writer: PortfolioWriter, tickers: list[str] | None = None) -> int:
+    """Scan ``tickers`` (default: the monitored watchlist + held names) and overwrite
+    the Earnings Plan tab. Returns the number of rows written (0 = left untouched)."""
+    from analytics.earnings.iv_crush import earnings_universe
+
+    cands = scan_iv_crush(tickers or earnings_universe())
+    rows = [build_earnings_plan_row(c) for c in cands]
+    if not rows:
+        return 0
+    writer.ensure_tabs()
+    writer.overwrite_earnings_plan([EARNINGS_PLAN_HEADERS] + rows)
+    return len(rows)
+
+
 def main(argv=None) -> int:
     import sys
     if hasattr(sys.stdout, "reconfigure"):

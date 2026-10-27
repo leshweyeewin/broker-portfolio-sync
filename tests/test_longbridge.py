@@ -20,7 +20,7 @@ pytest.importorskip("longport")  # optional broker SDK; skip when not installed
 from longport.openapi import OrderSide, OrderStatus, CashFlowDirection
 from adapters.longbridge import LongbridgeAdapter, LongbridgeCredentials
 from adapters.base import (
-    Broker, StockAction, CashType, AssetType, OptionAction, OptionType,
+    Broker, StockAction, CashType, AssetType, OptionAction, OptionType, Position,
 )
 
 
@@ -28,9 +28,10 @@ from adapters.base import (
 
 class FakeExecution:
     """Fill-level record from history_executions (the discovery source)."""
-    def __init__(self, order_id, trade_done_at):
+    def __init__(self, order_id, trade_done_at, price="1"):
         self.order_id = order_id
         self.trade_done_at = trade_done_at
+        self.price = price
 
 
 class FakeOrderDetail:
@@ -234,6 +235,29 @@ class TestLongbridgeAdapter(unittest.TestCase):
         self.mock_client.history_executions.return_value = [FakeExecution(oid, dt)]
         self.mock_client.order_detail.return_value = FakeOrderDetail(
             oid, symbol, side, price, qty, dt, total_amount)
+
+    def test_fee_less_combo_fill_routed_to_options_not_stock(self):
+        # Fees post late: a vertical spread (net 0.45 + legs 1.59 / 1.14) with an
+        # EMPTY charge_detail must still be an option combo, never a dropped "stock".
+        dt = datetime(2026, 10, 27, 2, 56, tzinfo=timezone.utc)
+        self.mock_client.history_executions.return_value = [
+            FakeExecution("c1", dt, p) for p in ("0.45", "1.59", "1.14")]
+        self.mock_client.order_detail.return_value = FakeOrderDetail(
+            "c1", "BMNR.US", OrderSide.Sell, "0.45", "1", dt, "0.00")
+        legs = [
+            Position(broker=Broker.LONGBRIDGE, asset_type=AssetType.OPTION, symbol="BMNR",
+                     qty=Decimal("-1"), avg_cost=Decimal("1.59"), currency="USD",
+                     as_of=date(2026, 10, 27), option_type=OptionType.PUT,
+                     strike=Decimal("21"), expiry=date(2026, 11, 20), multiplier=Decimal("100")),
+            Position(broker=Broker.LONGBRIDGE, asset_type=AssetType.OPTION, symbol="BMNR",
+                     qty=Decimal("1"), avg_cost=Decimal("1.14"), currency="USD",
+                     as_of=date(2026, 10, 27), option_type=OptionType.PUT,
+                     strike=Decimal("20"), expiry=date(2026, 11, 20), multiplier=Decimal("100")),
+        ]
+        with patch.object(LongbridgeAdapter, "fetch_positions", return_value=legs):
+            opts = self.adapter.fetch_option_executions(date(2026, 10, 20))
+        self.assertEqual(sorted(t.strike for t in opts), [Decimal("20"), Decimal("21")])
+        self.assertEqual(self.adapter.fetch_stock_executions(date(2026, 10, 20)), [])
 
     def test_zero_fee_low_price_fill_dropped_as_misreported_option(self):
         # MRVL "1 share" @ $4.89 with no fees, spot ~$217 → option premium, drop it.

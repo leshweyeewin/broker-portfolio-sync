@@ -915,6 +915,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             log.error("Analytics failed: %s", exc, exc_info=True)
             return 1
 
+        # Keep the Earnings Plan tab fresh; best-effort so it never fails the run.
+        try:
+            from analytics.earnings.earnings_planner import refresh_earnings_plan
+            n = refresh_earnings_plan(writer)
+            log.info("Earnings Plan tab refreshed (%d rows).", n)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Earnings Plan refresh failed: %s", exc, exc_info=True)
+
     return sync_exit
 
 

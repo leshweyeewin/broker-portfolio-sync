@@ -156,24 +156,24 @@ class LongbridgeAdapter:
     # -- executions --------------------------------------------------------- #
     def _order_detail(self, order_id: str):
         """Fetch an order's full detail (fields + charge_detail), with a
-        rate-limit retry. Returns None if it can't be read."""
+        rate-limit retry. Raises if it can't be read: silently skipping an order
+        would drop its fills while the run still reports OK (phantom "Missing from
+        pipeline" mismatches); raising marks the Longbridge leg PARTIAL instead."""
         import time
         import re
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 time.sleep(0.1)  # small throttle to avoid bursting API limit
                 return self._client.order_detail(order_id)
             except Exception as e:  # noqa: BLE001
                 err_str = str(e).lower()
-                if ("429" in err_str or "limited" in err_str) and attempt < 2:
+                if ("429" in err_str or "limited" in err_str) and attempt < 3:
                     # e.g. "rate limit of 30-second interval has been reached, please retry after: 19.5s"
                     m = re.search(r"retry after:\s*([0-9.]+)", err_str)
                     sleep_time = float(m.group(1)) + 0.5 if m else 2.0 * (attempt + 1)
                     time.sleep(sleep_time)
                 else:
-                    print(f"Warning: Could not fetch order_detail for {order_id}: {e}")
-                    return None
-        return None
+                    raise RuntimeError(f"Could not fetch order_detail for {order_id}: {e}") from e
 
     @staticmethod
     def _fee(detail) -> Decimal:
@@ -196,6 +196,18 @@ class LongbridgeAdapter:
                 if code.startswith("Options") or "option" in code.lower():
                     return True
         return False
+
+    @staticmethod
+    def _is_combo_fills(prices: list) -> bool:
+        """True for a 2-leg combo's fills: 3 prices where one is |difference| of
+        the other two (e.g. 0.45 net vs legs 1.59 / 1.14)."""
+        if len(prices) != 3:
+            return False
+        a, b, c = sorted(prices)
+        return a > 0 and abs((c - b) - a) <= Decimal("0.011")
+
+    def _is_option_order(self, order) -> bool:
+        return self._has_option_fees(order) or order.order_id in getattr(self, "_combo_order_ids", ())
 
     @staticmethod
     def _has_fee_data(detail) -> bool:
@@ -269,7 +281,7 @@ class LongbridgeAdapter:
                 continue
             code = str(order.symbol).split(".")[0]  # Longbridge uses AAPL.US
             price = dec(order.executed_price or order.price or "0")
-            if is_option_code(code) or self._has_option_fees(order):
+            if is_option_code(code) or self._is_option_order(order):
                 continue  # option execution — handled by fetch_option_executions
 
             # Longbridge occasionally reports an option/combo close under the bare
@@ -312,7 +324,7 @@ class LongbridgeAdapter:
             legs = parse_option_legs(code)
 
             if legs is None:
-                if not self._has_option_fees(order):
+                if not self._is_option_order(order):
                     continue  # stock — handled by fetch_stock_executions
 
                 # Combo order returned with parent underlying symbol (e.g. CRWV.US)
@@ -420,14 +432,20 @@ class LongbridgeAdapter:
         # Unique order_ids, remembering each order's latest fill time.
         order_ids: list = []
         fill_dt: dict = {}
+        prices: dict = {}
         for ex in executions:
             oid = ex.order_id
             done_at = ex.trade_done_at
+            prices.setdefault(oid, []).append(dec(ex.price))
             if oid not in fill_dt:
                 order_ids.append(oid)
                 fill_dt[oid] = done_at
             elif done_at > fill_dt[oid]:
                 fill_dt[oid] = done_at
+
+        # Option combos (vertical spreads) report as 3 fills: the net price plus
+        # each leg. Fee data posts late, so this is the fee-independent tell.
+        self._combo_order_ids = {oid for oid, p in prices.items() if self._is_combo_fills(p)}
 
         out: list = []
         for oid in order_ids:
