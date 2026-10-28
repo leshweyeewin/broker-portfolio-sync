@@ -18,9 +18,12 @@ from pathlib import Path
 from typing import Literal, Sequence
 
 from adapters.base import dec
-from analytics.options.payoff import OptionLeg, PayoffSummary, summarize_expiry
+from analytics.options.payoff import OptionLeg, PayoffSummary, assignment_exposure, summarize_expiry
 
 PLAN_STORE = Path("analytics") / "data" / "trade_plans.json"
+
+# Day 2 structure test: the second leg must have one stated job.
+SECOND_LEG_PURPOSES = ("fund", "protect", "cap_risk")
 
 
 class PlanStatus(str, Enum):
@@ -54,6 +57,7 @@ class TradePlan:
     snapshot_id: str = ""
     status: PlanStatus = PlanStatus.DRAFT
     lesson: str = ""
+    second_leg_purpose: str = ""
     plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -66,6 +70,8 @@ class TradePlan:
             raise ValueError("ticker and strategy are required")
         if self.bias not in ("bullish", "bearish", "neutral"):
             raise ValueError("invalid bias")
+        if self.second_leg_purpose and self.second_leg_purpose not in SECOND_LEG_PURPOSES:
+            raise ValueError(f"second_leg_purpose must be one of {SECOND_LEG_PURPOSES}")
         if self.risk_budget is not None:
             object.__setattr__(self, "risk_budget", dec(self.risk_budget))
             if self.risk_budget <= Decimal("0"):
@@ -74,6 +80,10 @@ class TradePlan:
     @property
     def payoff(self) -> PayoffSummary | None:
         return summarize_expiry(self.legs) if self.legs else None
+
+    @property
+    def assignment_exposure(self) -> tuple[str, ...]:
+        return assignment_exposure(self.legs)
 
 
 def validate_plan(plan: TradePlan, *, for_approval: bool = False) -> tuple[ValidationIssue, ...]:
@@ -93,6 +103,9 @@ def validate_plan(plan: TradePlan, *, for_approval: bool = False) -> tuple[Valid
                 issues.append(ValidationIssue(field, f"{field.replace('_', ' ')} is required before approval"))
         if plan.risk_budget is None:
             issues.append(ValidationIssue("risk_budget", "risk budget is required before approval"))
+        if len(plan.legs) > 1 and not plan.second_leg_purpose:
+            issues.append(ValidationIssue(
+                "second_leg_purpose", f"state the second leg's job ({'/'.join(SECOND_LEG_PURPOSES)}) before approval"))
         if any(leg.expiry is None for leg in plan.legs):
             issues.append(ValidationIssue("legs", "each leg needs an expiry before approval"))
         if payoff is not None and payoff.max_loss is None:
@@ -163,6 +176,7 @@ def _plan_to_dict(plan: TradePlan) -> dict:
         "risk_budget": str(plan.risk_budget) if plan.risk_budget is not None else None,
         "catalyst_date": plan.catalyst_date.isoformat() if plan.catalyst_date else None,
         "snapshot_id": plan.snapshot_id, "status": plan.status.value, "lesson": plan.lesson,
+        "second_leg_purpose": plan.second_leg_purpose,
         "created_at": plan.created_at.isoformat(), "updated_at": plan.updated_at.isoformat(),
         "legs": [{"right": leg.right, "side": leg.side, "strike": str(leg.strike), "premium": str(leg.premium),
                   "quantity": str(leg.quantity), "multiplier": str(leg.multiplier),
@@ -177,6 +191,7 @@ def _plan_from_dict(raw: dict) -> TradePlan:
         entry_trigger=raw.get("entry_trigger", ""), invalidation=raw.get("invalidation", ""), exit_rule=raw.get("exit_rule", ""),
         risk_budget=raw.get("risk_budget"), catalyst_date=date.fromisoformat(raw["catalyst_date"]) if raw.get("catalyst_date") else None,
         snapshot_id=raw.get("snapshot_id", ""), status=PlanStatus(raw.get("status", "draft")), lesson=raw.get("lesson", ""),
+        second_leg_purpose=raw.get("second_leg_purpose", ""),
         plan_id=raw["plan_id"], created_at=datetime.fromisoformat(raw["created_at"]), updated_at=datetime.fromisoformat(raw["updated_at"]),
     )
 
@@ -205,6 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--entry-trigger", default="")
     create.add_argument("--invalidation", default="")
     create.add_argument("--exit-rule", default="")
+    create.add_argument("--second-leg-purpose", choices=SECOND_LEG_PURPOSES, default="")
     create.add_argument("--risk-budget")
     create.add_argument("--snapshot-id", default="")
     create.add_argument("--approve", action="store_true")
@@ -221,13 +237,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         expiry = date.fromisoformat(args.expiry)
         plan = TradePlan(args.ticker, args.strategy, tuple(_parse_leg(value, expiry) for value in args.leg),
                          thesis=args.thesis, entry_trigger=args.entry_trigger, invalidation=args.invalidation,
-                         exit_rule=args.exit_rule, risk_budget=args.risk_budget, snapshot_id=args.snapshot_id)
+                         exit_rule=args.exit_rule, risk_budget=args.risk_budget, snapshot_id=args.snapshot_id,
+                         second_leg_purpose=args.second_leg_purpose)
         if args.approve:
             plan = transition(plan, PlanStatus.APPROVED)
     except ValueError as exc:
         parser.error(str(exc))
     saved = store.save(plan)
     print(f"Saved {saved.status.value} plan {saved.plan_id}")
+    for line in saved.assignment_exposure:
+        print(f"  {line}")
     return 0
 
 

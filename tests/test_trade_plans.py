@@ -11,7 +11,7 @@ def _complete_plan():
     return TradePlan(
         ticker="AAPL", strategy="Bull Call Spread", legs=bull_call_spread(200, 5, 210, 2, expiry=date(2026, 9, 18)),
         thesis="breakout", entry_trigger="close above 200", invalidation="below 195", exit_rule="50% target",
-        risk_budget="400", snapshot_id="snapshot-1",
+        risk_budget="400", snapshot_id="snapshot-1", second_leg_purpose="fund",
     )
 
 
@@ -45,3 +45,25 @@ def test_json_store_round_trip_preserves_notes_and_decimal_legs(tmp_path):
     assert restored.legs[0].premium == Decimal("5")
     assert restored.payoff.max_loss == Decimal("300")
     assert store.list()[0].plan_id == saved.plan_id
+
+
+def test_multi_leg_plan_needs_second_leg_purpose_to_approve():
+    from dataclasses import replace
+    plan = replace(_complete_plan(), second_leg_purpose="")
+    with pytest.raises(ValueError, match="second leg"):
+        transition(plan, PlanStatus.APPROVED)
+    with pytest.raises(ValueError, match="second_leg_purpose"):
+        TradePlan("AAPL", "x", (), second_leg_purpose="hope")
+
+
+def test_second_leg_purpose_round_trips(tmp_path):
+    store = TradePlanStore(tmp_path / "p.json")
+    saved = store.save(_complete_plan())
+    assert store.get(saved.plan_id).second_leg_purpose == "fund"
+
+
+def test_assignment_exposure_describes_short_legs_only():
+    from analytics.options.payoff import put_credit_spread
+    plan = TradePlan("AMZN", "Bull Put", put_credit_spread(95, 2, 94, 1, expiry=date(2026, 9, 18)))
+    (line,) = plan.assignment_exposure
+    assert "buy 100 shares @ 95" in line and "$9,500.00" in line

@@ -41,7 +41,8 @@ class PortfolioRiskMetrics:
 def calculate_portfolio_risk(
     holdings: Sequence[Holding],
     total_aum: Decimal,
-    guardrails: RiskGuardrails = RiskGuardrails()
+    guardrails: RiskGuardrails = RiskGuardrails(),
+    available_cash: Decimal | None = None,
 ) -> PortfolioRiskMetrics:
     aggregate_max_loss = ZERO
     assignment_notional = ZERO
@@ -84,6 +85,11 @@ def calculate_portfolio_risk(
         if short_alloc_pct > guardrails.max_short_premium_pct:
             warnings.append(f"Short premium allocation ({short_alloc_pct:.1%}) exceeds maximum ({guardrails.max_short_premium_pct:.1%})")
             
+    # Size to cash, never to margin: short-put assignment must be fundable.
+    if available_cash is not None and assignment_notional > available_cash:
+        warnings.append(
+            f"Cash if assigned (${assignment_notional:,.0f}) exceeds available cash (${available_cash:,.0f})")
+
     for sym, count in concentration.items():
         if count > guardrails.max_contracts_per_underlying:
             warnings.append(f"Concentration in {sym} ({count} contracts) exceeds maximum ({guardrails.max_contracts_per_underlying})")
@@ -105,6 +111,7 @@ def main(argv=None) -> int:
         
     ap = argparse.ArgumentParser()
     ap.add_argument("--aum", type=float, default=100000.0, help="Total Portfolio AUM for percentage checks")
+    ap.add_argument("--cash", type=float, default=None, help="Available cash for the cash-if-assigned check")
     args = ap.parse_args(argv)
     
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -115,7 +122,8 @@ def main(argv=None) -> int:
     res = compute_option_pl(option_trades)
     
     aum = Decimal(str(args.aum))
-    risk = calculate_portfolio_risk(res.holdings, aum)
+    risk = calculate_portfolio_risk(
+        res.holdings, aum, available_cash=Decimal(str(args.cash)) if args.cash is not None else None)
     
     print("\n" + "="*40)
     print("🛡️ PORTFOLIO RISK DASHBOARD")

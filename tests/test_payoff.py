@@ -109,3 +109,26 @@ def test_rejects_invalid_contract_data_and_negative_underlying_price():
         OptionLeg("call", "buy", 100, 1, multiplier=0)
     with pytest.raises(ValueError, match="non-negative"):
         payoff_at_expiry(-1, [long_call(100, 2)])
+
+
+# Moomoo Day 2 class examples (1 contract, x100 multiplier).
+@pytest.mark.parametrize("legs, breakeven, max_gain, max_loss", [
+    (bull_call_spread(100, 4, 110, 1), "103", "700", "300"),
+    (bear_put_spread(100, 4, 90, 1), "97", "700", "300"),
+    (put_credit_spread(95, 2, 90, 1), "94", "100", "400"),
+    (call_credit_spread(105, 2, 110, 1), "106", "100", "400"),
+])
+def test_day2_class_examples(legs, breakeven, max_gain, max_loss):
+    result = summarize_expiry(legs)
+    assert result.breakevens == (Decimal(breakeven),)
+    assert result.max_profit == Decimal(max_gain)
+    assert result.max_loss == Decimal(max_loss)
+
+
+def test_assignment_exposure_short_put_and_call():
+    from analytics.options.payoff import assignment_exposure, short_call, short_put
+    (put,) = assignment_exposure([short_put(95, "2.5")])
+    assert "buy 100 shares @ 95" in put and "$9,500.00" in put
+    (call,) = assignment_exposure([short_call(105, 2)])
+    assert "sell 100 shares @ 105" in call
+    assert assignment_exposure([long_call(100, 4)]) == ()

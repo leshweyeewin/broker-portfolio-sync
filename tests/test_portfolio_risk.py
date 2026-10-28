@@ -32,3 +32,11 @@ def test_calculate_portfolio_risk():
     
     assert any("UNLIMITED RISK" in w and "TSLA" in w for w in metrics.guardrail_warnings)
     assert any("Aggregate risk (33.0%) exceeds maximum (25.0%)" in w for w in metrics.guardrail_warnings)
+
+
+def test_cash_if_assigned_gate():
+    csp = Holding(broker="tiger", instrument="AMZN 2026-09-18 95 put", symbol="AMZN", qty=Decimal("-1"), avg_price=Decimal("2"), open_fees=Decimal("0"), currency="USD", multiplier=Decimal("100"), option_type=OptionType.PUT, strike=Decimal("95"), expiry=date(2026, 9, 18))
+    short = calculate_portfolio_risk([csp], Decimal("100000"), available_cash=Decimal("1330"))
+    assert any("Cash if assigned" in w for w in short.guardrail_warnings)
+    ok = calculate_portfolio_risk([csp], Decimal("100000"), available_cash=Decimal("20000"))
+    assert not any("Cash if assigned" in w for w in ok.guardrail_warnings)

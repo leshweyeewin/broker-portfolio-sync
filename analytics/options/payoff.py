@@ -199,6 +199,23 @@ def cash_secured_put(strike, premium, *, quantity=1, multiplier=100, expiry: dat
     return short_put(strike, premium, quantity=quantity, multiplier=multiplier, expiry=expiry)
 
 
+def assignment_exposure(option_legs: Sequence[OptionLeg]) -> tuple[str, ...]:
+    """Plain-English stock position each short leg would create if assigned.
+
+    Short put -> buy shares at the strike (cash out); short call -> sell shares
+    at the strike (shares delivered).  Long legs carry no assignment duty.
+    """
+    lines = []
+    for leg in option_legs:
+        if leg.side != "sell":
+            continue
+        shares = leg.quantity * leg.multiplier
+        cash = leg.strike * shares
+        verb, flow = ("buy", "cash needed") if leg.right == "put" else ("sell", "shares needed")
+        lines.append(f"short {leg.strike:f} {leg.right} -> assigned: {verb} {shares:f} shares @ {leg.strike:f} ({flow}: ${cash:,.2f})")
+    return tuple(lines)
+
+
 def _net_credit(option_legs: Sequence[OptionLeg]) -> Decimal:
     return sum(
         ((leg.premium if leg.side == "sell" else -leg.premium) * leg.quantity * leg.multiplier for leg in option_legs),

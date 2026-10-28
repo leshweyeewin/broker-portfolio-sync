@@ -65,3 +65,16 @@ is ≤ 2%. Until then, treat this as a disciplined rebuild, not an income accoun
 - [ ] Hard stop set so realized loss ≤ ~$27 (2%)
 - [ ] Order fits cash (no buying-power rejection)
 - [ ] This trade's max loss is not larger than my average winner
+
+## Pre-entry statement (Moomoo Day 1–2)
+
+Say these out loud before any entry; `trade_plans.py` prints the assignment line
+and refuses to approve a multi-leg plan without a second-leg purpose.
+
+- Contract dollars (premium x 100) and **expiry break-even**
+- **Maximum loss** and maximum gain
+- The **exact stock position assignment could create** (e.g. short $95 put ->
+  buy 100 shares, $9,500 cash) - `portfolio_risk --cash` warns when that
+  exceeds available cash
+- **Structure test:** the second leg's job in one word - `fund`, `protect` or
+  `cap_risk`. If you can't name it, don't place the spread.
