@@ -90,3 +90,28 @@ def test_system_sentence_and_csv_loader(tmp_path):
     p.write_text("date,open,close\n2026-01-01,1,1\n2026-01-01,1,1\n")
     with pytest.raises(ValueError):
         load_csv(p)
+
+
+def test_fetch_bars_falls_back_and_caches(tmp_path, monkeypatch):
+    from analytics.backtest import data
+
+    def boom(*a):
+        raise RuntimeError("no creds")
+
+    good = [Bar(date(2026, 1, 2), Decimal("2"), Decimal("3")), Bar(date(2026, 1, 1), Decimal("1"), Decimal("2"))]
+    monkeypatch.setitem(data.PROVIDERS, "longbridge", boom)
+    monkeypatch.setitem(data.PROVIDERS, "yfinance", lambda *a: good)
+    bars, used = data.fetch_bars("AAPL", date(2026, 1, 1), date(2026, 2, 1))
+    assert used == "yfinance"
+    data.save_csv(sorted(bars, key=lambda b: b.day), tmp_path / "a.csv")
+    assert load_csv(tmp_path / "a.csv")[0].open == Decimal("1")
+    monkeypatch.setitem(data.PROVIDERS, "yfinance", boom)
+    with pytest.raises(RuntimeError, match="no price data"):
+        data.fetch_bars("AAPL", date(2026, 1, 1), date(2026, 2, 1))
+
+
+def test_longbridge_symbol_and_bar_normalising():
+    from analytics.backtest.data import _to_bars, longbridge_symbol
+    assert longbridge_symbol("aapl") == "AAPL.US" and longbridge_symbol("700.HK") == "700.HK"
+    bars = _to_bars([(date(2026, 1, 2), 2, 3), (date(2026, 1, 1), 1, 2), (date(2026, 1, 3), 0, 0)])
+    assert [b.day.day for b in bars] == [1, 2]

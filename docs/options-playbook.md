@@ -153,7 +153,10 @@ python -m analytics.backtest prices.csv --rule mean_reversion --period 20 --k 2
 - **Metrics** (`metrics.py`), read together: return, Sharpe, max drawdown, win
   rate, avg gain/loss, "one average loss erases N average wins", trades, holding
   period, exposure. Fewer than 30 trades prints a noise warning.
-- **Input**: CSV with `date,open,close` columns.
+- **Input**: a CSV with `date,open,close` columns, or a ticker to fetch live
+  history (`python -m analytics.backtest AAPL --years 3 --save-csv aapl.csv`).
+  `data.py` tries Longbridge (`LONGBRIDGE_*` env credentials, forward-adjusted
+  daily candles) and falls back to yfinance; `--provider` forces one.
 
 Stage 2 (modelled option pricing) and stage 3 (stored chain snapshots) plug in
 behind the same `RuleSpec` / `BacktestResult` model; the live per-rule scorecard
