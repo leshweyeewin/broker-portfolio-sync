@@ -133,3 +133,28 @@ computing net debit and approximate max profit for the diagonal.
 - Broker fills and positions remain the accounting source of truth; a trade plan
   is a separate, user-authored intent record that may be linked to fills later.
 
+
+## Rule backtests (Moomoo Day 3, stage 1)
+
+`analytics/backtest/` turns an idea into a testable system. It is pure and
+read-only: you pass in daily bars; it never fetches data or touches a broker.
+
+```bash
+python -m analytics.backtest prices.csv --rule mean_reversion --period 20 --k 2
+```
+
+- **Rule spec** (`rules.py`): the "system sentence" as data — signal, structure,
+  size, exit. Defaults: Bollinger mean reversion (close < lower band → enter,
+  close > mean → exit) and trend following (close > upper band → enter,
+  close < mean → exit). Use defaults before optimising.
+- **Timing** (`engine.py`): signal observed at the close, fill at the *next*
+  open — a trade never fills before its signal exists. Fixed fee per fill plus
+  adverse slippage (bps). Long-only, one position at a time.
+- **Metrics** (`metrics.py`), read together: return, Sharpe, max drawdown, win
+  rate, avg gain/loss, "one average loss erases N average wins", trades, holding
+  period, exposure. Fewer than 30 trades prints a noise warning.
+- **Input**: CSV with `date,open,close` columns.
+
+Stage 2 (modelled option pricing) and stage 3 (stored chain snapshots) plug in
+behind the same `RuleSpec` / `BacktestResult` model; the live per-rule scorecard
+in `journal.py` follows.
