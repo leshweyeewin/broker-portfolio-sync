@@ -158,6 +158,44 @@ python -m analytics.backtest prices.csv --rule mean_reversion --period 20 --k 2
   `data.py` tries Longbridge (`LONGBRIDGE_*` env credentials, forward-adjusted
   daily candles) and falls back to yfinance; `--provider` forces one.
 
-Stage 2 (modelled option pricing) and stage 3 (stored chain snapshots) plug in
-behind the same `RuleSpec` / `BacktestResult` model; the live per-rule scorecard
-in `journal.py` follows.
+### Stage 2 – spreads with modelled pricing
+
+```bash
+python -m analytics.backtest AAPL --rule weekly_income --structure put_credit --width 2 --risk-pct 0.05
+```
+
+`option_engine.py` runs the same signals through a defined-risk spread
+(`put_credit`, `call_credit`, `bull_call_debit`, `bear_put_debit`). Strikes come
+from a target delta (default 0.20 credit / 0.50 debit) and premiums from
+Black-Scholes using trailing realised vol x 1.15. Stops and targets are checked
+on closes and executed at the next open; a position held to expiry settles at
+intrinsic value. Defaults follow `trading-rules.md`: stop at 1x the credit,
+profit target at 50%, $1 per contract per leg, 3c slippage.
+
+- **Sizing:** contracts = equity x `--risk-pct` / max loss. If one contract's
+  max loss exceeds the budget the signal is **skipped and counted** (e.g. a
+  2% budget on a $1,330 account skips every 1-wide spread).
+- **Rules:** add `weekly_income` (enter Friday close -> Monday open, leave by
+  stop/target/expiry) beside the Bollinger rules.
+- **Caveat:** no skew, no real bid/ask. Treat output as a comparison between
+  rules and sizes, not a dollar forecast; reports are labelled "modelled".
+
+### Stage 3 – spreads from stored chain snapshots
+
+1. Record chains daily: `python -m analytics.backtest.snapshots record --from-brokers`
+   (Tiger if available, else yfinance; keeps IV; strikes within +/-20% and
+   7-50 DTE; `scripts/setup/daily_chain_snapshot_register.ps1` schedules it
+   for 05:15 SGT, after the US close). `snapshots list` shows coverage.
+2. Backtest from them: `python -m analytics.backtest AAPL --rule weekly_income
+   --structure put_credit --pricing snapshot`.
+
+Snapshot mode uses the **real expiry, strikes and quotes**: delta-nearest short
+leg, both legs must pass the liquidity gate (open interest, bid-ask width), and
+entries fill at the natural side (sell bid / buy ask; `--fill mid` to relax).
+A snapshot must be dated the fill day or the signal day and within 3% of the
+bar's open. Signals with no usable snapshot are skipped and reported, never
+invented. Exits use a snapshot mid if one exists that day, else the model, and
+the report flags modelled exits. Coverage starts the day you begin recording,
+so early results will carry the small-sample warning.
+
+The live per-rule scorecard in `journal.py` is the remaining Day 3 piece.

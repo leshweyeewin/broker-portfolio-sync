@@ -30,6 +30,7 @@ class Trade:
     return_pct: Decimal   # pnl / cost of entry
     bars_held: int
     forced: bool = False  # closed at the end of data, not by the rule
+    note: str = ""        # why it closed: rule/stop/target/expiry/forced (+ modelled_exit)
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,11 @@ class BacktestResult:
     bars_in_market: int
     first_day: date
     last_day: date
+    pricing: str = "stock"          # stock | modelled | snapshot
+    structure: str = "long stock"
+    risk: str = ""                 # sizing text for the system sentence
+    signals: int = 0                # entry signals seen
+    skipped: tuple[tuple[str, int], ...] = ()   # (reason, count) for signals not traded
 
 
 def run_backtest(

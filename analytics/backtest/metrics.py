@@ -52,6 +52,14 @@ def compute_metrics(result: BacktestResult) -> Metrics:
         warnings.append(f"only {n} trades (<{MIN_TRADES}): treat results as noise, not evidence")
     if any(t.forced for t in result.trades):
         warnings.append("last position was force-closed at the end of the data")
+    skipped = sum(c for _, c in result.skipped)
+    if skipped:
+        detail = ", ".join(f"{r}: {c}" for r, c in result.skipped)
+        warnings.append(f"{skipped} of {result.signals} signals not traded ({detail})")
+    if result.pricing == "modelled":
+        warnings.append("modelled option pricing: no skew, no real bid/ask - approximate, compare rules not dollars")
+    if any("modelled_exit" in t.note for t in result.trades) and result.pricing == "snapshot":
+        warnings.append("some exits were priced by the model (no snapshot on that day)")
     if erased is not None and erased > 1:
         warnings.append(f"one average loss erases {erased:.1f} average wins")
 
@@ -71,9 +79,9 @@ def compute_metrics(result: BacktestResult) -> Metrics:
 def format_report(result: BacktestResult, m: Metrics) -> str:
     f = lambda v, spec: "n/a" if v is None else format(v, spec)
     lines = [
-        f"Backtest: {result.rule.name} v{result.rule.version}  (stock-level, long-only)",
+        f"Backtest: {result.rule.name} v{result.rule.version}  ({result.pricing} pricing, {result.structure})",
         f"Sample: {result.first_day} -> {result.last_day}, {len(result.equity)} bars, {m.trades} trades",
-        result.rule.system_sentence(),
+        result.rule.system_sentence(result.structure, result.risk or None),
         "",
         f"Return        {m.total_return_pct:+.1f}%",
         f"Sharpe        {f(m.sharpe, '.2f')}",

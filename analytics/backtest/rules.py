@@ -31,9 +31,9 @@ class RuleSpec:
     size_fraction: Decimal = Decimal("0.25")  # share of equity per entry
     version: str = "1"
 
-    def system_sentence(self) -> str:
-        return (f"When {self.entry_text}, trade {self.structure}, risk "
-                f"{self.size_fraction:.0%} of equity, exit when {self.exit_text}.")
+    def system_sentence(self, structure: str | None = None, risk: str | None = None) -> str:
+        return (f"When {self.entry_text}, trade {structure or self.structure}, risk "
+                f"{risk or f'{self.size_fraction:.0%} of equity'}, exit when {self.exit_text}.")
 
 
 def bollinger(bars: Sequence[Bar], i: int, period: int, k: float) -> tuple[float, float, float] | None:
@@ -84,4 +84,19 @@ def trend_following(period: int = 20, k: float = 2.0, size_fraction: str = "0.25
     )
 
 
-DEFAULT_RULES = {"mean_reversion": mean_reversion, "trend": trend_following}
+def weekly_income(weekday: int = 4, size_fraction: str = "0.25") -> RuleSpec:
+    """Enter after the close of ``weekday`` (default Friday -> Monday open); no
+    signal exit: the position leaves by stop, target or expiry."""
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return RuleSpec(
+        name=f"weekly_income_{names[weekday].lower()}",
+        idea="repeatedly sell a defined-risk boundary on a fixed schedule",
+        entry_text=f"{names[weekday]} closes (enter next open)",
+        exit_text="stop, profit target or expiry",
+        entry=lambda bars, i: bars[i].day.weekday() == weekday,
+        exit=lambda bars, i: False,
+        size_fraction=Decimal(size_fraction),
+    )
+
+
+DEFAULT_RULES = {"mean_reversion": mean_reversion, "trend": trend_following, "weekly_income": lambda **kw: weekly_income()}

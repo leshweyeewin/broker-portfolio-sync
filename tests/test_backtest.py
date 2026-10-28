@@ -115,3 +115,85 @@ def test_longbridge_symbol_and_bar_normalising():
     assert longbridge_symbol("aapl") == "AAPL.US" and longbridge_symbol("700.HK") == "700.HK"
     bars = _to_bars([(date(2026, 1, 2), 2, 3), (date(2026, 1, 1), 1, 2), (date(2026, 1, 3), 0, 0)])
     assert [b.day.day for b in bars] == [1, 2]
+
+
+# ------------------------- stage 2 / 3: option backtests ------------------------- #
+def _daily(n, price_fn, start=date(2026, 1, 5)):
+    bars, d = [], start
+    while len(bars) < n:
+        if d.weekday() < 5:
+            p = price_fn(len(bars))
+            bars.append(Bar(d, Decimal(str(round(p, 2))), Decimal(str(round(p, 2)))))
+        d += timedelta(days=1)
+    return bars
+
+
+def test_bs_parity_and_delta_strike_round_trip():
+    from analytics.backtest.pricing import bs_price, strike_for_delta
+    from analytics.screening.screener import _bs_delta
+    c, p = bs_price(100, 100, 0.25, 0.3, True), bs_price(100, 100, 0.25, 0.3, False)
+    assert c - p == pytest.approx(100 - 100 * 2.718281828 ** (-0.045 * 0.25), abs=1e-6)
+    k = strike_for_delta(100, 35 / 365, 0.3, 0.2, is_call=False)
+    assert abs(_bs_delta(100, k, 35, 0.3, False)) == pytest.approx(0.2, abs=0.01)
+
+
+def test_modelled_put_credit_expires_worthless_on_flat_market():
+    from analytics.backtest.option_engine import SpreadStructure, run_option_backtest
+    from analytics.backtest.rules import weekly_income
+    bars = _daily(90, lambda i: 100 + (0.2 if i % 2 else 0))
+    r = run_option_backtest(bars, weekly_income(), SpreadStructure("put_credit", width=2),
+                            capital=20000, stop_multiple=None, profit_target=None)
+    assert r.pricing == "modelled" and r.trades
+    assert all(t.pnl > 0 for t in r.trades if t.note == "expiry")
+    assert compute_metrics(r).warnings
+
+
+def test_modelled_crash_loses_at_most_width_and_risk_budget_gate_skips():
+    from analytics.backtest.option_engine import SpreadStructure, run_option_backtest
+    from analytics.backtest.rules import weekly_income
+    bars = _daily(80, lambda i: 100 if i < 40 else 60)
+    st = SpreadStructure("put_credit", width=2)
+    r = run_option_backtest(bars, weekly_income(), st, capital=20000, risk_pct=0.05, fee_per_contract=0,
+                            stop_multiple=None, profit_target=None, slippage_per_share=0)
+    worst = min(t.pnl for t in r.trades)
+    assert worst >= -Decimal(2 * 100 * 10)  # never beyond width x 100 x contracts(<=10)
+    tiny = run_option_backtest(bars, weekly_income(), st, capital=1330, risk_pct=0.02)
+    assert not tiny.trades and any("risk budget" in k for k, _ in tiny.skipped)
+
+
+def _snap_quotes(ticker, expiry, spot, day):
+    from datetime import datetime, timezone
+    from analytics.options.option_chain import OptionChainSnapshot, OptionContract, OptionQuote
+    qs = []
+    for k, bid, ask, delta in [(95, "1.90", "2.10", "-0.20"), (93, "1.20", "1.40", "-0.12")]:
+        qs.append(OptionQuote(OptionContract(f"{ticker}P{k}", ticker, expiry, k, "put"),
+                              datetime(day.year, day.month, day.day, 14, tzinfo=timezone.utc), "delayed",
+                              bid=bid, ask=ask, open_interest=500, delta=delta, implied_volatility="0.3"))
+    return OptionChainSnapshot(ticker, spot, datetime(day.year, day.month, day.day, 14, tzinfo=timezone.utc), "delayed", tuple(qs))
+
+
+def test_snapshot_pricing_uses_real_quotes_skips_missing_and_settles_at_expiry(tmp_path):
+    from analytics.backtest.option_engine import SpreadStructure, run_option_backtest
+    from analytics.backtest.rules import weekly_income
+    from analytics.backtest.snapshots import SnapshotLibrary, save_snapshot
+    bars = _daily(40, lambda i: 100)
+    fills = [b for b in bars if b.day.weekday() == 0][1:3]   # two Monday fills
+    lib = SnapshotLibrary(tmp_path)
+    save_snapshot(_snap_quotes("XYZ", fills[0].day + timedelta(days=35), 100, fills[0].day), tmp_path)
+    r = run_option_backtest(bars, weekly_income(), SpreadStructure("put_credit", width=2, dte=35),
+                            ticker="XYZ", pricing="snapshot", capital=20000, snapshots=lib,
+                            stop_multiple=None, profit_target=None, fee_per_contract=0)
+    assert r.pricing == "snapshot"
+    assert r.trades and r.trades[0].entry_price == Decimal("0.5")   # sell bid 1.90, buy ask 1.40
+    assert any(k == "no snapshot" for k, _ in r.skipped)
+    assert "snapshot" in format_report(r, compute_metrics(r))
+
+
+def test_snapshot_library_round_trip_and_listing(tmp_path):
+    from analytics.backtest.snapshots import SnapshotLibrary, save_snapshot
+    snap = _snap_quotes("ABC", date(2026, 3, 20), 100, date(2026, 2, 13))
+    save_snapshot(snap, tmp_path)
+    lib = SnapshotLibrary(tmp_path)
+    assert lib.days("abc") == [date(2026, 2, 13)]
+    assert lib.get("ABC", date(2026, 2, 13)).snapshot_id == snap.snapshot_id
+    assert lib.get("ABC", date(2026, 2, 14)) is None

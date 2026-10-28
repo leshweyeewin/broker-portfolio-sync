@@ -21,6 +21,7 @@ is installed by `scripts/setup/daily_sync_register.ps1`.
 | Intraday | Long-option take-profit | `python -m alerting.take_profit` | reads **live** broker positions → Telegram: long options at/above +50% unrealized (`--dry-run` prints instead) |
 | Intraday | Earnings IV Exit | `python -m alerting.earnings_iv_exit` | reads **live** broker positions → Telegram: alerts to close short premium options day before earnings |
 | Daily 16:30 | IV Logger | `python -m analytics.earnings.iv_logger` | fetches options chain → **writes** `analytics/data/iv_history.json` |
+| Daily 05:15 | Chain snapshots | `python -m analytics.backtest.snapshots record --from-brokers` | fetches option chains → **writes** `analytics/data/chain_history/<TICKER>/<date>.json.gz` (stage-3 backtest data; install with `scripts/setup/daily_chain_snapshot_register.ps1`) |
 | On-demand | Earnings Planner | `python -m analytics.earnings.earnings_planner` | reads `iv_history.json` → **writes** Earnings Plan sheet tab |
 | On-demand | Position sizing (2% rule) | `python -m analytics.risk.position_sizing --equity 25000 --entry 180 --stop 174` | prints shares/contracts sized to a fixed % of equity (options: `--max-loss-per-contract`) |
 
