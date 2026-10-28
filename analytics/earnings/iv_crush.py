@@ -82,6 +82,7 @@ class IVCrushCandidate:
     iv_percentile: Optional[float] = None       # Step 1
     crush_consistency: Optional[float] = None   # Step 2 — fraction 0..1 IV fell post-earnings
     crush_magnitude_pct: Optional[float] = None # Step 3 — avg post-earnings IV drop %
+    rules_check: str = ""                       # gate verdict vs docs/trading-rules.md for the live spread
 
     @property
     def signal(self) -> str:
@@ -117,7 +118,8 @@ class IVCrushCandidate:
         return (f"[{self.grade}/4 {self.verdict}] {self.ticker} — "
                 f"{self.earnings_date} ({when}) · {self.signal}\n"
                 f"   implied {imp} vs hist {hist} {self.hist_bias} · {ivp}{crush} · "
-                f"{self.bias} → {self.strategy}{bounds}")
+                f"{self.bias} → {self.strategy}{bounds}"
+                + (f"\n   {self.rules_check}" if self.rules_check else ""))
 
 
 def _sma(vals: list[float], window: int) -> Optional[float]:
@@ -343,16 +345,19 @@ def scan_iv_crush(
                             if res.candidates:
                                 c = res.candidates[0]
                                 cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} | Cr: ${c.net_credit:.2f}]"
+                                cand.rules_check = _gate(ev.ticker, c)
                         elif cand.bias == "Bearish":
                             res = build_call_credit_spreads(snap, exp_dt, filters=SpreadFilters(min_credit=Decimal("0.20")))
                             if res.candidates:
                                 c = res.candidates[0]
                                 cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} | Cr: ${c.net_credit:.2f}]"
+                                cand.rules_check = _gate(ev.ticker, c)
                         else:
                             res = build_iron_condors(snap, exp_dt, filters=SpreadFilters(min_credit=Decimal("0.50")))
                             if res.candidates:
                                 c = res.candidates[0]
                                 cand.strategy += f" [Live: {target_exp} {c.legs[0].strike}/{c.legs[1].strike} & {c.legs[2].strike}/{c.legs[3].strike} | Cr: ${c.net_credit:.2f}]"
+                                cand.rules_check = _gate(ev.ticker, c)
 
         except Exception as exc:
             log.debug("IV-crush scan failed for %s: %s", ev.ticker, exc)
@@ -362,6 +367,17 @@ def scan_iv_crush(
     edge_rank = {"RICH": 0, "FAIR": 1, "CHEAP": 2, None: 3}
     out.sort(key=lambda c: (-c.grade, edge_rank.get(c.edge, 3), c.days_left, c.ticker))
     return out
+
+
+def _gate(ticker: str, spread) -> str:
+    """Compact verdict of a live spread vs the written trading rules (never raises)."""
+    try:
+        from analytics.risk.rules_gate import check_trade
+        return check_trade(ticker, max_loss=spread.max_loss, width=spread.width,
+                           cash_needed=spread.max_loss).summary()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("rules gate failed for %s: %s", ticker, exc)
+        return ""
 
 
 def playbook_grade(cand: "IVCrushCandidate") -> tuple[int, str]:

@@ -394,3 +394,39 @@ def test_run_bot_survives_transport_error():
         once=True,
     )
     assert sent == []
+
+
+# ------------------------- rules / evidence commands ------------------------- #
+def test_parse_check_command():
+    from alerting.bot import parse_check_command
+    assert parse_check_command("/check AMZN pcs 95/94 0.33") == ("AMZN", "put_credit", 95.0, 94.0, 0.33)
+    assert parse_check_command("/check@MyBot nvda bcs 100/110 3") == ("NVDA", "bull_call_debit", 100.0, 110.0, 3.0)
+    assert parse_check_command("/check") == ""
+    assert parse_check_command("/check AMZN zzz 95/94 0.33") == ""
+    assert parse_check_command("/quote AMZN") is None
+
+
+def test_build_check_states_contract_numbers_and_rules(monkeypatch):
+    from alerting.bot import build_check
+    monkeypatch.setenv("ACCOUNT_EQUITY", "1330")
+    out = build_check(("AMZN", "put_credit", 95.0, 94.0, 0.33))
+    assert "Collect $33" in out and "max loss $67" in out and "break-even $94.67" in out
+    assert "long 94 leg offsets" in out and "never exceed 5%" in out
+    assert "banned" in build_check(("SNDQ", "put_credit", 10.0, 9.0, 0.3))
+    assert build_check("").startswith("Usage")
+
+
+def test_bot_routes_check_backtest_and_rules():
+    sent = []
+    updates = {"result": [
+        {"update_id": 1, "message": {"chat": {"id": 1}, "text": "/check AMZN pcs 95/94 0.33"}},
+        {"update_id": 2, "message": {"chat": {"id": 1}, "text": "/backtest NVDA"}},
+        {"update_id": 3, "message": {"chat": {"id": 1}, "text": "/rules"}},
+        {"update_id": 4, "message": {"chat": {"id": 1}, "text": "/help"}},
+    ]}
+    run_bot(token="t", transport=lambda url, to: updates, reply=lambda c, t: sent.append(t),
+            option_builders={"backtest": lambda tk, today=None: f"BT {tk}"},
+            nullary_builders={"rules": lambda today=None: "SCORECARD"},
+            check_builder=lambda spec: f"CHK {spec[0]}", once=True)
+    assert sent[:3] == ["CHK AMZN", "BT NVDA", "SCORECARD"]
+    assert "/check" in sent[3] and "/backtest" in sent[3] and "/rules" in sent[3]

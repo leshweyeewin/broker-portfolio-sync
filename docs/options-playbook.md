@@ -209,3 +209,21 @@ drawdown of cumulative realised P/L, with the same 30-trade noise warning as
 the backtests. Closed trades that match **no plan** are listed under `(no plan)`
 - trading without a written rule is itself a result. Compare a rule's live line
 with its backtest to see whether real fills and discipline match the assumptions.
+
+## Where these show up (Telegram & weekly jobs)
+
+| Surface | What you see | Needs |
+|---|---|---|
+| `/check AMZN pcs 95/94 0.33` (bot) | Pre-entry statement - contract dollars, max loss/gain, break-even, assignment note - plus the trading-rules verdict. Codes: `pcs`/`ccs` credit (short/long strike), `bcs`/`bps` debit (long/short strike); last number = premium per share | `ACCOUNT_EQUITY`, `ACCOUNT_CASH` for the % / cash rules |
+| `/backtest NVDA` (bot) | 3y Bollinger mean-reversion + trend (stock) and a weekly put-credit-spread (modelled), compact | price history (Longbridge/yfinance) |
+| `/rules` (bot) | Live scorecard by rule from your realised option trades; `(no plan)` bucket | Sheet access |
+| `/quote NVDA` (bot) | Adds a cached "Rule evidence" line | refreshed weekly |
+| `/spreads`, weekly digest, daily earnings section | Each live earnings credit spread gets a `rules:` verdict (width, max-loss %, banned underlying, cash) | `ACCOUNT_EQUITY` |
+| `/directional` | Bull-call / bear-put / long / CSP lines tagged with the same verdict; a CSP is flagged as a naked short put (rule 1) | `ACCOUNT_EQUITY` |
+| Weekly digest | New "Rule evidence" section for names reporting within the earnings horizon (auto-refreshes stale cache) and a "Rule scorecard" section | - |
+
+Environment (all optional): `ACCOUNT_EQUITY`, `ACCOUNT_CASH`, `RULE_MAX_WIDTH`
+(default 1), `BANNED_UNDERLYINGS` (comma list added to the built-in leveraged/
+inverse set). Register the menu with `python -m alerting.bot --register-commands`.
+Standalone: `python -m analytics.risk.rules_gate AMZN --max-loss 67 --width 1`,
+`python -m analytics.backtest.evidence --from-brokers`.

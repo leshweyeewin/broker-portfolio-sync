@@ -427,6 +427,15 @@ def _get_snapshot(client, ticker: str) -> OptionChainSnapshot | None:
         return None
 
 
+def _rules(ticker, max_loss, width=None, cash_needed=None) -> str:
+    """`` | rules: ...`` tag vs docs/trading-rules.md (empty if the gate can't run)."""
+    try:
+        from analytics.risk.rules_gate import check_trade
+        return " | " + check_trade(ticker, max_loss=max_loss, width=width, cash_needed=cash_needed).summary()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _fmt(value) -> str:
     """Format an optional Decimal for the CLI (``n/a`` when unavailable)."""
     return "n/a" if value is None else f"{value:.2f}"
@@ -471,7 +480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 c = bcs.candidates[0]
                 strikes = "/".join(str(l.strike) for l in c.legs)
                 print(f"  [Bull Call] {exp} {strikes} | Debit: ${_fmt(c.net_debit)} | "
-                      f"Max Loss: ${_fmt(c.max_loss)} | Max Profit: ${_fmt(c.max_profit)} | RoR: {_fmt(c.return_on_risk)}")
+                      f"Max Loss: ${_fmt(c.max_loss)} | Max Profit: ${_fmt(c.max_profit)} | RoR: {_fmt(c.return_on_risk)}"
+                      f"{_rules(ticker, c.max_loss, abs(c.legs[1].strike - c.legs[0].strike))}")
 
             bps = build_bear_put_spreads(snap, exp)
             if bps.candidates:
@@ -479,7 +489,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 c = bps.candidates[0]
                 strikes = "/".join(str(l.strike) for l in c.legs)
                 print(f"  [Bear Put]  {exp} {strikes} | Debit: ${_fmt(c.net_debit)} | "
-                      f"Max Loss: ${_fmt(c.max_loss)} | Max Profit: ${_fmt(c.max_profit)} | RoR: {_fmt(c.return_on_risk)}")
+                      f"Max Loss: ${_fmt(c.max_loss)} | Max Profit: ${_fmt(c.max_profit)} | RoR: {_fmt(c.return_on_risk)}"
+                      f"{_rules(ticker, c.max_loss, abs(c.legs[1].strike - c.legs[0].strike))}")
 
             lc = build_long_calls(snap, exp)
             if lc.candidates:
@@ -487,7 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 c = lc.candidates[0]
                 be = _fmt(c.breakevens[0]) if c.breakevens else "n/a"
                 print(f"  [Long Call] {exp} {c.legs[0].strike}C | Debit: ${_fmt(c.net_debit)} | "
-                      f"Max Loss: ${_fmt(c.max_loss)} | Breakeven: ${be}")
+                      f"Max Loss: ${_fmt(c.max_loss)} | Breakeven: ${be}{_rules(ticker, c.max_loss)}")
 
             lp = build_long_puts(snap, exp)
             if lp.candidates:
@@ -495,7 +506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 c = lp.candidates[0]
                 be = _fmt(c.breakevens[0]) if c.breakevens else "n/a"
                 print(f"  [Long Put]  {exp} {c.legs[0].strike}P | Debit: ${_fmt(c.net_debit)} | "
-                      f"Max Loss: ${_fmt(c.max_loss)} | Breakeven: ${be}")
+                      f"Max Loss: ${_fmt(c.max_loss)} | Breakeven: ${be}{_rules(ticker, c.max_loss)}")
 
             csp = build_cash_secured_puts(snap, exp)
             if not csp.candidates:
@@ -504,7 +515,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 found_any = True
                 c = csp.candidates[0]
                 print(f"  [CSP]       {exp} {c.legs[0].strike}P | Credit: ${_fmt(-c.net_debit)} | "
-                      f"Capital Required: ${c.legs[0].strike * 100:.2f}")
+                      f"Capital Required: ${c.legs[0].strike * 100:.2f}"
+                      f"{_rules(ticker, None, cash_needed=c.legs[0].strike * 100)}")
 
             cc = build_covered_calls(snap, exp)
             if not cc.candidates:

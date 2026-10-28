@@ -48,12 +48,14 @@ _OPTION_COMMANDS = {
     "directional": "directional", "dir": "directional",
     "options": "directional", "opt": "directional",
     "midweek": "midweek", "mid": "midweek", "mw": "midweek",
+    "backtest": "backtest", "bt": "backtest",
 }
 
 # Argument-free commands: scan the watchlist / current positions (no ticker).
 _NULLARY_COMMANDS = {
     "spreads": "spreads", "spread": "spreads", "iv": "spreads",
     "wheel": "wheel", "income": "wheel",
+    "rules": "rules", "scorecard": "rules",
 }
 
 # Command menu registered via setMyCommands (see ``register_commands``). Only the
@@ -65,6 +67,9 @@ _COMMAND_MENU = (
     ("midweek", "Short-dated 0-5 DTE expiry templates"),
     ("spreads", "Earnings credit-spread scan (watchlist)"),
     ("wheel", "CSP / CC / PMCC from your positions"),
+    ("check", "Pre-trade check: /check AMZN pcs 95/94 0.33"),
+    ("backtest", "Rule evidence for a ticker (stock + weekly spread)"),
+    ("rules", "Your live per-rule scorecard"),
     ("help", "Show usage"),
 )
 
@@ -77,7 +82,12 @@ _USAGE = (
     "/directional NVDA — bull-call / long / CSP / covered-call / PMCC board\n"
     "/midweek SPY — short-dated (0–5 DTE) expiry templates\n"
     "/spreads — earnings credit-spread scan over your watchlist (no ticker)\n"
-    "/wheel — CSP / covered-call / PMCC from your current positions (no ticker)"
+    "/wheel — CSP / covered-call / PMCC from your current positions (no ticker)\n\n"
+    "🧪 Rules & evidence:\n"
+    "/check AMZN pcs 95/94 0.33 — pre-entry statement + trading-rules check "
+    "(pcs/ccs = credit spread short/long strike; bcs/bps = debit spread long/short strike; last number = premium per share)\n"
+    "/backtest NVDA — Bollinger rule + weekly put-credit-spread evidence (3y daily)\n"
+    "/rules — your live scorecard by rule (win rate, loss-vs-win size, drawdown)"
 )
 
 # Prompts sent (with force_reply) when a ticker-needing command is tapped from the
@@ -88,7 +98,10 @@ _PROMPT_QUOTE = "📊 Which ticker? Reply to this message with a symbol (e.g. NV
 _PROMPT_DIRECTIONAL = "📈 Which ticker? Reply to this message with a symbol (e.g. NVDA) for an options board."
 _PROMPT_MIDWEEK = "🗓 Which ticker? Reply to this message with a symbol (e.g. SPY) for 0–5 DTE templates."
 
+_PROMPT_BACKTEST = "🧪 Which ticker? Reply to this message with a symbol (e.g. NVDA) for rule evidence."
+
 _PROMPTS = {
+    "backtest": _PROMPT_BACKTEST,
     "quote": _PROMPT_QUOTE,
     "directional": _PROMPT_DIRECTIONAL,
     "midweek": _PROMPT_MIDWEEK,
@@ -99,6 +112,7 @@ _PROMPT_ROUTES = {
     _PROMPT_QUOTE: ("quote", None),
     _PROMPT_DIRECTIONAL: ("option", "directional"),
     _PROMPT_MIDWEEK: ("option", "midweek"),
+    _PROMPT_BACKTEST: ("option", "backtest"),
 }
 
 # A transport takes (url, timeout seconds) and returns the parsed JSON payload.
@@ -167,6 +181,32 @@ def parse_nullary_command(text: str) -> Optional[str]:
         return None
     cmd = t.split()[0].lstrip("/").split("@")[0].lower()  # strip @botname suffix
     return _NULLARY_COMMANDS.get(cmd)
+
+
+_CHECK_CODES = {"pcs": "put_credit", "ccs": "call_credit", "bcs": "bull_call_debit", "bps": "bear_put_debit"}
+_CHECK_USAGE = ("Usage: /check TICKER CODE STRIKES PREMIUM\n"
+                "pcs/ccs = credit spread, STRIKES = short/long, PREMIUM = credit per share\n"
+                "bcs/bps = debit spread, STRIKES = long/short, PREMIUM = debit per share\n"
+                "e.g. /check AMZN pcs 95/94 0.33")
+
+
+def parse_check_command(text: str):
+    """``/check AMZN pcs 95/94 0.33`` -> ``("AMZN", "put_credit", 95.0, 94.0, 0.33)``;
+    ``""`` for a bare ``/check`` (show usage); None if it isn't a /check command."""
+    t = (text or "").strip()
+    if not t.startswith("/"):
+        return None
+    parts = t.split()
+    if parts[0].lstrip("/").split("@")[0].lower() != "check":
+        return None
+    try:
+        tk, code, strikes, prem = parts[1].upper(), parts[2].lower(), parts[3], float(parts[4])
+        a, b = (float(x) for x in strikes.split("/"))
+        if not (tk.isalpha() and 1 <= len(tk) <= 5) or code not in _CHECK_CODES or prem <= 0 or a == b or min(a, b) <= 0:
+            return ""
+        return tk, _CHECK_CODES[code], a, b, prem
+    except (IndexError, ValueError):
+        return ""
 
 
 def parse_bare_ticker_command(text: str) -> Optional[str]:
@@ -253,12 +293,20 @@ def build_quote(ticker: str, *, today: Optional[date] = None) -> str:
     except Exception as exc:
         log.debug("Earnings/expected-move lookup failed for %s: %s", ticker, exc)
 
-    return format_quote(
+    msg = format_quote(
         setup,
         earnings_date=e0.earnings_date if e0 else None,
         days_left=e0.days_left if e0 else setup.days_to_earnings,
         expected_move_pct=e0.expected_move_pct if e0 else None,
     )
+    try:  # cached by the weekly digest; /backtest TICKER runs it fresh
+        from analytics.backtest.evidence import evidence_line
+        ev = evidence_line(ticker)
+        if ev:
+            msg += "\n" + ev
+    except Exception as exc:  # noqa: BLE001
+        log.debug("rule evidence lookup failed for %s: %s", ticker, exc)
+    return msg
 
 
 # --------------------------------------------------------------------------- #
@@ -298,10 +346,75 @@ def build_midweek(ticker: str, *, today: Optional[date] = None) -> str:
     return out or f"⚠️ No short-dated expiries for {ticker} right now."
 
 
+def build_check(spec) -> str:
+    """Pre-entry statement (Moomoo Day 1-2) + trading-rules verdict for one spread."""
+    from datetime import date as _d
+    from decimal import Decimal
+    from analytics.options.payoff import OptionLeg, summarize_expiry
+    from analytics.risk.rules_gate import check_trade
+
+    if not spec:
+        return _CHECK_USAGE
+    tk, kind, a, b, prem = spec
+    right = "put" if kind in ("put_credit", "bear_put_debit") else "call"
+    credit = kind.endswith("credit")
+    exp = _d(2099, 1, 1)  # payoff is expiry-only; the date just has to be common
+    first, second = ("sell", "buy") if credit else ("buy", "sell")
+    # all of the net premium sits on the first leg: payoff math only needs the net
+    legs = (OptionLeg(right, first, a, prem, expiry=exp), OptionLeg(right, second, b, 0, expiry=exp))
+    pay = summarize_expiry(legs)
+    width = abs(a - b)
+    name = kind.replace("_", " ")
+    lines = [f"🧾 {tk} {name} {a:g}/{b:g} @ ${prem:.2f}/sh (1 contract)",
+             f"{'Collect' if credit else 'Pay'} ${prem * 100:,.0f} · max loss ${pay.max_loss:,.0f} · "
+             f"max gain ${pay.max_profit:,.0f} · break-even {', '.join(f'${x:,.2f}' for x in pay.breakevens)}"]
+    short_leg = a if credit else b
+    verb = "buy" if right == "put" else "sell"
+    lines.append(f"If the short {short_leg:g} leg is assigned ({verb} 100 shares @ {short_leg:g}), the long "
+                 f"{(b if credit else a):g} leg offsets it: loss is capped at the max loss above.")
+    gate = check_trade(tk, max_loss=pay.max_loss, width=Decimal(str(width)), cash_needed=pay.max_loss)
+    lines += gate.lines()
+    lines.append("Structure test: can you say the second leg's job in one sentence? (fund / protect / cap risk)")
+    return "\n".join(lines)
+
+
+def build_backtest(ticker: str, *, today: Optional[date] = None) -> str:
+    """Rule evidence for ``ticker``: both Bollinger rules (stock) + a weekly put credit spread (modelled)."""
+    from datetime import timedelta
+
+    from analytics.backtest.data import fetch_bars
+    from analytics.backtest.engine import run_backtest
+    from analytics.backtest.metrics import compute_metrics, format_compact
+    from analytics.backtest.option_engine import SpreadStructure, run_option_backtest
+    from analytics.backtest.rules import mean_reversion, trend_following, weekly_income
+
+    end = today or date.today()
+    try:
+        bars, provider = fetch_bars(ticker, end - timedelta(days=3 * 365), end)
+    except RuntimeError:
+        return f"⚠️ No price history for {ticker} right now."
+    last = float(bars[-1].close)
+    width = 1.0 if last < 200 else 5.0
+    runs = [run_backtest(bars, mean_reversion()), run_backtest(bars, trend_following()),
+            run_option_backtest(bars, weekly_income(), SpreadStructure("put_credit", width=width, strike_step=width))]
+    lines = [f"🧪 {ticker} rule evidence · {bars[0].day} → {bars[-1].day} ({provider})"]
+    lines += [format_compact(r, compute_metrics(r)) for r in runs]
+    lines.append("Past results, modelled option prices (no skew/real bid-ask). Context, not a signal.")
+    return "\n".join(lines)
+
+
+def build_rules(*, today: Optional[date] = None) -> str:
+    """Live per-rule scorecard from your realised option trades."""
+    from analytics.options.journal import build_scorecard_text
+
+    return "📓 Rule scorecard (realised option trades)\n" + build_scorecard_text()
+
+
 # Builder registry resolved by ``parse_options_command`` keys. Injectable in tests.
 _DEFAULT_OPTION_BUILDERS: dict[str, Callable[..., str]] = {
     "directional": build_directional,
     "midweek": build_midweek,
+    "backtest": build_backtest,
 }
 
 
@@ -330,6 +443,7 @@ def build_wheel(*, today: Optional[date] = None) -> str:
 _DEFAULT_NULLARY_BUILDERS: dict[str, Callable[..., str]] = {
     "spreads": build_spreads,
     "wheel": build_wheel,
+    "rules": build_rules,
 }
 
 
@@ -362,6 +476,7 @@ def run_bot(
     quote_builder: Callable[..., str] = build_quote,
     option_builders: Optional[dict] = None,
     nullary_builders: Optional[dict] = None,
+    check_builder: Callable[..., str] = build_check,
     today: Optional[date] = None,
     once: bool = False,
 ) -> None:
@@ -446,6 +561,15 @@ def run_bot(
             if opt is not None:
                 key, tk = opt
                 _dispatch_option(chat_id, key, tk)
+                continue
+
+            check = parse_check_command(text)
+            if check is not None:
+                try:
+                    reply(str(chat_id), check_builder(check))
+                except Exception as exc:
+                    log.warning("check failed: %s", exc)
+                    reply(str(chat_id), "⚠️ Couldn't evaluate that trade. " + _CHECK_USAGE)
                 continue
 
             nkey = parse_nullary_command(text)

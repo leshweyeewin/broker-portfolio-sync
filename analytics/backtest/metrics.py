@@ -94,3 +94,12 @@ def format_report(result: BacktestResult, m: Metrics) -> str:
     lines += [f"WARNING: {w}" for w in m.warnings]
     lines.append("Backtests expose assumptions and trade-offs; they do not prove future results.")
     return "\n".join(lines)
+
+
+def format_compact(result: BacktestResult, m: Metrics) -> str:
+    """Two-line summary for chat/alerts; the full ``format_report`` stays for the CLI."""
+    win = "n/a" if m.win_rate is None else f"{m.win_rate * 100:.0f}%"
+    erase = "" if m.wins_erased_by_one_loss is None else f", 1 loss = {m.wins_erased_by_one_loss:.1f} wins"
+    flag = " ⚠️ small sample" if m.trades < MIN_TRADES else ""
+    return (f"{result.rule.name} · {result.pricing} {result.structure}\n"
+            f"   {m.trades} trades, {win} win{erase}, {m.total_return_pct:+.1f}% / maxDD -{m.max_drawdown_pct:.1f}%{flag}")

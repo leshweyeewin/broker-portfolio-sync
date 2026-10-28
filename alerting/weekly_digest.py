@@ -48,6 +48,34 @@ def build_wheel_digest() -> str:
     return buf.getvalue().strip() or "💼 Wheel: no active positions."
 
 
+def build_evidence_digest(*, today: Optional[date] = None) -> str:
+    """Refresh (if stale) and show rule evidence for names reporting earnings soon.
+
+    Fail-soft: any data/network problem just drops the section.
+    """
+    try:
+        from analytics.backtest.evidence import evidence_line, refresh
+        from analytics.earnings.iv_crush import DEFAULT_DAYS_AHEAD, earnings_universe
+        from analytics.screening.market_scan import get_upcoming_earnings
+
+        events = get_upcoming_earnings(earnings_universe(), today=today, days_ahead=DEFAULT_DAYS_AHEAD)
+        tickers = sorted({e.ticker for e in events})
+        if not tickers:
+            return ""
+        refresh(tickers, today=today)
+        lines = [f"{t}: {line}" for t in tickers if (line := evidence_line(t))]
+        return ("🧪 RULE EVIDENCE — earnings-week names (context, not signals)\n" + "\n".join(lines)) if lines else ""
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rule evidence section skipped: %s", exc)
+        return ""
+
+
+def build_scorecard_digest() -> str:
+    from analytics.options.journal import build_scorecard_text
+
+    return "📓 RULE SCORECARD (your realised option trades)\n" + build_scorecard_text()
+
+
 def run_weekly_digest(
     *,
     notifier: Callable[[str], bool] = notify_safe,
@@ -59,9 +87,12 @@ def run_weekly_digest(
     """
     spreads = build_spreads_digest(today=today)
     wheel = build_wheel_digest()
+    evidence = build_evidence_digest(today=today)
+    scorecard = build_scorecard_digest()
     message = (
         "🗓️ WEEKLY OPTIONS DIGEST (read-only — plans only, no orders)\n\n"
-        f"{spreads}\n\n{_SEP}\n{wheel}"
+        f"{spreads}\n\n" + (f"{evidence}\n\n" if evidence else "") +
+        f"{_SEP}\n{wheel}\n\n{_SEP}\n{scorecard}"
     )
     notifier(message)
     return message

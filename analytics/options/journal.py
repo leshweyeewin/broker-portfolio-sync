@@ -139,6 +139,18 @@ def format_scorecard(scores: Sequence[RuleScore]) -> str:
     return "\n".join(lines)
 
 
+def build_scorecard_text() -> str:
+    """Scorecard over live realised option trades (needs the Sheet); fails soft."""
+    try:
+        client = SheetClient(get_service_account_info(), get_spreadsheet_id())
+        writer = PortfolioWriter(client)
+        res = compute_option_pl([item["trade"] for item in writer.read_all_option_trades()])
+        return format_scorecard(scorecard_by_rule(TradePlanStore().list(), res.realizations))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("scorecard unavailable: %s", exc)
+        return "⚠️ Rule scorecard unavailable right now (Sheet not reachable)."
+
+
 def main(argv=None) -> int:
     import sys
     if hasattr(sys.stdout, "reconfigure"):
