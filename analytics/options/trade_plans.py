@@ -58,6 +58,7 @@ class TradePlan:
     status: PlanStatus = PlanStatus.DRAFT
     lesson: str = ""
     second_leg_purpose: str = ""
+    rule_name: str = ""   # named system rule (e.g. a backtest RuleSpec.name) this plan executes
     plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -176,7 +177,7 @@ def _plan_to_dict(plan: TradePlan) -> dict:
         "risk_budget": str(plan.risk_budget) if plan.risk_budget is not None else None,
         "catalyst_date": plan.catalyst_date.isoformat() if plan.catalyst_date else None,
         "snapshot_id": plan.snapshot_id, "status": plan.status.value, "lesson": plan.lesson,
-        "second_leg_purpose": plan.second_leg_purpose,
+        "second_leg_purpose": plan.second_leg_purpose, "rule_name": plan.rule_name,
         "created_at": plan.created_at.isoformat(), "updated_at": plan.updated_at.isoformat(),
         "legs": [{"right": leg.right, "side": leg.side, "strike": str(leg.strike), "premium": str(leg.premium),
                   "quantity": str(leg.quantity), "multiplier": str(leg.multiplier),
@@ -191,7 +192,7 @@ def _plan_from_dict(raw: dict) -> TradePlan:
         entry_trigger=raw.get("entry_trigger", ""), invalidation=raw.get("invalidation", ""), exit_rule=raw.get("exit_rule", ""),
         risk_budget=raw.get("risk_budget"), catalyst_date=date.fromisoformat(raw["catalyst_date"]) if raw.get("catalyst_date") else None,
         snapshot_id=raw.get("snapshot_id", ""), status=PlanStatus(raw.get("status", "draft")), lesson=raw.get("lesson", ""),
-        second_leg_purpose=raw.get("second_leg_purpose", ""),
+        second_leg_purpose=raw.get("second_leg_purpose", ""), rule_name=raw.get("rule_name", ""),
         plan_id=raw["plan_id"], created_at=datetime.fromisoformat(raw["created_at"]), updated_at=datetime.fromisoformat(raw["updated_at"]),
     )
 
@@ -221,6 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--invalidation", default="")
     create.add_argument("--exit-rule", default="")
     create.add_argument("--second-leg-purpose", choices=SECOND_LEG_PURPOSES, default="")
+    create.add_argument("--rule-name", default="", help="named system rule this plan executes (for the scorecard)")
     create.add_argument("--risk-budget")
     create.add_argument("--snapshot-id", default="")
     create.add_argument("--approve", action="store_true")
@@ -238,7 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan = TradePlan(args.ticker, args.strategy, tuple(_parse_leg(value, expiry) for value in args.leg),
                          thesis=args.thesis, entry_trigger=args.entry_trigger, invalidation=args.invalidation,
                          exit_rule=args.exit_rule, risk_budget=args.risk_budget, snapshot_id=args.snapshot_id,
-                         second_leg_purpose=args.second_leg_purpose)
+                         second_leg_purpose=args.second_leg_purpose, rule_name=args.rule_name)
         if args.approve:
             plan = transition(plan, PlanStatus.APPROVED)
     except ValueError as exc:

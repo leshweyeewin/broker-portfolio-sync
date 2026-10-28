@@ -60,6 +60,9 @@ def test_second_leg_purpose_round_trips(tmp_path):
     store = TradePlanStore(tmp_path / "p.json")
     saved = store.save(_complete_plan())
     assert store.get(saved.plan_id).second_leg_purpose == "fund"
+    from dataclasses import replace
+    named = store.save(replace(saved, rule_name="weekly_income_fri"))
+    assert store.get(named.plan_id).rule_name == "weekly_income_fri"
 
 
 def test_assignment_exposure_describes_short_legs_only():

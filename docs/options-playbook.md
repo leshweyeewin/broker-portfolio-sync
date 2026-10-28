@@ -198,4 +198,14 @@ invented. Exits use a snapshot mid if one exists that day, else the model, and
 the report flags modelled exits. Coverage starts the day you begin recording,
 so early results will carry the small-sample warning.
 
-The live per-rule scorecard in `journal.py` is the remaining Day 3 piece.
+### Live per-rule scorecard
+
+`python -m analytics.options.journal` now starts with a **rule scorecard** over
+all realised option trades. Tag a plan with the rule it executes
+(`trade_plans create ... --rule-name weekly_income_fri`, matching a backtest
+`RuleSpec.name`) and its closed trades are scored together: count, total P/L,
+win rate, average gain/loss, "one average loss erases N average wins", and max
+drawdown of cumulative realised P/L, with the same 30-trade noise warning as
+the backtests. Closed trades that match **no plan** are listed under `(no plan)`
+- trading without a written rule is itself a result. Compare a rule's live line
+with its backtest to see whether real fills and discipline match the assumptions.

@@ -49,3 +49,30 @@ def test_generate_journal():
     assert entries[1].plan.ticker == "AAPL"
     assert entries[1].grade == "A"
     assert "Profitable close: +$250.00" in entries[1].notes
+
+
+def _real(key, instrument, d, pl):
+    return Realization(key=key, broker="tiger", instrument=instrument, date=d, qty=Decimal("1"),
+                       realized_pl=Decimal(pl), close_value=Decimal("0"), cost_basis=Decimal("0"),
+                       open_fees=Decimal("0"), close_fee=Decimal("0"), currency="USD", multiplier=Decimal("100"))
+
+
+def test_scorecard_groups_by_rule_and_flags_unplanned_trades():
+    from analytics.options.journal import NO_PLAN, format_scorecard, scorecard_by_rule
+    leg = [OptionLeg(right="put", side="sell", strike=Decimal("95"), premium=Decimal("1"), expiry=date(2026, 9, 18))]
+    plans = [TradePlan(ticker="AMZN", strategy="PCS", legs=leg, status=PlanStatus.CLOSED, rule_name="weekly_income_fri")]
+    reals = [
+        _real("a", "AMZN 2026-09-18 95 put", date(2026, 8, 1), "30"),
+        _real("b", "AMZN 2026-09-18 95 put", date(2026, 8, 8), "30"),
+        _real("c", "AMZN 2026-09-18 95 put", date(2026, 8, 15), "-100"),
+        _real("d", "SNDQ 2026-09-18 10 put", date(2026, 8, 20), "-500"),
+    ]
+    by = {s.rule: s for s in scorecard_by_rule(plans, reals)}
+    w = by["weekly_income_fri"]
+    assert (w.trades, w.total_pl, w.win_rate) == (3, Decimal("-40"), pytest.approx(2 / 3))
+    assert w.max_drawdown == Decimal("100")
+    assert w.wins_erased_by_one_loss == pytest.approx(100 / 30)
+    assert any("erases" in x for x in w.warnings) and any("noise" in x for x in w.warnings)
+    assert by[NO_PLAN].total_pl == Decimal("-500") and any("no saved plan" in x for x in by[NO_PLAN].warnings)
+    out = format_scorecard(list(by.values()))
+    assert "weekly_income_fri" in out and "(no plan)" in out
