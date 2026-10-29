@@ -42,7 +42,7 @@ def _yfinance_bars(ticker: str, start: date, end: date) -> list[Bar]:
 
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
     hist = yf.Ticker(ticker).history(start=start.isoformat(), end=end.isoformat(), auto_adjust=True)
-    return _to_bars((idx.date(), row["Open"], row["Close"]) for idx, row in hist.iterrows())
+    return _to_bars((idx.date(), float(row["Open"]), float(row["Close"])) for idx, row in hist.iterrows())
 
 
 def _to_bars(rows) -> list[Bar]:

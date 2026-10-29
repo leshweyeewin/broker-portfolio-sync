@@ -22,6 +22,8 @@ class Metrics:
     avg_gain: float | None
     avg_loss: float | None
     wins_erased_by_one_loss: float | None   # avg loss / avg gain
+    profit_factor: float | None             # gross gains / gross losses
+    expectancy: float | None                # average net P/L per trade
     trades: int
     avg_bars_held: float | None
     exposure_pct: float
@@ -46,6 +48,8 @@ def compute_metrics(result: BacktestResult) -> Metrics:
     avg_gain = fmean(wins) if wins else None
     avg_loss = fmean(losses) if losses else None
     erased = avg_loss / avg_gain if avg_gain and avg_loss else None
+    profit_factor = sum(wins) / sum(losses) if losses else None
+    expectancy = fmean(float(t.pnl) for t in result.trades) if result.trades else None
 
     warnings = []
     if n < MIN_TRADES:
@@ -69,6 +73,7 @@ def compute_metrics(result: BacktestResult) -> Metrics:
         max_drawdown_pct=mdd * 100,
         win_rate=len(wins) / n if n else None,
         avg_gain=avg_gain, avg_loss=avg_loss, wins_erased_by_one_loss=erased,
+        profit_factor=profit_factor, expectancy=expectancy,
         trades=n,
         avg_bars_held=fmean(t.bars_held for t in result.trades) if n else None,
         exposure_pct=result.bars_in_market / len(eq) * 100,
@@ -89,6 +94,7 @@ def format_report(result: BacktestResult, m: Metrics) -> str:
         f"Win rate      {f(m.win_rate and m.win_rate * 100, '.0f')}%",
         f"Avg gain/loss {f(m.avg_gain, ',.2f')} / {f(m.avg_loss, ',.2f')}",
         f"Loss erases   {f(m.wins_erased_by_one_loss, '.1f')} avg wins",
+        f"Profit factor {f(m.profit_factor, '.2f')}   Expectancy {f(m.expectancy, ',.2f')} per trade",
         f"Avg hold      {f(m.avg_bars_held, '.1f')} bars   Exposure {m.exposure_pct:.0f}%",
     ]
     lines += [f"WARNING: {w}" for w in m.warnings]

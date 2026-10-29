@@ -197,3 +197,30 @@ def test_snapshot_library_round_trip_and_listing(tmp_path):
     assert lib.days("abc") == [date(2026, 2, 13)]
     assert lib.get("ABC", date(2026, 2, 13)).snapshot_id == snap.snapshot_id
     assert lib.get("ABC", date(2026, 2, 14)) is None
+
+
+def test_profit_factor_and_expectancy():
+    bars = _bars([100, 100, 100, 100, 110, 110, 110, 60, 60])
+    m = compute_metrics(run_backtest(bars, _scripted({1, 5}, {3, 6}), capital=10000, slippage_bps=0))
+    assert m.profit_factor == pytest.approx(0.2)   # +1000 gain vs -5000 loss
+    assert m.expectancy == pytest.approx(-2000.0)
+
+
+def test_delayed_rule_shifts_signals_one_bar():
+    from analytics.backtest.robust import delayed
+    d = delayed(_scripted({2}, {4}))
+    assert [i for i in range(6) if d.entry([], i)] == [3]
+    assert [i for i in range(6) if d.exit([], i)] == [5]
+
+
+def test_robust_report_runs_and_flags_fragile_island():
+    import math
+    from analytics.backtest.robust import Cell, is_fragile, report, split
+    bars = _bars([100 + 10 * math.sin(i / 4) + i * 0.05 for i in range(300)])
+    out = report(bars, mean_reversion)
+    for needle in ("Benchmark", "Delay 1 bar", "Grid best", "Neighbours", "Train/test"):
+        assert needle in out
+    assert len(split(bars)[0]) == 210
+    cells = [Cell(p, k, 2.0 if (p, k) == (20, 2.0) else -0.5, 1.0, 40)
+             for p in (10, 15, 20, 30, 40) for k in (1.0, 1.5, 2.0, 2.5)]
+    assert is_fragile(cells, next(c for c in cells if c.period == 20 and c.k == 2.0))
