@@ -93,7 +93,8 @@ def run_backtest(
                     entry_cost = fill * qty + fee
                     cash -= entry_cost
                     shares = qty
-            elif shares > 0 and rule.exit(bars, i - 1):
+            elif shares > 0 and (rule.exit(bars, i - 1)
+                                 or (rule.max_hold_bars and i - entry_idx >= rule.max_hold_bars)):
                 close_out(i, bar.open, False)
         if shares > 0:
             in_market += 1

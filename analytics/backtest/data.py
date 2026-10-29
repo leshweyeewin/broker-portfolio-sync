@@ -46,7 +46,7 @@ def _yfinance_bars(ticker: str, start: date, end: date) -> list[Bar]:
 
 
 def _to_bars(rows) -> list[Bar]:
-    bars = {d: Bar(d, dec(o), dec(c)) for d, o, c in rows if o and c}
+    bars = {d: Bar(d, dec(o), dec(c)) for d, o, c in rows if o and c and o == o and c == c}   # drop NaN
     return [bars[d] for d in sorted(bars)]
 
 

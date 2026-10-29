@@ -161,7 +161,7 @@ python -m analytics.backtest prices.csv --rule mean_reversion --period 20 --k 2
 ### Stage 2 – spreads with modelled pricing
 
 ```bash
-python -m analytics.backtest AAPL --rule weekly_income --structure put_credit --width 2 --risk-pct 0.05
+python -m analytics.backtest AAPL --rule weekly_income --structure put_credit --width 2 --risk-pct 0.02
 ```
 
 `option_engine.py` runs the same signals through a defined-risk spread

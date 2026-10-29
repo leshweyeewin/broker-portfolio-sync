@@ -30,6 +30,7 @@ class RuleSpec:
     structure: str = "long stock"
     size_fraction: Decimal = Decimal("0.25")  # share of equity per entry
     version: str = "1"
+    max_hold_bars: int | None = None  # stock engine time exit; option engine exits by stop/target/expiry
 
     def system_sentence(self, structure: str | None = None, risk: str | None = None) -> str:
         return (f"When {self.entry_text}, trade {structure or self.structure}, risk "
@@ -96,6 +97,7 @@ def weekly_income(weekday: int = 4, size_fraction: str = "0.25") -> RuleSpec:
         entry=lambda bars, i: bars[i].day.weekday() == weekday,
         exit=lambda bars, i: False,
         size_fraction=Decimal(size_fraction),
+        max_hold_bars=5,   # one trading week: Monday fill -> next Monday open
     )
 
 

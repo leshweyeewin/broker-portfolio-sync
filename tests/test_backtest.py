@@ -224,3 +224,30 @@ def test_robust_report_runs_and_flags_fragile_island():
     cells = [Cell(p, k, 2.0 if (p, k) == (20, 2.0) else -0.5, 1.0, 40)
              for p in (10, 15, 20, 30, 40) for k in (1.0, 1.5, 2.0, 2.5)]
     assert is_fragile(cells, next(c for c in cells if c.period == 20 and c.k == 2.0))
+
+
+def test_stock_weekly_income_exits_after_one_week_not_end_of_data():
+    from analytics.backtest.rules import weekly_income
+    bars = _bars([100] * 30)
+    r = run_backtest(bars, weekly_income(size_fraction="1"), capital=10000, slippage_bps=0)
+    assert len(r.trades) > 1 and not any(t.forced and t.bars_held > 5 for t in r.trades)
+    assert all(t.bars_held == 5 for t in r.trades if not t.forced)
+
+
+def test_option_risk_default_is_two_percent():
+    import inspect
+    from analytics.backtest.option_engine import run_option_backtest
+    assert inspect.signature(run_option_backtest).parameters["risk_pct"].default == 0.02
+
+
+def test_debit_spread_stops_out_on_crash_and_takes_profit_on_rally():
+    from analytics.backtest.option_engine import SpreadStructure, run_option_backtest
+    from analytics.backtest.rules import weekly_income
+    def run(fn):
+        bars = _daily(120, fn)
+        return run_option_backtest(bars, weekly_income(), SpreadStructure("bull_call_debit", width=2),
+                                   capital=50000, risk_pct=0.05)
+    crash = run(lambda i: 100 if i < 40 else 100 - (i - 40) * 0.6)
+    rally = run(lambda i: 100 if i < 40 else 100 + (i - 40) * 0.6)
+    assert any(t.note.startswith("stop") for t in crash.trades)
+    assert any(t.note.startswith("target") for t in rally.trades)

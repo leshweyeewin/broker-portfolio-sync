@@ -206,12 +206,14 @@ def run_option_backtest(
     ticker: str = "",
     pricing: Literal["modelled", "snapshot"] = "modelled",
     capital: Decimal | str | int = 10000,
-    risk_pct: float = 0.05,
+    risk_pct: float = 0.02,                # trading-rules.md target; 5% is the hard cap
     fee_per_contract: float = 1.0,
     slippage_per_share: float = 0.03,
     iv_mult: float = 1.15,
     stop_multiple: float | None = 1.0,     # credit spreads: close when loss >= x * credit
     profit_target: float | None = 0.5,     # credit spreads: close at x of the credit captured
+    debit_stop: float | None = 0.5,        # debit spreads: close when loss >= x * debit paid
+    debit_target: float | None = 0.5,      # debit spreads: close at x of the max gain (width - debit)
     fill_mode: Literal["natural", "mid"] = "natural",
     snapshots: SnapshotLibrary | None = None,
     min_open_interest: int = 100,
@@ -283,11 +285,16 @@ def run_option_backtest(
                 v, _ = pos.value(i, float(bar.close), False)
                 mark = v
                 credit = -pos.v_open
+                pnl_ps = v - pos.v_open
                 if pos.v_open < 0:
-                    pnl_ps = v - pos.v_open
                     if stop_multiple is not None and pnl_ps <= -stop_multiple * credit:
                         pend_exit, pend_exit_note = True, "stop"
                     elif profit_target is not None and pnl_ps >= profit_target * credit:
+                        pend_exit, pend_exit_note = True, "target"
+                elif pos.v_open > 0:
+                    if debit_stop is not None and pnl_ps <= -debit_stop * pos.v_open:
+                        pend_exit, pend_exit_note = True, "stop"
+                    elif debit_target is not None and pnl_ps >= debit_target * (structure.width - pos.v_open):
                         pend_exit, pend_exit_note = True, "target"
                 if not pend_exit and rule.exit(bars, i):
                     pend_exit, pend_exit_note = True, "rule"

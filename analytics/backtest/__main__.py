@@ -35,11 +35,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--width", type=float, default=1.0)
     ap.add_argument("--delta", type=float, help="target |delta| (default 0.20 credit / 0.50 debit)")
     ap.add_argument("--dte", type=int, default=35)
-    ap.add_argument("--risk-pct", type=float, default=0.05, help="max loss per trade as a share of equity")
+    ap.add_argument("--risk-pct", type=float, default=0.02, help="max loss per trade as a share of equity")
     ap.add_argument("--fill", choices=["natural", "mid"], default="natural", help="snapshot entry fills")
     ap.add_argument("--stop", type=float, default=1.0, help="credit spreads: stop at x * credit (0 = off)")
     ap.add_argument("--target", type=float, default=0.5, help="credit spreads: take profit at x of credit (0 = off)")
-    ap.add_argument("--fee", default="0", help="fixed fee per fill")
+    ap.add_argument("--debit-stop", type=float, default=0.5, help="debit spreads: stop at x * debit (0 = off)")
+    ap.add_argument("--debit-target", type=float, default=0.5, help="debit spreads: take profit at x of max gain (0 = off)")
+    ap.add_argument("--fee", default=None, help="fee per fill (stock) / per contract leg (options, default 1.00)")
     ap.add_argument("--slippage-bps", default="5")
     args = ap.parse_args(argv)
     rule = DEFAULT_RULES[args.rule](period=args.period, k=args.k)
@@ -57,13 +59,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         ticker = Path(args.source).stem.upper() if args.source.lower().endswith(".csv") else args.source.upper()
         result = run_option_backtest(
             bars, rule, st, ticker=ticker, pricing=args.pricing, capital=args.capital, risk_pct=args.risk_pct,
-            fee_per_contract=float(args.fee) if args.fee != "0" else 1.0, fill_mode=args.fill,
+            fee_per_contract=float(args.fee) if args.fee is not None else 1.0, fill_mode=args.fill,
             stop_multiple=args.stop or None, profit_target=args.target or None,
+            debit_stop=args.debit_stop or None, debit_target=args.debit_target or None,
             snapshots=SnapshotLibrary(Path(args.snapshots)) if args.pricing == "snapshot" else None)
         print(format_report(result, compute_metrics(result)))
         return 0
     result = run_backtest(bars, rule, capital=args.capital,
-                          fee_per_fill=args.fee, slippage_bps=args.slippage_bps)
+                          fee_per_fill=args.fee or "0", slippage_bps=args.slippage_bps)
     print(format_report(result, compute_metrics(result)))
     return 0
 
